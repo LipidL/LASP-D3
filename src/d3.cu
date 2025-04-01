@@ -1,5 +1,9 @@
 #include "constants.h"
 #include <stdlib.h>
+#include <stdio.h>
+#include <stdint.h>
+
+#define DEBUG
 
 // macros for debugging
 #ifdef DEBUG
@@ -23,6 +27,7 @@
 #define MAX_BLOCKS 65535
 #define MAX_THREADS 1024
 #define MAX_THREADS_PER_BLOCK 1024
+#define MAX_ELEMENTS 118
 
 // constants used in the simulation
 // these constants are from Grimme, S., Antony, J., Ehrlich, S. & Krieg, H. The Journal of Chemical Physics 132, 154104 (2010).
@@ -40,6 +45,7 @@
 typedef struct device_data {
     size_t num_atoms;
     size_t num_elements;
+    // to construct it, sort the elements by their atomic number, and then assign the index of the element in the sorted array to the atom_types array.
     size_t *atom_types; // array of atom types, length: num_atoms. the entries is not the atomic number, but the index of the corresponding entry in constants.
     atom_t *atoms; // array of atom data
     d3_constant_t *constants; // constants for the simulation
@@ -51,7 +57,7 @@ typedef struct device_data {
  * @note this kernel should be launched with a 1D grid of blocks, each block containing a 1D array of threads.
  * @note the proper grid and block sizes should be calculated based on the number of atoms in the system.
  */
-__device__ void compute_dispersion_energy_kernel(device_data_t *data) {
+__global__ void compute_dispersion_energy_kernel(device_data_t *data) {
     // compute the energy of the system using the D3 potential
     // total atomic interactions
     size_t num_atoms = data->num_atoms;
@@ -159,4 +165,171 @@ __device__ void compute_dispersion_energy_kernel(device_data_t *data) {
         atomicAdd(&data->results[atom_1_index].energy, dispersion_energy); // increment the energy for atom 1
         atomicAdd(&data->results[atom_2_index].energy, dispersion_energy); // increment the energy for atom 2
     }
+}
+
+/**
+ * @brief the function is used to find the index of an element in an array. if the element is not found, it inserts the element in the array and returns the index of the element.
+ * @param elements the array of elements.
+ * @param length the length of the array.
+ * @param element the element to find.
+ * @return the index of the element in the array
+ * @note this function hypothesizes that the array is sorted in ascending order.
+ */
+__host__ int32_t find(size_t *elements, size_t length, size_t element){
+    // use a binary search to find the element in the array
+    size_t left = 0;
+    size_t right = length - 1;
+    while (left <= right) {
+        size_t mid = (left + right) / 2;
+        if (elements[mid] == element) {
+            return mid; // found the element
+        } else if (elements[mid] < element) {
+            left = mid + 1; // search in the right half
+        } else {
+            right = mid - 1; // search in the left half
+        }
+    }
+    // not found, return -1
+    return -1;
+}
+
+/**
+ * @brief the function is used to compute the dispersion energy of the system using the D3 potential.
+ * 
+ * @param atoms the array of atoms in the system. The array is of size num_atoms * 4, where the first entry is atomic number and the last 3 entries are the coordinates of the atom.
+ * @param length the number of atoms in the system.
+ * @note the function is not thread safe, and should be called from a single thread.
+ */
+__host__ void compute_dispersion_energy(real_t atoms[][4], size_t length) {
+    // allocate memory for device_data_t
+    device_data_t h_data;
+    h_data.num_atoms = length;
+    // allocate memory for atoms
+    atom_t *h_atoms = (atom_t *)malloc(length * sizeof(atom_t));
+    if (h_atoms == NULL) {
+        fprintf(stderr, "Error: failed to allocate memory for atoms\n");
+        exit(EXIT_FAILURE);
+    }
+    size_t elements_presence[MAX_ELEMENTS + 1] = {0};
+    size_t maximum_atomic_number = 0;
+    for (size_t i = 0; i < length; ++i) {
+        h_atoms[i].element = (size_t)atoms[i][0];
+        h_atoms[i].x = atoms[i][1];
+        h_atoms[i].y = atoms[i][2];
+        h_atoms[i].z = atoms[i][3];
+        // the element cannot exceed MAX_ELEMENTS
+        assert(h_atoms[i].element <= MAX_ELEMENTS);
+        elements_presence[h_atoms[i].element] = 1; // mark the element as present in the array
+        maximum_atomic_number = (h_atoms[i].element > maximum_atomic_number) ? h_atoms[i].element : maximum_atomic_number;
+    }
+    // h_atoms is ready, now construct d_atoms
+    atom_t *d_atoms;
+    CHECK_CUDA(cudaMalloc((void **)&d_atoms, length * sizeof(atom_t)));
+    CHECK_CUDA(cudaMemcpy(d_atoms, h_atoms, length * sizeof(atom_t), cudaMemcpyHostToDevice));
+    h_data.atoms = d_atoms;
+    size_t *sorted_elements = (size_t *)malloc((maximum_atomic_number + 1) * sizeof(size_t));
+    if (sorted_elements == NULL) {
+        fprintf(stderr, "Error: failed to allocate memory for sorted elements\n");
+        free(h_atoms);
+        exit(EXIT_FAILURE);
+    }
+    // sort the elements in ascending order
+    size_t num_elements = 0; // the number of elements in the sorted array
+    for (size_t i = 0; i <= maximum_atomic_number; ++i) {
+        if (elements_presence[i] == 1) {
+            sorted_elements[num_elements] = i;
+            num_elements++;
+        }
+    }
+    // assign the atom types
+    size_t *atom_types = (size_t *)malloc(length * sizeof(size_t));
+    if (atom_types == NULL) {
+        fprintf(stderr, "Error: failed to allocate memory for atom types\n");
+        free(h_atoms);
+        free(sorted_elements);
+        exit(EXIT_FAILURE);
+    }
+    for (size_t i = 0; i < length; ++i) {
+        int32_t find_result = find(sorted_elements, num_elements, h_atoms[i].element);
+        if (find_result == -1) {
+            fprintf(stderr, "Error: failed to find the element in the array\n");
+            free(h_atoms);
+            free(sorted_elements);
+            free(h_data.atom_types);
+            exit(EXIT_FAILURE);
+        } else {
+            atom_types[i] = find_result; // assign the index of the element in the sorted array to the atom_types array
+        }
+    }
+    // now the atom_types array is ready, copy it to device memory
+    size_t *d_atom_types;
+    CHECK_CUDA(cudaMalloc((void **)&d_atom_types, length * sizeof(size_t)));
+    CHECK_CUDA(cudaMemcpy(d_atom_types, atom_types, length * sizeof(size_t), cudaMemcpyHostToDevice));
+    h_data.atom_types = d_atom_types;
+    // allocate memory for results and coordination_numbers
+    result_t *d_results;
+    CHECK_CUDA(cudaMalloc((void **)&d_results, length * sizeof(result_t)));
+    CHECK_CUDA(cudaMemset(d_results, 0, length * sizeof(result_t))); // initialize the results array to zero
+    h_data.results = d_results;
+    real_t *d_coordination_numbers;
+    CHECK_CUDA(cudaMalloc((void **)&d_coordination_numbers, length * sizeof(real_t)));
+    CHECK_CUDA(cudaMemset(d_coordination_numbers, 0, length * sizeof(real_t))); // initialize the coordination numbers array to zero
+    h_data.coordination_numbers = d_coordination_numbers;
+    // initialize constants
+    h_data.constants = d3_constant_init(num_elements, sorted_elements); // initialize the constants
+    // initialize the device data
+    device_data_t *d_data;
+    CHECK_CUDA(cudaMalloc((void **)&d_data, sizeof(device_data_t)));
+    CHECK_CUDA(cudaMemcpy(d_data, &h_data, sizeof(device_data_t), cudaMemcpyHostToDevice));
+
+    // launch the kernel
+    size_t num_blocks = (length + BLOCK_SIZE - 1) / BLOCK_SIZE; // number of blocks needed to cover all atoms
+    num_blocks = (num_blocks > MAX_BLOCKS) ? MAX_BLOCKS : num_blocks; // limit the number of blocks to MAX_BLOCKS
+    compute_dispersion_energy_kernel<<<num_blocks, BLOCK_SIZE>>>(d_data);
+    CHECK_CUDA(cudaDeviceSynchronize()); // synchronize the device to ensure all threads are finished
+    result_t *h_results = (result_t *)malloc(length * sizeof(result_t));
+    if (h_results == NULL) {
+        fprintf(stderr, "Error: failed to allocate memory for results\n");
+        free(h_atoms);
+        free(sorted_elements);
+        free(atom_types);
+        CHECK_CUDA(cudaFree(d_atoms));
+        CHECK_CUDA(cudaFree(d_atom_types));
+        CHECK_CUDA(cudaFree(d_results));
+        CHECK_CUDA(cudaFree(d_coordination_numbers));
+        CHECK_CUDA(cudaFree(d_data));
+        exit(EXIT_FAILURE);
+    }
+    // copy the results back to host memory
+    CHECK_CUDA(cudaMemcpy(h_results, d_results, length * sizeof(result_t), cudaMemcpyDeviceToHost));
+    for (size_t i = 0; i < length; ++i) {
+        // print the results
+        printf("Atom %zu: energy = %f\n", i, h_results[i].energy);
+    }
+    // free the device memory
+    CHECK_CUDA(cudaFree(d_atoms));
+    CHECK_CUDA(cudaFree(d_atom_types));
+    CHECK_CUDA(cudaFree(d_results));
+    CHECK_CUDA(cudaFree(d_coordination_numbers));
+    CHECK_CUDA(cudaFree(d_data));
+    // free the host memory
+    free(h_atoms);
+}
+
+int main()
+{
+    // example usage of the compute_dispersion_energy function
+    real_t atoms[5][4] = {
+        {1, 0.0f, 0.0f, 0.0f},
+        {2, 1.0f, 1.0f, 1.0f},
+        {3, 2.0f, 2.0f, 2.0f},
+        {4, 3.0f, 3.0f, 3.0f},
+        {5, 4.0f, 4.0f, 4.0f}
+    };
+
+    // initialize parameters
+    init_params();
+
+    compute_dispersion_energy(atoms, 5);
+    return 0;
 }

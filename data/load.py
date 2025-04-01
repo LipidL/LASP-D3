@@ -1,7 +1,8 @@
 import numpy as np
-import torch
+import os
+import struct
 
-d3_params = np.load("dftd3_params.npz")
+d3_params = np.load(f"{os.path.abspath(__file__)}/../dftd3_params.npz")
 print(f"keys: {list(d3_params.keys())}")
 print(f"shape of c6ab: {d3_params['c6ab'].shape}") # (95,95,5,5,3)
 # meaning: element pair between 95 elements, 5 different CN values each.
@@ -11,9 +12,13 @@ print(f"shape of c6ab: {d3_params['c6ab'].shape}") # (95,95,5,5,3)
 print(f"shape of r0ab: {d3_params['r0ab'].shape}")
 print(f"shape of rcov: {d3_params['rcov'].shape}")
 print(f"shape of r2r4: {d3_params['r2r4'].shape}") # used to calculate c8 from c6
+# Save d3_params to a binary file for direct mapping in C/C++
+with open(f"{os.path.abspath(__file__)}/../params.bin", "wb") as f:
+    for key in d3_params.keys():
+        data = d3_params[key]
+        # Write the shape of the array as metadata
+        f.write(struct.pack("I", len(data.shape)))  # Number of dimensions (32-bit unsigned integer)
+        f.write(struct.pack("I" * len(data.shape), *data.shape))  # Shape
+        # Write the array data
+        f.write(data.astype(np.float32).tobytes())
 
-print(f"parameters for Cl: {d3_params['c6ab'][17][17]}")
-
-c6ab = torch.tensor(d3_params["c6ab"], dtype=torch.float32)
-cn0, cn1, cn2 = c6ab.reshape(-1, 5, 5, 3).split(1, dim=3)
-print(f"cn0: {cn0.shape}, cn1: {cn1.shape}, cn2: {cn2.shape}")

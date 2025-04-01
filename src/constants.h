@@ -1,4 +1,8 @@
 #include <assert.h>
+#include <stddef.h>
+#include <stdlib.h>
+#include <stdio.h>
+#include <stdint.h>
 
 // d3 system parameters
 #define NUM_ELEMENTS 95
@@ -6,13 +10,119 @@
 #define NUM_C6AB_ENTRIES 3 // first entry: C6; second entry: CN of first element; third entry: CN of second element
 
 // constant values for d3 system
-const float c6ab_ref[NUM_ELEMENTS][NUM_ELEMENTS][NUM_REF_C6][NUM_REF_C6][NUM_C6AB_ENTRIES] = {-1}; // table of reference C6 values, -1 means the entry is invalid
-const float r0ab[NUM_ELEMENTS][NUM_ELEMENTS] = {0}; // table of reference cutoff radii between elements
-const float rcov[NUM_ELEMENTS] = {0}; // table of covalent radii of each element
-const float r2r4[NUM_ELEMENTS] = {0}; // table of r2/r4 values of each element, needed for computing C8 from C6.
+float c6ab_ref[NUM_ELEMENTS][NUM_ELEMENTS][NUM_REF_C6][NUM_REF_C6][NUM_C6AB_ENTRIES]; // table of reference C6 values, -1 means the entry is invalid
+float r0ab[NUM_ELEMENTS][NUM_ELEMENTS]; // table of reference cutoff radii between elements
+float rcov[NUM_ELEMENTS]; // table of covalent radii of each element
+float r2r4[NUM_ELEMENTS]; // table of r2/r4 values of each element, needed for computing C8 from C6.
 
 // type definitions
-typedef float_t real_t; // type for real numbers
+typedef float real_t; // type for real numbers
+
+/**
+ * @brief function to initialize the parameters
+ * @note this function reads data from params.bin file and initializes the c6ab_ref, r0ab, rcov, and r2r4 arrays
+ */
+void init_params() {
+    // construct c6ab_ref, r0ab, rcov and r2r4 arrays
+    FILE *file = fopen("params.bin", "rb");
+    if (!file) {
+        fprintf(stderr, "Error: failed to open params.bin\n");
+        exit(EXIT_FAILURE);
+    }
+    // initialize data structures
+    size_t c6ab_ref_size = NUM_ELEMENTS * NUM_ELEMENTS * NUM_REF_C6 * NUM_REF_C6 * NUM_C6AB_ENTRIES * sizeof(real_t);
+    size_t r0ab_size = NUM_ELEMENTS * NUM_ELEMENTS * sizeof(real_t);
+    size_t rcov_size = NUM_ELEMENTS * sizeof(real_t);
+    size_t r2r4_size = NUM_ELEMENTS * sizeof(real_t);
+
+    real_t *c6ab_ref = (real_t *)malloc(c6ab_ref_size);
+    real_t *r0ab = (real_t *)malloc(r0ab_size);
+    real_t *rcov = (real_t *)malloc(rcov_size);
+    real_t *r2r4 = (real_t *)malloc(r2r4_size);
+
+    if (!c6ab_ref || !r0ab || !rcov || !r2r4) {
+        fprintf(stderr, "Error: failed to allocate memory for constants\n");
+        fclose(file);
+        free(c6ab_ref);
+        free(r0ab);
+        free(rcov);
+        free(r2r4);
+        exit(EXIT_FAILURE);
+    }
+
+    // construct c6ab_ref
+    uint32_t num_dimensions;
+    fread(&num_dimensions, sizeof(uint32_t), 1, file);
+
+    if (num_dimensions != 5) {
+        fprintf(stderr, "Error: unexpected number of dimensions in params.bin\n");
+        fclose(file);
+        exit(EXIT_FAILURE);
+    }
+
+    uint32_t dimensions[5];
+    fread(dimensions, sizeof(uint32_t), 5, file);
+
+    if (dimensions[0] != NUM_ELEMENTS || dimensions[1] != NUM_ELEMENTS || 
+        dimensions[2] != NUM_REF_C6 || dimensions[3] != NUM_REF_C6 || 
+        dimensions[4] != NUM_C6AB_ENTRIES) {
+        fprintf(stderr, "Error: unexpected dimensions in params.bin\n");
+        fclose(file);
+        exit(EXIT_FAILURE);
+    }
+
+    fread(c6ab_ref, c6ab_ref_size, 1, file);
+
+    // read r0ab
+    fread(&num_dimensions, sizeof(uint32_t), 1, file);
+    if (num_dimensions != 2) {
+        fprintf(stderr, "Error: unexpected number of dimensions in params.bin\n");
+        fclose(file);
+        exit(EXIT_FAILURE);
+    }
+    fread(dimensions, sizeof(uint32_t), 2, file);
+    if (dimensions[0] != NUM_ELEMENTS || dimensions[1] != NUM_ELEMENTS) {
+        fprintf(stderr, "Error: unexpected dimensions in params.bin\n");
+        fclose(file);
+        exit(EXIT_FAILURE);
+    }
+    // read r0ab
+    fread(r0ab, r0ab_size, 1, file);
+
+    // read rcov
+    fread(&num_dimensions, sizeof(uint32_t), 1, file);
+    if (num_dimensions != 1) {
+        fprintf(stderr, "Error: unexpected number of dimensions in params.bin\n");
+        fclose(file);
+        exit(EXIT_FAILURE);
+    }
+    fread(dimensions, sizeof(uint32_t), 1, file);
+    if (dimensions[0] != NUM_ELEMENTS) {
+        fprintf(stderr, "Error: unexpected dimensions in params.bin\n");
+        fclose(file);
+        exit(EXIT_FAILURE);
+    }
+    // read rcov
+    fread(rcov, rcov_size, 1, file);
+
+    // read r2r4
+    fread(&num_dimensions, sizeof(uint32_t), 1, file);
+    if (num_dimensions != 1) {
+        fprintf(stderr, "Error: unexpected number of dimensions in params.bin\n");
+        fclose(file);
+        exit(EXIT_FAILURE);
+    }
+    fread(dimensions, sizeof(uint32_t), 1, file);
+    if (dimensions[0] != NUM_ELEMENTS) {
+        fprintf(stderr, "Error: unexpected dimensions in params.bin\n");
+        fclose(file);
+        exit(EXIT_FAILURE);
+    }
+    // read r2r4
+    fread(r2r4, r2r4_size, 1, file);
+
+    fclose(file);
+}
 
 typedef struct atom {
     size_t element; // element type of the atom
@@ -49,8 +159,8 @@ typedef struct c6ab_ref {
  * @brief Initialize the c6ab_ref_t object on device.
  * 
  * @param num_elements Number of elements in the system.
- * @param atom_types Array of atom types for the system.
- * @return c6ab_ref_t Initialized c6ab_ref_t object.
+ * @param atom_types Array of atomic numbers for the system.
+ * @return c6ab_ref_t Pointer to initialized c6ab_ref_t object on device.
  * 
  * @note The user must also guarantee that atom_types is a valid array of size num_elements.
  * @note The data constructed is a device pointer and cannot be used at host side.
@@ -117,7 +227,7 @@ typedef struct d3_constant {
  * @note The user must guarantee that the data is freed after use.
  * @note The user must also guarantee that atom_types is a valid array of size num_elements.
  */
-__host__ inline d3_constant_t d3_constant_init(size_t num_elements, size_t *atom_types) {
+__host__ inline d3_constant_t* d3_constant_init(size_t num_elements, size_t *atom_types) {
     d3_constant_t constants;
     constants.num_elements = num_elements;
     size_t *h_atom_types = (size_t *)malloc(num_elements * sizeof(size_t));
@@ -181,4 +291,16 @@ __host__ inline d3_constant_t d3_constant_init(size_t num_elements, size_t *atom
     constants.r2r4 = d_r2r4; // point to device data
     // initialize c6ab_ref_t object
     constants.c6ab_ref = c6ab_ref_init(num_elements, atom_types);
+    // construct a d3_constant_t object on device
+    d3_constant_t *d_constants;
+    cudaMalloc((void **)&d_constants, sizeof(d3_constant_t));
+    // copy the d3_constant_t object to device
+    cudaMemcpy(d_constants, &constants, sizeof(d3_constant_t), cudaMemcpyHostToDevice);
+    // free the host d3_constant_t object
+    free(constants.atom_types);
+    free(constants.r0ab);
+    free(constants.rcov);
+    free(constants.r2r4);
+    free(constants.c6ab_ref); // free the c6ab_ref_t object on host
+    return d_constants; // return the device pointer to the d3_constant_t object
 }
