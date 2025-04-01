@@ -127,24 +127,25 @@ __global__ void compute_dispersion_energy_kernel(device_data_t *data) {
         //      L_{i,j} = \exp(-k_3((CN^A-CN^A_{ref,i})^2 + (CN^B-CN^B_{ref,j})^2))
         real_t Z = 0.0f;
         real_t W = 0.0f;
-        for (size_t i = 0; i < NUM_C6AB_ENTRIES; ++i) {
-            for (size_t j = 0; j < NUM_C6AB_ENTRIES; ++j) {
+        for (size_t i = 0; i < NUM_REF_C6; ++i) {
+            for (size_t j = 0; j < NUM_REF_C6; ++j) {
                 // these entries could be -1.0f if the entries are not valid, but at least one entry should be valid
                 real_t c6_ref = data->constants->c6ab_ref->get(atom_1_type, atom_2_type, i, j, 0);
                 real_t coordination_number_ref_1 = data->constants->c6ab_ref->get(atom_1_type, atom_2_type, i, j, 1);
                 real_t coordination_number_ref_2 = data->constants->c6ab_ref->get(atom_1_type, atom_2_type, i, j, 2);
-                // because of the presence of invalid entries, the L_ij_ref cannot be calculated directly
-                real_t L_ij_ref = expf(-K3 * (powf(coordination_number_1 - coordination_number_ref_1, 2) + powf(coordination_number_2 - coordination_number_ref_2, 2)));
+                // because of the presence of invalid entries, the L_ij cannot be calculated directly
+                real_t L_ij_ref = expf(-K3 * (powf(coordination_number_1 - coordination_number_ref_1, 2) + powf(coordination_number_2 - coordination_number_ref_2, 2))) * 1e5f;// scale it to avoid floating point error
                 // since we need the value $\frac{\sum_{i,j}C_{6,ref}^{A,B}L_{i,j}}{\sum_{i,j}L_{i,j}}$
                 // we can set invalid L_ij to 0.0f and perform the summation in the same loop
                 // invalid entry: have -1.0f in c6_ref, coordination_number_ref_1 and coordination_number_ref_2
-                // se check coordination_number_ref_1 here.
-                real_t L_ij = ((coordination_number_ref_1 - (-1.0f) <= 1e-3f) ? 0.0f : L_ij_ref); // conditional move, no branching, fast!
+                // we check coordination_number_ref_1 here.
+                real_t L_ij = ((coordination_number_ref_1 - (-1.0f) <= 1e-5f) ? 0.0f : L_ij_ref); // conditional move, no branching, fast!
                 Z += c6_ref * L_ij;
                 W += L_ij;
             }
         }
         real_t c6_ab = (W > 0.0f) ? Z / W : 0.0f; // avoid division by zero
+        printf("c6_ab for atom %ld and %ld is %f\n", atom_1_index, atom_2_index, c6_ab);
         // calculate c8_ab, which is obtained by $C_8^{AB} = 3C_6^{AB}\sqrt{Q^AQ^B}$
         // $\sqrt{Q}$ is precomputed and stored in data.constants.r2r4
         real_t r2r4_1 = data->constants->r2r4[atom_1_type];
@@ -154,14 +155,16 @@ __global__ void compute_dispersion_energy_kernel(device_data_t *data) {
         real_t cutoff_radius = data->constants->r0ab[atom_1_type][atom_2_type];
         // calculate the dampling function
         // see Grimme et al. 2010, eq 4
-        real_t f_dn_6 = 1/(1+6.0f*powf(distance/(SR_6*cutoff_radius), ALPHA_N(6.0f)));
-        real_t f_dn_8 = 1/(1+6.0f*powf(distance/(SR_8*cutoff_radius), ALPHA_N(8.0f)));
+        real_t f_dn_6 = 1/(1+6.0f*powf(distance/(SR_6*cutoff_radius), -ALPHA_N(6.0f)));
+        printf("f_dn_6 for atom %ld and %ld is %f\n", atom_1_index, atom_2_index, f_dn_6);
+        real_t f_dn_8 = 1/(1+6.0f*powf(distance/(SR_8*cutoff_radius), -ALPHA_N(8.0f)));
         // calculate the dispersion energy
         // see Grimme et al. 2010, eq 3
         real_t dispersion_energy_6 = S6*(c6_ab/powf(distance, 6.0f))*f_dn_6;
         real_t dispersion_energy_8 = S8*(c8_ab/powf(distance, 8.0f))*f_dn_8;
         // the total dispersion energy is the sum of the two contributions
         real_t dispersion_energy = dispersion_energy_6 + dispersion_energy_8;
+        printf("dispersion energy for atom %ld and %ld is %f\n", atom_1_index, atom_2_index, dispersion_energy);
         // store the result in the results array
         atomicAdd(&data->results[atom_1_index].energy, dispersion_energy); // increment the energy for atom 1
         atomicAdd(&data->results[atom_2_index].energy, dispersion_energy); // increment the energy for atom 2
@@ -286,7 +289,8 @@ __host__ void compute_dispersion_energy(real_t atoms[][4], size_t length) {
     CHECK_CUDA(cudaMemcpy(d_data, &h_data, sizeof(device_data_t), cudaMemcpyHostToDevice));
 
     // launch the kernel
-    size_t num_blocks = (length + BLOCK_SIZE - 1) / BLOCK_SIZE; // number of blocks needed to cover all atoms
+    size_t num_pairs = length * (length - 1) / 2; // number of pairs of atoms
+    size_t num_blocks = (num_pairs + BLOCK_SIZE - 1) / BLOCK_SIZE; // number of blocks needed to cover all atoms
     num_blocks = (num_blocks > MAX_BLOCKS) ? MAX_BLOCKS : num_blocks; // limit the number of blocks to MAX_BLOCKS
     compute_dispersion_energy_kernel<<<num_blocks, BLOCK_SIZE>>>(d_data);
     CHECK_CUDA(cudaDeviceSynchronize()); // synchronize the device to ensure all threads are finished
