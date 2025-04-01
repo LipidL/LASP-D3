@@ -4,3 +4,4 @@ data/parameters.o
 data/parameters.h
 src/params.bin
 src/a.out
+data/params.bin

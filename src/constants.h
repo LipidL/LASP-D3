@@ -29,16 +29,6 @@ void init_params() {
         fprintf(stderr, "Error: failed to open params.bin\n");
         exit(EXIT_FAILURE);
     }
-    // initialize data structures
-    size_t c6ab_ref_size = NUM_ELEMENTS * NUM_ELEMENTS * NUM_REF_C6 * NUM_REF_C6 * NUM_C6AB_ENTRIES * sizeof(real_t);
-    size_t r0ab_size = NUM_ELEMENTS * NUM_ELEMENTS * sizeof(real_t);
-    size_t rcov_size = NUM_ELEMENTS * sizeof(real_t);
-    size_t r2r4_size = NUM_ELEMENTS * sizeof(real_t);
-
-    real_t *c6ab_ref = (real_t *)malloc(c6ab_ref_size);
-    real_t *r0ab = (real_t *)malloc(r0ab_size);
-    real_t *rcov = (real_t *)malloc(rcov_size);
-    real_t *r2r4 = (real_t *)malloc(r2r4_size);
 
     if (!c6ab_ref || !r0ab || !rcov || !r2r4) {
         fprintf(stderr, "Error: failed to allocate memory for constants\n");
@@ -71,7 +61,7 @@ void init_params() {
         exit(EXIT_FAILURE);
     }
 
-    fread(c6ab_ref, c6ab_ref_size, 1, file);
+    fread(c6ab_ref, sizeof(real_t), NUM_ELEMENTS * NUM_ELEMENTS * NUM_REF_C6 * NUM_REF_C6 * NUM_C6AB_ENTRIES, file);
 
     // read r0ab
     fread(&num_dimensions, sizeof(uint32_t), 1, file);
@@ -87,7 +77,7 @@ void init_params() {
         exit(EXIT_FAILURE);
     }
     // read r0ab
-    fread(r0ab, r0ab_size, 1, file);
+    fread(r0ab, sizeof(real_t), NUM_ELEMENTS * NUM_ELEMENTS, file);
 
     // read rcov
     fread(&num_dimensions, sizeof(uint32_t), 1, file);
@@ -103,7 +93,7 @@ void init_params() {
         exit(EXIT_FAILURE);
     }
     // read rcov
-    fread(rcov, rcov_size, 1, file);
+    fread(rcov, sizeof(real_t), NUM_ELEMENTS, file);
 
     // read r2r4
     fread(&num_dimensions, sizeof(uint32_t), 1, file);
@@ -119,7 +109,7 @@ void init_params() {
         exit(EXIT_FAILURE);
     }
     // read r2r4
-    fread(r2r4, r2r4_size, 1, file);
+    fread(r2r4, sizeof(real_t), NUM_ELEMENTS, file);
 
     fclose(file);
 }
@@ -167,7 +157,11 @@ typedef struct c6ab_ref {
  */
 __host__ inline c6ab_ref_t* c6ab_ref_init(size_t num_elements, size_t *atom_types) {
     c6ab_ref_t ref;
-    ref.data = (real_t *)malloc(num_elements * num_elements * NUM_REF_C6 * NUM_REF_C6 * NUM_C6AB_ENTRIES * sizeof(real_t));
+    real_t *h_data = (real_t *)malloc(num_elements * num_elements * NUM_REF_C6 * NUM_REF_C6 * NUM_C6AB_ENTRIES * sizeof(real_t));
+    if (!h_data) {
+        fprintf(stderr, "Error: failed to allocate memory for c6ab_ref_t\n");
+        exit(EXIT_FAILURE);
+    }
     ref.stride1 = num_elements * NUM_REF_C6 * NUM_REF_C6 * NUM_C6AB_ENTRIES;
     ref.stride2 = NUM_REF_C6 * NUM_REF_C6 * NUM_C6AB_ENTRIES;
     ref.stride3 = NUM_REF_C6 * NUM_C6AB_ENTRIES;
@@ -181,9 +175,9 @@ __host__ inline c6ab_ref_t* c6ab_ref_init(size_t num_elements, size_t *atom_type
             for (size_t k = 0; k < NUM_REF_C6; ++k) {
                 for (size_t l = 0; l < NUM_REF_C6; ++l) {
                     size_t index = i * ref.stride1 + j * ref.stride2 + k * ref.stride3 + l * ref.stride4;
-                    ref.data[index] = c6ab_ref[element_i][element_j][k][l][0]; // C6 value
-                    ref.data[index + 1] = c6ab_ref[element_i][element_j][k][l][1]; // CN of first element
-                    ref.data[index + 2] = c6ab_ref[element_i][element_j][k][l][2]; // CN of second element
+                    h_data[index] = c6ab_ref[element_i][element_j][k][l][0]; // C6 value
+                    h_data[index + 1] = c6ab_ref[element_i][element_j][k][l][1]; // CN of first element
+                    h_data[index + 2] = c6ab_ref[element_i][element_j][k][l][2]; // CN of second element
                 }
             }
         }
@@ -192,7 +186,7 @@ __host__ inline c6ab_ref_t* c6ab_ref_init(size_t num_elements, size_t *atom_type
     real_t *d_data;
     cudaMalloc((void **)&d_data, num_elements * num_elements * NUM_REF_C6 * NUM_REF_C6 * NUM_C6AB_ENTRIES * sizeof(real_t));
     // copy data to device
-    cudaMemcpy(d_data, ref.data, num_elements * num_elements * NUM_REF_C6 * NUM_REF_C6 * NUM_C6AB_ENTRIES * sizeof(real_t), cudaMemcpyHostToDevice);
+    cudaMemcpy(d_data, h_data, num_elements * num_elements * NUM_REF_C6 * NUM_REF_C6 * NUM_C6AB_ENTRIES * sizeof(real_t), cudaMemcpyHostToDevice);
     // constrct a c6ab_ref_t object on device
     ref.data = d_data; // point to device data
     c6ab_ref_t *d_ref;
@@ -200,7 +194,7 @@ __host__ inline c6ab_ref_t* c6ab_ref_init(size_t num_elements, size_t *atom_type
     // copy the c6ab_ref_t object to device
     cudaMemcpy(d_ref, &ref, sizeof(c6ab_ref_t), cudaMemcpyHostToDevice);
     // free the host data
-    free(ref.data);
+    free(h_data);
     return d_ref;
 }
 
@@ -242,11 +236,11 @@ __host__ inline d3_constant_t* d3_constant_init(size_t num_elements, size_t *ato
     free(h_atom_types);
     constants.atom_types = d_atom_types; // point to device data
 
-    real_t **r0ab = (real_t **)malloc(num_elements * sizeof(real_t *));
+    real_t **h_r0ab = (real_t **)malloc(num_elements * sizeof(real_t *));
     for (size_t i = 0; i < num_elements; ++i) {
-        r0ab[i] = (real_t *)malloc(num_elements * sizeof(real_t));
+        h_r0ab[i] = (real_t *)malloc(num_elements * sizeof(real_t));
         for (size_t j = 0; j < num_elements; ++j) {
-            r0ab[i][j] = r0ab[atom_types[i]][atom_types[j]];
+            h_r0ab[i][j] = r0ab[atom_types[i]][atom_types[j]];
         }
     }
     // initialize r0ab array on device
@@ -257,37 +251,32 @@ __host__ inline d3_constant_t* d3_constant_init(size_t num_elements, size_t *ato
         cudaMalloc((void **)&d_r0ab_i, num_elements * sizeof(real_t));
         cudaMemcpy(d_r0ab_i, r0ab[i], num_elements * sizeof(real_t), cudaMemcpyHostToDevice);
         cudaMemcpy(d_r0ab + i, &d_r0ab_i, sizeof(real_t *), cudaMemcpyHostToDevice);
-        free(r0ab[i]);
+        free(h_r0ab[i]);
     }
-    // free the host r0ab array
-    for (size_t i = 0; i < num_elements; ++i) {
-        free(r0ab[i]);
-    }
-    free(r0ab);
+    free(h_r0ab);
     constants.r0ab = d_r0ab; // point to device data
 
-    real_t *rcov = (real_t *)malloc(num_elements * sizeof(real_t));
+    real_t *h_rcov = (real_t *)malloc(num_elements * sizeof(real_t));
     for (size_t i = 0; i < num_elements; ++i) {
-        rcov[i] = rcov[atom_types[i]];
+        h_rcov[i] = rcov[atom_types[i]];
     }
     // initialize rcov array on device
     real_t *d_rcov;
     cudaMalloc((void **)&d_rcov, num_elements * sizeof(real_t));
-    cudaMemcpy(d_rcov, rcov, num_elements * sizeof(real_t), cudaMemcpyHostToDevice);
+    cudaMemcpy(d_rcov, h_rcov, num_elements * sizeof(real_t), cudaMemcpyHostToDevice);
     // free the host rcov array
-    free(rcov);
+    free(h_rcov);
     constants.rcov = d_rcov; // point to device data
-
-    real_t *r2r4 = (real_t *)malloc(num_elements * sizeof(real_t));
+    real_t *h_r2r4 = (real_t *)malloc(num_elements * sizeof(real_t));
     for (size_t i = 0; i < num_elements; ++i) {
-        r2r4[i] = r2r4[atom_types[i]];
+        h_r2r4[i] = r2r4[atom_types[i]];
     }
     // initialize r2r4 array on device
     real_t *d_r2r4;
     cudaMalloc((void **)&d_r2r4, num_elements * sizeof(real_t));
     cudaMemcpy(d_r2r4, r2r4, num_elements * sizeof(real_t), cudaMemcpyHostToDevice);
     // free the host r2r4 array
-    free(r2r4);
+    free(h_r2r4);
     constants.r2r4 = d_r2r4; // point to device data
     // initialize c6ab_ref_t object
     constants.c6ab_ref = c6ab_ref_init(num_elements, atom_types);
@@ -296,11 +285,5 @@ __host__ inline d3_constant_t* d3_constant_init(size_t num_elements, size_t *ato
     cudaMalloc((void **)&d_constants, sizeof(d3_constant_t));
     // copy the d3_constant_t object to device
     cudaMemcpy(d_constants, &constants, sizeof(d3_constant_t), cudaMemcpyHostToDevice);
-    // free the host d3_constant_t object
-    free(constants.atom_types);
-    free(constants.r0ab);
-    free(constants.rcov);
-    free(constants.r2r4);
-    free(constants.c6ab_ref); // free the c6ab_ref_t object on host
     return d_constants; // return the device pointer to the d3_constant_t object
 }

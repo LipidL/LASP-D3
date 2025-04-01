@@ -15,11 +15,12 @@
         exit(EXIT_FAILURE); \
     } \
 } while (0)
+#define debug(...) fprintf(stderr, __VA_ARGS__)
 #else
 #define CHECK_CUDA(call) call
+#define debug(...)
 #endif
 
-#define debug(...) fprintf(stderr, __VA_ARGS__)
 
 // global parameters
 // cuda kernel launch parameters
@@ -202,6 +203,7 @@ __host__ int32_t find(size_t *elements, size_t length, size_t element){
  */
 __host__ void compute_dispersion_energy(real_t atoms[][4], size_t length) {
     // allocate memory for device_data_t
+    debug("starting compute_dispersion_energy...\n");
     device_data_t h_data;
     h_data.num_atoms = length;
     // allocate memory for atoms
@@ -276,6 +278,7 @@ __host__ void compute_dispersion_energy(real_t atoms[][4], size_t length) {
     CHECK_CUDA(cudaMemset(d_coordination_numbers, 0, length * sizeof(real_t))); // initialize the coordination numbers array to zero
     h_data.coordination_numbers = d_coordination_numbers;
     // initialize constants
+    printf("sorted_elements is at %p\n", sorted_elements);
     h_data.constants = d3_constant_init(num_elements, sorted_elements); // initialize the constants
     // initialize the device data
     device_data_t *d_data;
@@ -326,9 +329,15 @@ int main()
         {4, 3.0f, 3.0f, 3.0f},
         {5, 4.0f, 4.0f, 4.0f}
     };
-
+    debug("Computing dispersion energy for %zu atoms...\n", sizeof(atoms)/sizeof(atoms[0]));
     // initialize parameters
     init_params();
+    debug("c6ab_ref is at %p\n", c6ab_ref);
+    debug("c6ab between C andC: %f\n", c6ab_ref[6][6][0][0][0]);
+    debug("r0ab between C and C: %f\n", r0ab[6][6]);
+    debug("rcov of C: %f\n", rcov[6]);
+    debug("r2r4 of C: %f\n", r2r4[6]);
+    debug("Computing dispersion energy...\n");
 
     compute_dispersion_energy(atoms, 5);
     return 0;
