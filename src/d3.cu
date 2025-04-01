@@ -145,7 +145,7 @@ __global__ void compute_dispersion_energy_kernel(device_data_t *data) {
             }
         }
         real_t c6_ab = (W > 0.0f) ? Z / W : 0.0f; // avoid division by zero
-        printf("c6_ab for atom %ld and %ld is %f\n", atom_1_index, atom_2_index, c6_ab);
+        // printf("c6_ab for atom %ld and %ld is %f\n", atom_1_index, atom_2_index, c6_ab);
         // calculate c8_ab, which is obtained by $C_8^{AB} = 3C_6^{AB}\sqrt{Q^AQ^B}$
         // $\sqrt{Q}$ is precomputed and stored in data.constants.r2r4
         real_t r2r4_1 = data->constants->r2r4[atom_1_type];
@@ -156,7 +156,7 @@ __global__ void compute_dispersion_energy_kernel(device_data_t *data) {
         // calculate the dampling function
         // see Grimme et al. 2010, eq 4
         real_t f_dn_6 = 1/(1+6.0f*powf(distance/(SR_6*cutoff_radius), -ALPHA_N(6.0f)));
-        printf("f_dn_6 for atom %ld and %ld is %f\n", atom_1_index, atom_2_index, f_dn_6);
+        // printf("f_dn_6 for atom %ld and %ld is %f\n", atom_1_index, atom_2_index, f_dn_6);
         real_t f_dn_8 = 1/(1+6.0f*powf(distance/(SR_8*cutoff_radius), -ALPHA_N(8.0f)));
         // calculate the dispersion energy
         // see Grimme et al. 2010, eq 3
@@ -164,7 +164,7 @@ __global__ void compute_dispersion_energy_kernel(device_data_t *data) {
         real_t dispersion_energy_8 = S8*(c8_ab/powf(distance, 8.0f))*f_dn_8;
         // the total dispersion energy is the sum of the two contributions
         real_t dispersion_energy = dispersion_energy_6 + dispersion_energy_8;
-        printf("dispersion energy for atom %ld and %ld is %f\n", atom_1_index, atom_2_index, dispersion_energy);
+        // printf("dispersion energy for atom %ld and %ld is %f\n", atom_1_index, atom_2_index, dispersion_energy);
         // store the result in the results array
         atomicAdd(&data->results[atom_1_index].energy, dispersion_energy); // increment the energy for atom 1
         atomicAdd(&data->results[atom_2_index].energy, dispersion_energy); // increment the energy for atom 2
@@ -326,13 +326,18 @@ __host__ void compute_dispersion_energy(real_t atoms[][4], size_t length) {
 int main()
 {
     // example usage of the compute_dispersion_energy function
-    real_t atoms[5][4] = {
-        {1, 0.0f, 0.0f, 0.0f},
-        {2, 1.0f, 1.0f, 1.0f},
-        {3, 2.0f, 2.0f, 2.0f},
-        {4, 3.0f, 3.0f, 3.0f},
-        {5, 4.0f, 4.0f, 4.0f}
-    };
+    real_t atoms[1000][4];
+    // fill the atoms array with Po element
+    for (size_t i = 0; i < 10; ++i) {
+        for (size_t j = 0; j < 10; ++j) {
+            for(size_t k = 0; k < 10; ++k) {
+                atoms[i*100+j*10+k][0] = 84; // atomic number of Po
+                atoms[i*100+j*10+k][1] = (real_t)i*3.352; // x coordinate
+                atoms[i*100+j*10+k][2] = (real_t)j*3.352; // y coordinate
+                atoms[i*100+j*10+k][3] = (real_t)k*3.352; // z coordinate
+            }
+        }
+    }
     debug("Computing dispersion energy for %zu atoms...\n", sizeof(atoms)/sizeof(atoms[0]));
     // initialize parameters
     init_params();
@@ -343,6 +348,6 @@ int main()
     debug("r2r4 of C: %f\n", r2r4[6]);
     debug("Computing dispersion energy...\n");
 
-    compute_dispersion_energy(atoms, 5);
+    compute_dispersion_energy(atoms, 1000);
     return 0;
 }

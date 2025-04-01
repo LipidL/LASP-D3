@@ -26,5 +26,5 @@ with open(f"{os.path.abspath(__file__)}/../params.bin", "wb") as f:
 
 c6ab = torch.tensor(d3_params["c6ab"])
 data = d3_params["c6ab"]
-print(f"c6ab between H and Li: {data[1, 3]}")
+print(f"c6ab between Po: {data[84, 84]}")
 
