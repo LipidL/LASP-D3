@@ -26,8 +26,6 @@
 // cuda kernel launch parameters
 #define BLOCK_SIZE 256
 #define MAX_BLOCKS 65535
-#define MAX_THREADS 1024
-#define MAX_THREADS_PER_BLOCK 1024
 #define MAX_ELEMENTS 118
 
 // constants used in the simulation
@@ -82,10 +80,12 @@ __global__ void compute_dispersion_energy_kernel(device_data_t *data) {
         // where R(i) is the total number of pairs of atoms in the triangular matrix before row i.
         // a closed form of i can be obtained by solving equation:
         // i^2 + (2N-1)i - 2 * pair_index = 0
+        // the algorighm is good, but the precision is not good enough for large N.
         float discriminant = (2.0f * num_atoms - 1.0f) * (2.0f * num_atoms - 1.0f) - 8.0f * pair_index;
         size_t atom_1_index = (size_t)floorf((2.0f * num_atoms - 1.0f - sqrtf(discriminant)) / 2.0f);
         size_t row_start = atom_1_index * (2 * num_atoms - atom_1_index - 1) / 2;
         size_t atom_2_index = pair_index - row_start + atom_1_index + 1;
+        assert(atom_1_index != atom_2_index); // make sure the indices are not equal
         // find the proper index in the atom_types array
         // this index is further used to access entries in data.constants
         size_t atom_1_type = data->atom_types[atom_1_index];
@@ -166,6 +166,18 @@ __global__ void compute_dispersion_energy_kernel(device_data_t *data) {
         real_t dispersion_energy = dispersion_energy_6 + dispersion_energy_8;
         // printf("dispersion energy for atom %ld and %ld is %f\n", atom_1_index, atom_2_index, dispersion_energy);
         // store the result in the results array
+        // if dispersion_energy is NaN, print some debug information
+        if (isnan(dispersion_energy) && atom_1_index == 1) {
+            printf("Error: dispersion energy is NaN for atom %ld and %ld\n", atom_1_index, atom_2_index);
+            printf("atom 1: %ld %f %f %f\n", atom_1_type, atom_1.x, atom_1.y, atom_1.z);
+            printf("atom 2: %ld %f %f %f\n", atom_2_type, atom_2.x, atom_2.y, atom_2.z);
+            printf("distance: %f\n", distance);
+            printf("c6_ab: %f\n", c6_ab);
+            printf("c8_ab: %f\n", c8_ab);
+            printf("cutoff_radius: %f\n", cutoff_radius);
+            printf("coordination_number_1: %f\n", coordination_number_1);
+            printf("coordination_number_2: %f\n", coordination_number_2);
+        }
         atomicAdd(&data->results[atom_1_index].energy, dispersion_energy); // increment the energy for atom 1
         atomicAdd(&data->results[atom_2_index].energy, dispersion_energy); // increment the energy for atom 2
     }
@@ -223,7 +235,7 @@ __host__ void compute_dispersion_energy(real_t atoms[][4], size_t length) {
         h_atoms[i].y = atoms[i][2];
         h_atoms[i].z = atoms[i][3];
         // the element cannot exceed MAX_ELEMENTS
-        assert(h_atoms[i].element <= MAX_ELEMENTS);
+        assert(h_atoms[i].element <= MAX_ELEMENTS); // if you toggle this assertion, check if the length exceeds actual number of atoms
         elements_presence[h_atoms[i].element] = 1; // mark the element as present in the array
         maximum_atomic_number = (h_atoms[i].element > maximum_atomic_number) ? h_atoms[i].element : maximum_atomic_number;
     }
@@ -289,9 +301,10 @@ __host__ void compute_dispersion_energy(real_t atoms[][4], size_t length) {
     CHECK_CUDA(cudaMemcpy(d_data, &h_data, sizeof(device_data_t), cudaMemcpyHostToDevice));
 
     // launch the kernel
+    int num_multiprocessors;
+    cudaDeviceGetAttribute(&num_multiprocessors, cudaDevAttrMultiProcessorCount, 0);
     size_t num_pairs = length * (length - 1) / 2; // number of pairs of atoms
-    size_t num_blocks = (num_pairs + BLOCK_SIZE - 1) / BLOCK_SIZE; // number of blocks needed to cover all atoms
-    num_blocks = (num_blocks > MAX_BLOCKS) ? MAX_BLOCKS : num_blocks; // limit the number of blocks to MAX_BLOCKS
+    size_t num_blocks = num_multiprocessors;
     compute_dispersion_energy_kernel<<<num_blocks, BLOCK_SIZE>>>(d_data);
     CHECK_CUDA(cudaDeviceSynchronize()); // synchronize the device to ensure all threads are finished
     result_t *h_results = (result_t *)malloc(length * sizeof(result_t));
@@ -309,10 +322,14 @@ __host__ void compute_dispersion_energy(real_t atoms[][4], size_t length) {
     }
     // copy the results back to host memory
     CHECK_CUDA(cudaMemcpy(h_results, d_results, length * sizeof(result_t), cudaMemcpyDeviceToHost));
+    real_t total_energy = 0.0f;
     for (size_t i = 0; i < length; ++i) {
         // print the results
         printf("Atom %zu: energy = %f\n", i, h_results[i].energy);
+        // accumulate the total energy
+        total_energy += h_results[i].energy;
     }
+    printf("Total energy = %f\n", total_energy);
     // free the device memory
     CHECK_CUDA(cudaFree(d_atoms));
     CHECK_CUDA(cudaFree(d_atom_types));
@@ -326,15 +343,16 @@ __host__ void compute_dispersion_energy(real_t atoms[][4], size_t length) {
 int main()
 {
     // example usage of the compute_dispersion_energy function
-    real_t atoms[1000][4];
+    real_t atoms[5000][4];
+    real_t angstron_to_bohr = 1/0.529f; // angstron to bohr conversion factor
     // fill the atoms array with Po element
-    for (size_t i = 0; i < 10; ++i) {
+    for (size_t i = 0; i < 50; ++i) {
         for (size_t j = 0; j < 10; ++j) {
             for(size_t k = 0; k < 10; ++k) {
                 atoms[i*100+j*10+k][0] = 84; // atomic number of Po
-                atoms[i*100+j*10+k][1] = (real_t)i*3.352; // x coordinate
-                atoms[i*100+j*10+k][2] = (real_t)j*3.352; // y coordinate
-                atoms[i*100+j*10+k][3] = (real_t)k*3.352; // z coordinate
+                atoms[i*100+j*10+k][1] = (real_t)i*3.352*angstron_to_bohr; // x coordinate
+                atoms[i*100+j*10+k][2] = (real_t)j*3.352*angstron_to_bohr; // y coordinate
+                atoms[i*100+j*10+k][3] = (real_t)k*3.352*angstron_to_bohr; // z coordinate
             }
         }
     }
@@ -348,6 +366,6 @@ int main()
     debug("r2r4 of C: %f\n", r2r4[6]);
     debug("Computing dispersion energy...\n");
 
-    compute_dispersion_energy(atoms, 1000);
+    compute_dispersion_energy(atoms, 5000);
     return 0;
 }
