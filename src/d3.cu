@@ -77,14 +77,21 @@ __global__ void compute_dispersion_energy_kernel(device_data_t *data) {
     for (size_t pair_index = thread_id; pair_index < total_interactions; pair_index += num_threads) {
         // "row" index i is computed by solving the inequality:
         // R(i) <= pair_index < R(i+1)
-        // where R(i) is the total number of pairs of atoms in the triangular matrix before row i.
-        // a closed form of i can be obtained by solving equation:
-        // i^2 + (2N-1)i - 2 * pair_index = 0
-        // the algorighm is good, but the precision is not good enough for large N.
-        float discriminant = (2.0f * num_atoms - 1.0f) * (2.0f * num_atoms - 1.0f) - 8.0f * pair_index;
-        size_t atom_1_index = (size_t)floorf((2.0f * num_atoms - 1.0f - sqrtf(discriminant)) / 2.0f);
-        size_t row_start = atom_1_index * (2 * num_atoms - atom_1_index - 1) / 2;
-        size_t atom_2_index = pair_index - row_start + atom_1_index + 1;
+        // where R(i) is the total number of pairs of atoms in the triangular matrix before row i, i.e. i*(i-1)/2.
+        // expanding the inequality gives us:
+        // i^2 - i - 2*pair_index <= 0
+        // consider the equality:
+        // i^2 - i - 2*pair_index = 0
+        // the positive solution is:
+        // i' = (1 + sqrt(1 + 8*pair_index)) / 2
+        // i' is a float that lies between i and i+1, so i is acquired by flooring i'.
+        // the column index can then be acquired by solving the equation
+        // pair_index = i*(i-1)/2 + j, where j is the column index.
+        // this gives us:
+        // j = pair_index - i*(i-1)/2
+        size_t atom_1_index = (size_t)floorf((1.0f + sqrtf(1.0f + 8.0f * pair_index)) / 2.0f); // row index
+        size_t atom_2_index = pair_index - atom_1_index * (atom_1_index - 1) / 2; // column index
+        // the atom_1_index is the index of the first atom in the pair, and atom_2_index is the index of the second atom in the pair
         assert(atom_1_index != atom_2_index); // make sure the indices are not equal
         // find the proper index in the atom_types array
         // this index is further used to access entries in data.constants
