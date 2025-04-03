@@ -73,7 +73,7 @@ __global__ void compute_dispersion_energy_kernel(device_data_t *data) {
     // identify the atom pair this thread is responsible for
     if (thread_id >= total_interactions) {
         // we hope this will never happen, but if it does, we need to return
-        printf("thread_id: %ld, total_interactions: %ld\n", thread_id, total_interactions);
+        printf("thread_id: %llu, total_interactions: %llu\n", thread_id, total_interactions);
         return; // thread is out of bounds
     }
 
@@ -155,11 +155,14 @@ __global__ void compute_dispersion_energy_kernel(device_data_t *data) {
         for (size_t i = 0; i < NUM_REF_C6; ++i) {
             for (size_t j = 0; j < NUM_REF_C6; ++j) {
                 // these entries could be -1.0f if the entries are not valid, but at least one entry should be valid
-                size_t index = atom_1_type * data->num_elements * NUM_REF_C6 * NUM_REF_C6  * NUM_C6AB_ENTRIES + atom_2_type * NUM_REF_C6 * NUM_REF_C6 * NUM_C6AB_ENTRIES + i * NUM_REF_C6 * NUM_C6AB_ENTRIES + j * NUM_C6AB_ENTRIES; // gpu might give wrong value, I don't know why yet...
+                size_t stride_1 = data->num_elements * NUM_REF_C6 * NUM_REF_C6  * NUM_C6AB_ENTRIES;
+                size_t stride_2 = NUM_REF_C6 * NUM_REF_C6  * NUM_C6AB_ENTRIES;
+                size_t stride_3 = NUM_REF_C6  * NUM_C6AB_ENTRIES;
+                size_t stride_4 = NUM_C6AB_ENTRIES;
+                size_t index = atom_1_type * stride_1 + atom_2_type * stride_2 + i * stride_3 + j * stride_4; // gpu might give wrong value, I don't know why yet...
                 real_t c6_ref = data->constants->c6ab_ref->data[index + 0];
                 real_t coordination_number_ref_1 = data->constants->c6ab_ref->data[index + 1];
                 real_t coordination_number_ref_2 = data->constants->c6ab_ref->data[index + 2];
-                printf("atoms: (%ld,%ld), i: %ld, j: %ld, c6_ref: %f, coordination_number_ref_1: %f, coordination_number_ref_2: %f, index is %ld\n",atom_1_type, atom_2_type,i, j, c6_ref, coordination_number_ref_1, coordination_number_ref_2, index);
                 // because of the presence of invalid entries, the L_ij cannot be calculated directly
                 real_t L_ij_ref = expf(-K3 * (powf(coordination_number_1 - coordination_number_ref_1, 2) + powf(coordination_number_2 - coordination_number_ref_2, 2))) * 1e5f;// scale it to avoid floating point error
                 // since we need the value $\frac{\sum_{i,j}C_{6,ref}^{A,B}L_{i,j}}{\sum_{i,j}L_{i,j}}$
@@ -172,7 +175,6 @@ __global__ void compute_dispersion_energy_kernel(device_data_t *data) {
             }
         }
         real_t c6_ab = (W > 0.0f) ? Z / W : 0.0f; // avoid division by zero
-        // printf("c6_ab for atom %ld and %ld is %f\n", atom_1_index, atom_2_index, c6_ab);
         // calculate c8_ab, which is obtained by $C_8^{AB} = 3C_6^{AB}\sqrt{Q^AQ^B}$
         // $\sqrt{Q}$ is precomputed and stored in data.constants.r2r4
         real_t r2r4_1 = data->constants->r2r4[atom_1_type];
@@ -183,7 +185,6 @@ __global__ void compute_dispersion_energy_kernel(device_data_t *data) {
         // calculate the dampling function
         // see Grimme et al. 2010, eq 4
         real_t f_dn_6 = 1/(1+6.0f*powf(distance/(SR_6*cutoff_radius), -ALPHA_N(6.0f)));
-        // printf("f_dn_6 for atom %ld and %ld is %f\n", atom_1_index, atom_2_index, f_dn_6);
         real_t f_dn_8 = 1/(1+6.0f*powf(distance/(SR_8*cutoff_radius), -ALPHA_N(8.0f)));
         // calculate the dispersion energy
         // see Grimme et al. 2010, eq 3
@@ -191,13 +192,12 @@ __global__ void compute_dispersion_energy_kernel(device_data_t *data) {
         real_t dispersion_energy_8 = S8*(c8_ab/powf(distance, 8.0f))*f_dn_8;
         // the total dispersion energy is the sum of the two contributions
         real_t dispersion_energy = dispersion_energy_6 + dispersion_energy_8;
-        // printf("dispersion energy for atom %ld and %ld is %f\n", atom_1_index, atom_2_index, dispersion_energy);
         // store the result in the results array
         // if dispersion_energy is NaN, print some debug information
         if (isnan(dispersion_energy) && atom_1_index == 1) {
-            printf("Error: dispersion energy is NaN for atom %ld and %ld\n", atom_1_index, atom_2_index);
-            printf("atom 1: %ld %f %f %f\n", atom_1_type, atom_1.x, atom_1.y, atom_1.z);
-            printf("atom 2: %ld %f %f %f\n", atom_2_type, atom_2.x, atom_2.y, atom_2.z);
+            printf("Error: dispersion energy is NaN for atom %llu and %llu\n", atom_1_index, atom_2_index);
+            printf("atom 1: %llu %f %f %f\n", atom_1_type, atom_1.x, atom_1.y, atom_1.z);
+            printf("atom 2: %llu %f %f %f\n", atom_2_type, atom_2.x, atom_2.y, atom_2.z);
             printf("distance: %f\n", distance);
             printf("c6_ab: %f\n", c6_ab);
             printf("c8_ab: %f\n", c8_ab);
