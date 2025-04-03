@@ -89,12 +89,19 @@ __global__ void compute_dispersion_energy_kernel(device_data_t *data) {
         // pair_index = i*(i-1)/2 + j, where j is the column index.
         // this gives us:
         // j = pair_index - i*(i-1)/2
-        size_t atom_1_index = (size_t)floorf((1.0f + sqrtf(1.0f + 8.0f * pair_index)) / 2.0f); // row index
+        size_t atom_1_index_candidate = (size_t)floorf((1.0f + sqrtf(1.0f + 8.0f * pair_index)) / 2.0f); // this candidate could be i or i+1 due to floating point error
+        size_t atom_1_index = (atom_1_index_candidate * (1-atom_1_index_candidate)/ 2 <= pair_index) ? atom_1_index_candidate : atom_1_index_candidate - 1; // this is the corrent index, validated by data/test.c for 5-5000 atoms.
+        assert(atom_1_index < num_atoms); // make sure the index is in bounds
+        if(atom_1_index*(atom_1_index-1) > 2*pair_index){
+            printf("pair_index %ld, atom_1_index %ld; atom_1_index*(atom_1_index-1)/2: %ld\n", pair_index, atom_1_index, atom_1_index*(atom_1_index-1)/2);
+        }
+        assert(atom_1_index*(atom_1_index-1) <= 2*pair_index); // make sure the index is in bounds
         size_t atom_2_index = pair_index - atom_1_index * (atom_1_index - 1) / 2; // column index
         // the atom_1_index is the index of the first atom in the pair, and atom_2_index is the index of the second atom in the pair
         assert(atom_1_index != atom_2_index); // make sure the indices are not equal
         // find the proper index in the atom_types array
         // this index is further used to access entries in data.constants
+        assert(atom_1_index < num_atoms && atom_2_index < num_atoms); // make sure the indices are in bounds
         size_t atom_1_type = data->atom_types[atom_1_index];
         size_t atom_2_type = data->atom_types[atom_2_index];
         atom_t atom_1 = data->atoms[atom_1_index];
