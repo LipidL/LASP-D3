@@ -90,18 +90,17 @@ __global__ void compute_dispersion_energy_kernel(device_data_t *data) {
         // this gives us:
         // j = pair_index - i*(i-1)/2
         size_t atom_1_index_candidate = (size_t)floorf((1.0f + sqrtf(1.0f + 8.0f * pair_index)) / 2.0f); // this candidate could be i or i+1 due to floating point error
-        size_t atom_1_index = (atom_1_index_candidate * (1-atom_1_index_candidate)/ 2 <= pair_index) ? atom_1_index_candidate : atom_1_index_candidate - 1; // this is the corrent index, validated by data/test.c for 5-5000 atoms.
+        size_t atom_1_index = (atom_1_index_candidate * (atom_1_index_candidate-1)/ 2 <= pair_index) ? atom_1_index_candidate : atom_1_index_candidate - 1; // this is the corrent index, validated by data/test.c for 5-5000 atoms.
         assert(atom_1_index < num_atoms); // make sure the index is in bounds
-        if(atom_1_index*(atom_1_index-1) > 2*pair_index){
-            printf("pair_index %ld, atom_1_index %ld; atom_1_index*(atom_1_index-1)/2: %ld\n", pair_index, atom_1_index, atom_1_index*(atom_1_index-1)/2);
-        }
         assert(atom_1_index*(atom_1_index-1) <= 2*pair_index); // make sure the index is in bounds
         size_t atom_2_index = pair_index - atom_1_index * (atom_1_index - 1) / 2; // column index
-        // the atom_1_index is the index of the first atom in the pair, and atom_2_index is the index of the second atom in the pair
+
         assert(atom_1_index != atom_2_index); // make sure the indices are not equal
+        assert(atom_1_index < num_atoms && atom_2_index < num_atoms); // make sure the indices are in bounds
+        // the atom_1_index is the index of the first atom in the pair, and atom_2_index is the index of the second atom in the pair
+
         // find the proper index in the atom_types array
         // this index is further used to access entries in data.constants
-        assert(atom_1_index < num_atoms && atom_2_index < num_atoms); // make sure the indices are in bounds
         size_t atom_1_type = data->atom_types[atom_1_index];
         size_t atom_2_type = data->atom_types[atom_2_index];
         atom_t atom_1 = data->atoms[atom_1_index];
@@ -122,10 +121,15 @@ __global__ void compute_dispersion_energy_kernel(device_data_t *data) {
     for (size_t pair_index = thread_id; pair_index < total_interactions; pair_index += num_threads) {
         // calculate the C6AB value for each atom pair
         // determine atom indices, same as the previous loop
-        float discriminant = (2.0f * num_atoms - 1.0f) * (2.0f * num_atoms - 1.0f) - 8.0f * pair_index;
-        size_t atom_1_index = (size_t)floorf((2.0f * num_atoms - 1.0f - sqrtf(discriminant)) / 2.0f);
-        size_t row_start = atom_1_index * (2 * num_atoms - atom_1_index - 1) / 2;
-        size_t atom_2_index = pair_index - row_start + atom_1_index + 1;
+        size_t atom_1_index_candidate = (size_t)floorf((1.0f + sqrtf(1.0f + 8.0f * pair_index)) / 2.0f); // this candidate could be i or i+1 due to floating point error
+        size_t atom_1_index = (atom_1_index_candidate * (atom_1_index_candidate-1)/ 2 <= pair_index) ? atom_1_index_candidate : atom_1_index_candidate - 1; // this is the corrent index, validated by data/test.c for 5-5000 atoms.
+        assert(atom_1_index < num_atoms); // make sure the index is in bounds
+        assert(atom_1_index*(atom_1_index-1) <= 2*pair_index); // make sure the index is in bounds
+        size_t atom_2_index = pair_index - atom_1_index * (atom_1_index - 1) / 2; // column index
+
+        assert(atom_1_index != atom_2_index); // make sure the indices are not equal
+        assert(atom_1_index < num_atoms && atom_2_index < num_atoms); // make sure the indices are in bounds
+        // the atom_1_index is the index of the first atom in the pair, and atom_2_index is the index of the second atom in the pair
         // extract the coordination number to local memory
         real_t coordination_number_1 = data->coordination_numbers[atom_1_index];
         real_t coordination_number_2 = data->coordination_numbers[atom_2_index];
@@ -191,6 +195,7 @@ __global__ void compute_dispersion_energy_kernel(device_data_t *data) {
             printf("cutoff_radius: %f\n", cutoff_radius);
             printf("coordination_number_1: %f\n", coordination_number_1);
             printf("coordination_number_2: %f\n", coordination_number_2);
+            assert(0);
         }
         atomicAdd(&data->results[atom_1_index].energy, dispersion_energy); // increment the energy for atom 1
         atomicAdd(&data->results[atom_2_index].energy, dispersion_energy); // increment the energy for atom 2
@@ -357,10 +362,10 @@ __host__ void compute_dispersion_energy(real_t atoms[][4], size_t length) {
 int main()
 {
     // example usage of the compute_dispersion_energy function
-    real_t atoms[5000][4];
+    real_t atoms[10000][4];
     real_t angstron_to_bohr = 1/0.529f; // angstron to bohr conversion factor
     // fill the atoms array with Po element
-    for (size_t i = 0; i < 50; ++i) {
+    for (size_t i = 0; i < 100; ++i) {
         for (size_t j = 0; j < 10; ++j) {
             for(size_t k = 0; k < 10; ++k) {
                 atoms[i*100+j*10+k][0] = 84; // atomic number of Po
@@ -380,6 +385,6 @@ int main()
     debug("r2r4 of C: %f\n", r2r4[6]);
     debug("Computing dispersion energy...\n");
 
-    compute_dispersion_energy(atoms, 5000);
+    compute_dispersion_energy(atoms, 10000);
     return 0;
 }
