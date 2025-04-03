@@ -21,21 +21,25 @@
 #define debug(...)
 #endif
 
-
-// global parameters
-// cuda kernel launch parameters
+/* global parameters */
+/* cuda kernel launch parameters */ 
 #define BLOCK_SIZE 256
 #define MAX_BLOCKS 65535
 #define MAX_ELEMENTS 118
 
-// constants used in the simulation
-// these constants are from Grimme, S., Antony, J., Ehrlich, S. & Krieg, H. The Journal of Chemical Physics 132, 154104 (2010).
+/* 
+constants used in the simulation
+these constants are from Grimme, S., Antony, J., Ehrlich, S. & Krieg, H. The Journal of Chemical Physics 132, 154104 (2010).
+*/
 #define K1 16.0f
 #define K2 1.33333f
 #define K3 4.0f
 #define ALPHA_N(N) (N + 8.0f)
-// parameters specified for PBE0 functional
-// obtained from Grimme et al. 2010, Table SI1
+
+/*
+parameters specified for PBE0 functional
+obtained from Grimme et al. 2010, Table SI1
+*/
 #define S6 1.0f
 #define S8 0.926f
 #define SR_6 1.326f
@@ -44,8 +48,10 @@
 typedef struct device_data {
     size_t num_atoms;
     size_t num_elements;
-    // to construct it, sort the elements by their atomic number, and then assign the index of the element in the sorted array to the atom_types array.
-    size_t *atom_types; // array of atom types, length: num_atoms. the entries is not the atomic number, but the index of the corresponding entry in constants.
+    /*
+    to construct it, sort the elements by their atomic number, and then assign the index of the element in the sorted array to the atom_types array.
+    */
+    size_t *atom_types; /* array of atom types, length: num_atoms. the entries is not the atomic number, but the index of the corresponding entry in constants. */
     atom_t *atoms; // array of atom data
     d3_constant_t *constants; // constants for the simulation
     real_t *coordination_numbers; // array of coordination numbers, length: num_atoms. This field is initialized to zero to store the results produced during the simulation.
@@ -70,23 +76,6 @@ __global__ void compute_dispersion_energy_kernel(device_data_t *data) {
         printf("thread_id: %ld, total_interactions: %ld\n", thread_id, total_interactions);
         return; // thread is out of bounds
     }
-
-    if (1) {
-        // print some debug information
-        printf("there are %ld atoms with %ld elements\n", data->num_atoms, data->num_elements);
-        printf("the first atom type in constant index is %ld\n", data->atom_types[0]);
-        printf("the first atom is %ld %f %f %f\n", data->atoms[0].element, data->atoms[0].x, data->atoms[0].y, data->atoms[0].z);
-        // some information of D3 constants
-        printf("there are %ld elements in d3_constants\n", data->constants->num_elements);
-        printf("the first element is %ld\n", data->constants->atom_types[0]);
-        printf("first entry in c6ab_ref is c6ab: %f i:%f, j:%f\n", data->constants->c6ab_ref->get(0, 0, 0, 0, 0), data->constants->c6ab_ref->get(0, 0, 0, 0, 1), data->constants->c6ab_ref->get(0, 0, 0, 0, 2));
-        printf("second entry in c6ab_ref is c6ab: %f i:%f, j:%f\n", data->constants->c6ab_ref->get(0, 0, 0, 1, 0), data->constants->c6ab_ref->get(0, 0, 0, 1, 1), data->constants->c6ab_ref->get(0, 0, 0, 1, 2));
-        printf("r0ab between this element and itself is %f\n", data->constants->r0ab[0][0]);
-        printf("rcov of this element is %f\n", data->constants->rcov[0]);
-        printf("r2r4 of this element is %f\n", data->constants->r2r4[0]);
-    }
-    __syncthreads();
-    return; // this is for debugging purposes, to check if the kernel is launched correctly
 
     // calculate all cordination numbers
     // all atom pairs compose a triangular matrix with size num_atoms * num_atoms.
@@ -166,13 +155,11 @@ __global__ void compute_dispersion_energy_kernel(device_data_t *data) {
         for (size_t i = 0; i < NUM_REF_C6; ++i) {
             for (size_t j = 0; j < NUM_REF_C6; ++j) {
                 // these entries could be -1.0f if the entries are not valid, but at least one entry should be valid
-                real_t c6_ref = data->constants->c6ab_ref->get(atom_1_type, atom_2_type, i, j, 0);
-                real_t coordination_number_ref_1 = data->constants->c6ab_ref->get(atom_1_type, atom_2_type, i, j, 1);
-                real_t coordination_number_ref_2 = data->constants->c6ab_ref->get(atom_1_type, atom_2_type, i, j, 2);
-                if(c6_ref < 0.0f || coordination_number_ref_1 < 0.0f || coordination_number_ref_2 < 0.0f) {
-                    assert(c6_ref == -1.0f && coordination_number_ref_1 == -1.0f && coordination_number_ref_2 == -1.0f); // at least one entry should be valid
-                }
-                printf("atoms: (%ld,%ld), i: %ld, j: %ld, c6_ref: %f, coordination_number_ref_1: %f, coordination_number_ref_2: %f\n",atom_1_type, atom_2_type,i, j, c6_ref, coordination_number_ref_1, coordination_number_ref_2);
+                size_t index = atom_1_type * data->num_elements * NUM_REF_C6 * NUM_REF_C6  * NUM_C6AB_ENTRIES + atom_2_type * NUM_REF_C6 * NUM_REF_C6 * NUM_C6AB_ENTRIES + i * NUM_REF_C6 * NUM_C6AB_ENTRIES + j * NUM_C6AB_ENTRIES; // gpu might give wrong value, I don't know why yet...
+                real_t c6_ref = data->constants->c6ab_ref->data[index + 0];
+                real_t coordination_number_ref_1 = data->constants->c6ab_ref->data[index + 1];
+                real_t coordination_number_ref_2 = data->constants->c6ab_ref->data[index + 2];
+                printf("atoms: (%ld,%ld), i: %ld, j: %ld, c6_ref: %f, coordination_number_ref_1: %f, coordination_number_ref_2: %f, index is %ld\n",atom_1_type, atom_2_type,i, j, c6_ref, coordination_number_ref_1, coordination_number_ref_2, index);
                 // because of the presence of invalid entries, the L_ij cannot be calculated directly
                 real_t L_ij_ref = expf(-K3 * (powf(coordination_number_1 - coordination_number_ref_1, 2) + powf(coordination_number_2 - coordination_number_ref_2, 2))) * 1e5f;// scale it to avoid floating point error
                 // since we need the value $\frac{\sum_{i,j}C_{6,ref}^{A,B}L_{i,j}}{\sum_{i,j}L_{i,j}}$

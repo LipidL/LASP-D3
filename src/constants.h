@@ -133,17 +133,18 @@ typedef struct c6ab_ref {
 
     size_t stride1, stride2, stride3, stride4; // strides for each dimension
 
+} c6ab_ref_t;
+
     // helper accessor methods
-    __host__ __device__ inline real_t get(size_t i1, size_t i2, size_t i3, size_t i4, size_t i5) const {
-        assert(i1 < num_elements); // i1 must be less than num_elements
-        assert(i2 < num_elements); // i2 must be less than num_elements
+    __host__ __device__ inline real_t get(c6ab_ref_t *ref, size_t i1, size_t i2, size_t i3, size_t i4, size_t i5) {
+        assert(i1 < ref->num_elements); // i1 must be less than num_elements
+        assert(i2 < ref->num_elements); // i2 must be less than num_elements
         assert(i3 < NUM_REF_C6); // i3 must be less than NUM_REF_C6
         assert(i4 < NUM_REF_C6); // i4 must be less than NUM_REF_C6
         assert(i5 < NUM_C6AB_ENTRIES); // i5 must be less than NUM_C6AB_ENTRIES
-        assert(data != nullptr); // data must not be null
-        return data[i1 * stride1 + i2 * stride2 + i3 * stride3 + i4 * stride4 + i5];
+        assert(ref->data != nullptr); // data must not be null
+        return ref->data[i1 * ref->stride1 + i2 * ref->stride2 + i3 * ref->stride3 + i4 * ref->stride4 + i5];
     }
-} c6ab_ref_t;
 
 /**
  * @brief Initialize the c6ab_ref_t object on device.
@@ -224,7 +225,6 @@ typedef struct d3_constant {
 __host__ inline d3_constant_t* d3_constant_init(size_t num_elements, size_t *atom_types) {
     d3_constant_t constants;
     constants.num_elements = num_elements;
-    printf("num_elements: %zu\n", num_elements);
     size_t *h_atom_types = (size_t *)malloc(num_elements * sizeof(size_t));
     for (size_t i = 0; i < num_elements; ++i) {
         h_atom_types[i] = atom_types[i];
@@ -270,7 +270,6 @@ __host__ inline d3_constant_t* d3_constant_init(size_t num_elements, size_t *ato
     constants.rcov = d_rcov; // point to device data
     real_t *h_r2r4 = (real_t *)malloc(num_elements * sizeof(real_t));
     for (size_t i = 0; i < num_elements; ++i) {
-        printf("r2r4 for %zu: %f\n", atom_types[i], r2r4[atom_types[i]]);
         h_r2r4[i] = r2r4[atom_types[i]];
     }
     // initialize r2r4 array on device
