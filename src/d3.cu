@@ -67,8 +67,26 @@ __global__ void compute_dispersion_energy_kernel(device_data_t *data) {
     // identify the atom pair this thread is responsible for
     if (thread_id >= total_interactions) {
         // we hope this will never happen, but if it does, we need to return
+        printf("thread_id: %ld, total_interactions: %ld\n", thread_id, total_interactions);
         return; // thread is out of bounds
     }
+
+    if (1) {
+        // print some debug information
+        printf("there are %ld atoms with %ld elements\n", data->num_atoms, data->num_elements);
+        printf("the first atom type in constant index is %ld\n", data->atom_types[0]);
+        printf("the first atom is %ld %f %f %f\n", data->atoms[0].element, data->atoms[0].x, data->atoms[0].y, data->atoms[0].z);
+        // some information of D3 constants
+        printf("there are %ld elements in d3_constants\n", data->constants->num_elements);
+        printf("the first element is %ld\n", data->constants->atom_types[0]);
+        printf("first entry in c6ab_ref is c6ab: %f i:%f, j:%f\n", data->constants->c6ab_ref->get(0, 0, 0, 0, 0), data->constants->c6ab_ref->get(0, 0, 0, 0, 1), data->constants->c6ab_ref->get(0, 0, 0, 0, 2));
+        printf("second entry in c6ab_ref is c6ab: %f i:%f, j:%f\n", data->constants->c6ab_ref->get(0, 0, 0, 1, 0), data->constants->c6ab_ref->get(0, 0, 0, 1, 1), data->constants->c6ab_ref->get(0, 0, 0, 1, 2));
+        printf("r0ab between this element and itself is %f\n", data->constants->r0ab[0][0]);
+        printf("rcov of this element is %f\n", data->constants->rcov[0]);
+        printf("r2r4 of this element is %f\n", data->constants->r2r4[0]);
+    }
+    __syncthreads();
+    return; // this is for debugging purposes, to check if the kernel is launched correctly
 
     // calculate all cordination numbers
     // all atom pairs compose a triangular matrix with size num_atoms * num_atoms.
@@ -151,6 +169,10 @@ __global__ void compute_dispersion_energy_kernel(device_data_t *data) {
                 real_t c6_ref = data->constants->c6ab_ref->get(atom_1_type, atom_2_type, i, j, 0);
                 real_t coordination_number_ref_1 = data->constants->c6ab_ref->get(atom_1_type, atom_2_type, i, j, 1);
                 real_t coordination_number_ref_2 = data->constants->c6ab_ref->get(atom_1_type, atom_2_type, i, j, 2);
+                if(c6_ref < 0.0f || coordination_number_ref_1 < 0.0f || coordination_number_ref_2 < 0.0f) {
+                    assert(c6_ref == -1.0f && coordination_number_ref_1 == -1.0f && coordination_number_ref_2 == -1.0f); // at least one entry should be valid
+                }
+                printf("atoms: (%ld,%ld), i: %ld, j: %ld, c6_ref: %f, coordination_number_ref_1: %f, coordination_number_ref_2: %f\n",atom_1_type, atom_2_type,i, j, c6_ref, coordination_number_ref_1, coordination_number_ref_2);
                 // because of the presence of invalid entries, the L_ij cannot be calculated directly
                 real_t L_ij_ref = expf(-K3 * (powf(coordination_number_1 - coordination_number_ref_1, 2) + powf(coordination_number_2 - coordination_number_ref_2, 2))) * 1e5f;// scale it to avoid floating point error
                 // since we need the value $\frac{\sum_{i,j}C_{6,ref}^{A,B}L_{i,j}}{\sum_{i,j}L_{i,j}}$
@@ -246,7 +268,7 @@ __host__ void compute_dispersion_energy(real_t atoms[][4], size_t length) {
         fprintf(stderr, "Error: failed to allocate memory for atoms\n");
         exit(EXIT_FAILURE);
     }
-    size_t elements_presence[MAX_ELEMENTS + 1] = {0};
+    size_t elements_presence[MAX_ELEMENTS + 1] = {0}; // bucket sort :)
     size_t maximum_atomic_number = 0;
     for (size_t i = 0; i < length; ++i) {
         h_atoms[i].element = (size_t)atoms[i][0];
@@ -258,6 +280,7 @@ __host__ void compute_dispersion_energy(real_t atoms[][4], size_t length) {
         elements_presence[h_atoms[i].element] = 1; // mark the element as present in the array
         maximum_atomic_number = (h_atoms[i].element > maximum_atomic_number) ? h_atoms[i].element : maximum_atomic_number;
     }
+    debug("maximum atomic number: %zu\n", maximum_atomic_number);
     // h_atoms is ready, now construct d_atoms
     atom_t *d_atoms;
     CHECK_CUDA(cudaMalloc((void **)&d_atoms, length * sizeof(atom_t)));
@@ -274,9 +297,11 @@ __host__ void compute_dispersion_energy(real_t atoms[][4], size_t length) {
     for (size_t i = 0; i <= maximum_atomic_number; ++i) {
         if (elements_presence[i] == 1) {
             sorted_elements[num_elements] = i;
+            debug("sorted_elements[%zu] = %zu\n", num_elements, i);
             num_elements++;
         }
     }
+    h_data.num_elements = num_elements; // set the number of elements in the device data
     // assign the atom types
     size_t *atom_types = (size_t *)malloc(length * sizeof(size_t));
     if (atom_types == NULL) {
@@ -291,7 +316,7 @@ __host__ void compute_dispersion_energy(real_t atoms[][4], size_t length) {
             fprintf(stderr, "Error: failed to find the element in the array\n");
             free(h_atoms);
             free(sorted_elements);
-            free(h_data.atom_types);
+            free(atom_types);
             exit(EXIT_FAILURE);
         } else {
             atom_types[i] = find_result; // assign the index of the element in the sorted array to the atom_types array
@@ -324,7 +349,7 @@ __host__ void compute_dispersion_energy(real_t atoms[][4], size_t length) {
     cudaDeviceGetAttribute(&num_multiprocessors, cudaDevAttrMultiProcessorCount, 0);
     size_t num_pairs = length * (length - 1) / 2; // number of pairs of atoms
     size_t num_blocks = num_multiprocessors;
-    compute_dispersion_energy_kernel<<<num_blocks, BLOCK_SIZE>>>(d_data);
+    compute_dispersion_energy_kernel<<<1, BLOCK_SIZE>>>(d_data);
     CHECK_CUDA(cudaDeviceSynchronize()); // synchronize the device to ensure all threads are finished
     result_t *h_results = (result_t *)malloc(length * sizeof(result_t));
     if (h_results == NULL) {
@@ -344,7 +369,7 @@ __host__ void compute_dispersion_energy(real_t atoms[][4], size_t length) {
     real_t total_energy = 0.0f;
     for (size_t i = 0; i < length; ++i) {
         // print the results
-        printf("Atom %zu: energy = %f\n", i, h_results[i].energy);
+        // printf("Atom %zu: energy = %f\n", i, h_results[i].energy);
         // accumulate the total energy
         total_energy += h_results[i].energy;
     }
@@ -359,13 +384,14 @@ __host__ void compute_dispersion_energy(real_t atoms[][4], size_t length) {
     free(h_atoms);
 }
 
+#define TOTAL_ATOMS 100
 int main()
 {
     // example usage of the compute_dispersion_energy function
-    real_t atoms[10000][4];
+    real_t atoms[TOTAL_ATOMS][4];
     real_t angstron_to_bohr = 1/0.529f; // angstron to bohr conversion factor
     // fill the atoms array with Po element
-    for (size_t i = 0; i < 100; ++i) {
+    for (size_t i = 0; i < TOTAL_ATOMS/100; ++i) {
         for (size_t j = 0; j < 10; ++j) {
             for(size_t k = 0; k < 10; ++k) {
                 atoms[i*100+j*10+k][0] = 84; // atomic number of Po
@@ -385,6 +411,6 @@ int main()
     debug("r2r4 of C: %f\n", r2r4[6]);
     debug("Computing dispersion energy...\n");
 
-    compute_dispersion_energy(atoms, 10000);
+    compute_dispersion_energy(atoms, TOTAL_ATOMS);
     return 0;
 }
