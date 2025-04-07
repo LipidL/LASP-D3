@@ -15,7 +15,7 @@
         exit(EXIT_FAILURE); \
     } \
 } while (0)
-#define debug(...) fprintf(stderr, __VA_ARGS__)
+#define debug(...) printf(__VA_ARGS__)
 #else
 #define CHECK_CUDA(call) call
 #define debug(...)
@@ -41,8 +41,8 @@ parameters specified for PBE0 functional
 obtained from Grimme et al. 2010, Table SI1
 */
 #define S6 1.0f
-#define S8 0.926f
-#define SR_6 1.326f
+#define S8 0.722f
+#define SR_6 1.217f
 #define SR_8 1.0f
 
 typedef struct device_data {
@@ -141,7 +141,7 @@ __global__ void compute_dispersion_energy_kernel(device_data_t *data) {
         real_t coordination_number_1 = data->coordination_numbers[atom_1_index];
         real_t coordination_number_2 = data->coordination_numbers[atom_2_index];
         for(size_t i = 0; i < num_atoms; ++i) {
-            printf("coordination number of atom %llu (element: %llu): %f\n", i, data->constants->atom_types[data->atom_types[i]], data->coordination_numbers[i]);
+            debug("coordination number of atom %llu (element: %llu): %f\n", i, data->constants->atom_types[data->atom_types[i]], data->coordination_numbers[i]);
         }
         size_t atom_1_type = data->atom_types[atom_1_index];
         size_t atom_2_type = data->atom_types[atom_2_index];
@@ -178,6 +178,10 @@ __global__ void compute_dispersion_energy_kernel(device_data_t *data) {
             }
         }
         real_t c6_ab = (W > 0.0f) ? Z / W : 0.0f; // avoid division by zero
+        if (atom_1_type == atom_2_type) {
+            // print some debug information about c6ab
+            debug("C6AA between atoms (%llu, %llu): %f\n", atom_1_index,atom_2_index, c6_ab);
+        }
         // calculate c8_ab, which is obtained by $C_8^{AB} = 3C_6^{AB}\sqrt{Q^AQ^B}$
         // $\sqrt{Q}$ is precomputed and stored in data.constants.r2r4
         real_t r2r4_1 = data->constants->r2r4[atom_1_type];
@@ -363,7 +367,8 @@ __host__ void compute_dispersion_energy(real_t atoms[][4], size_t length) {
         // accumulate the total energy
         total_energy += h_results[i].energy;
     }
-    printf("Total energy = %f\n", total_energy);
+    total_energy /= 2.0f; /* the energy of between two atoms is added to both of the atoms. So the totoal energy should be divided by 2 after adding all atomic energy */
+    printf("Total energy = %.9f\n", total_energy);
     // free the device memory
     CHECK_CUDA(cudaFree(d_atoms));
     CHECK_CUDA(cudaFree(d_atom_types));
