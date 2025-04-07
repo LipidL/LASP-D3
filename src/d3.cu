@@ -73,7 +73,7 @@ __global__ void compute_dispersion_energy_kernel(device_data_t *data) {
     // identify the atom pair this thread is responsible for
     if (thread_id >= total_interactions) {
         // we hope this will never happen, but if it does, we need to return
-        printf("thread_id: %llu, total_interactions: %llu\n", thread_id, total_interactions);
+        // printf("thread_id: %llu, total_interactions: %llu\n", thread_id, total_interactions);
         return; // thread is out of bounds
     }
 
@@ -118,7 +118,7 @@ __global__ void compute_dispersion_energy_kernel(device_data_t *data) {
         real_t covalent_radii_2 = data->constants->rcov[atom_2_type];
         // eq 15 in Grimme et al. 2010
         // $CN^A = \sum_{B \neq A}^{N} \sqrt{1}{1+exp(-k_1(k_2(R_{A,cov}+R_{B,cov})/r_{AB}-1))}$
-        real_t coordination_number = 1/(1+expf(-K1*(K2*(covalent_radii_1 + covalent_radii_2)/distance - 1))); 
+        real_t coordination_number = 1.0f/(1.0f+expf(-K1*((covalent_radii_1 + covalent_radii_2)/distance - 1.0f))); /* the covalent radii in input table have already taken K2 coefficient into onsideration */
         // increment the data.coordination_number array for both atoms
         atomicAdd(&data->coordination_numbers[atom_1_index], coordination_number); // increment the coordination number for atom 1
         atomicAdd(&data->coordination_numbers[atom_2_index], coordination_number); // increment the coordination number for atom 2
@@ -140,6 +140,9 @@ __global__ void compute_dispersion_energy_kernel(device_data_t *data) {
         // extract the coordination number to local memory
         real_t coordination_number_1 = data->coordination_numbers[atom_1_index];
         real_t coordination_number_2 = data->coordination_numbers[atom_2_index];
+        for(size_t i = 0; i < num_atoms; ++i) {
+            printf("coordination number of atom %llu (element: %llu): %f\n", i, data->constants->atom_types[data->atom_types[i]], data->coordination_numbers[i]);
+        }
         size_t atom_1_type = data->atom_types[atom_1_index];
         size_t atom_2_type = data->atom_types[atom_2_index];
         atom_t atom_1 = data->atoms[atom_1_index];
@@ -336,7 +339,7 @@ __host__ void compute_dispersion_energy(real_t atoms[][4], size_t length) {
     cudaDeviceGetAttribute(&num_multiprocessors, cudaDevAttrMultiProcessorCount, 0);
     size_t num_pairs = length * (length - 1) / 2; // number of pairs of atoms
     size_t num_blocks = num_multiprocessors;
-    compute_dispersion_energy_kernel<<<1, BLOCK_SIZE>>>(d_data);
+    compute_dispersion_energy_kernel<<<1, 1>>>(d_data);
     CHECK_CUDA(cudaDeviceSynchronize()); // synchronize the device to ensure all threads are finished
     result_t *h_results = (result_t *)malloc(length * sizeof(result_t));
     if (h_results == NULL) {
@@ -371,33 +374,33 @@ __host__ void compute_dispersion_energy(real_t atoms[][4], size_t length) {
     free(h_atoms);
 }
 
-#define TOTAL_ATOMS 100
 int main()
 {
     // example usage of the compute_dispersion_energy function
-    real_t atoms[TOTAL_ATOMS][4];
+    real_t atoms[10][4] = {
+        {6, 5.137f, 5.551f, 10.1047f},
+        {6, 4.5168f, 6.1365f, 11.36043f},
+        {6, 6.1936f, 4.4752f, 10.2703f},
+        {8, 4.78716f, 5.9358f, 8.99372f},
+        {1, 6.7474f, 4.3475f, 9.3339f},
+        {1, 5.69748f, 3.5214f, 10.5181f},
+        {1, 6.88699f, 4.7006f, 11.0939f},
+        {1, 4.85788f, 5.6442f, 12.2774f},
+        {1, 3.42038, 6.0677, 11.29354},
+        {1, 4.7677f, 7.20752f, 11.4098f}
+    };
     real_t angstron_to_bohr = 1/0.529f; // angstron to bohr conversion factor
-    // fill the atoms array with Po element
-    for (size_t i = 0; i < TOTAL_ATOMS/100; ++i) {
-        for (size_t j = 0; j < 10; ++j) {
-            for(size_t k = 0; k < 10; ++k) {
-                atoms[i*100+j*10+k][0] = 84; // atomic number of Po
-                atoms[i*100+j*10+k][1] = (real_t)i*3.352*angstron_to_bohr; // x coordinate
-                atoms[i*100+j*10+k][2] = (real_t)j*3.352*angstron_to_bohr; // y coordinate
-                atoms[i*100+j*10+k][3] = (real_t)k*3.352*angstron_to_bohr; // z coordinate
-            }
-        }
+    for(size_t i = 0; i < 10; ++i) {
+        atoms[i][1] *= angstron_to_bohr; // convert to bohr
+        atoms[i][2] *= angstron_to_bohr; // convert to bohr
+        atoms[i][3] *= angstron_to_bohr; // convert to bohr
     }
+    // fill the atoms array with Po element
     debug("Computing dispersion energy for %zu atoms...\n", sizeof(atoms)/sizeof(atoms[0]));
     // initialize parameters
     init_params();
-    debug("c6ab_ref is at %p\n", c6ab_ref);
-    debug("c6ab between C andC: %f\n", c6ab_ref[6][6][0][0][0]);
-    debug("r0ab between C and C: %f\n", r0ab[6][6]);
-    debug("rcov of C: %f\n", rcov[6]);
-    debug("r2r4 of C: %f\n", r2r4[6]);
     debug("Computing dispersion energy...\n");
 
-    compute_dispersion_energy(atoms, TOTAL_ATOMS);
+    compute_dispersion_energy(atoms, 10);
     return 0;
 }

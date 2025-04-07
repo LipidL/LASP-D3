@@ -22,13 +22,13 @@ print(f"shape of r2r4: {d3_params['r2r4'].shape}") # used to calculate c8 from c
 #         f.write(struct.pack("I" * len(data.shape), *data.shape))  # Shape
 #         # Write the array data
 #         f.write(data.tobytes())
-
+atom_number = 6
 data = d3_params["c6ab"]
-print(f"c6ab between Po: {data[84, 84]}")
+print(f"c6ab between {atom_number}: {data[atom_number, atom_number]}")
 data = d3_params["r0ab"]
-print(f"r0ab between Po: {data[84, 84]}")
+print(f"r0ab between {atom_number}: {data[atom_number, atom_number]}")
 data = d3_params["rcov"]
-print(f"rcov of Po: {data[84]}")
+print(f"rcov of {atom_number}: {data[atom_number]}")
 data = d3_params["r2r4"]
-print(f"r2r4 of Po: {data[84]}")
+print(f"r2r4 of {atom_number}: {data[atom_number]}")
 
