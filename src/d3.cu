@@ -162,6 +162,19 @@ __global__ void coordination_number_kernel(device_data_t *data) {
     return; // return from the kernel
 }
 
+
+/**
+ * @brief this kernel is used to adjust the coordination number of each atom in the system.
+ * @note this kernel should be launched with a 1D grid of blocks, each block containing a 1D array of threads.
+ * @note the number of blocks equals the number of atoms in the system.
+ * 
+ * ugly little kernel, but it's the only way for cross-block synchronization :(
+ */
+__global__ void adjust_coordination_number_kernel(device_data_t *data) {
+    size_t atom_index = threadIdx.x; // each block is responsible for one atom
+    data->coordination_numbers[atom_index] /= 2.0f; // divide the coordination number by 2
+}
+
 /**
  * @brief this kernel is used to compute the energy and force of each atom in the system.
  * @note this kernel should be launched with a 1D grid of blocks, each block containing a 2D array of threads.
@@ -170,14 +183,6 @@ __global__ void coordination_number_kernel(device_data_t *data) {
  */
 __global__ void energy_force_kernel(device_data_t *data) {
     size_t central_atom_index = blockIdx.x; // each block is responsible for one central atom
-    /* remember to divide the coordination number */
-    if (threadIdx.x == 0 && threadIdx.y == 0) {
-        data->coordination_numbers[central_atom_index] /= 2.0f; // divide the coordination number by 2
-        // printf("atom %llu has %llu neighbors\n", central_atom_index, data->num_neighbors[central_atom_index]);
-        // for (size_t i = 0; i < data->num_neighbors[central_atom_index]; ++i) {
-        //     printf("atoms(%llu, %llu) are neighbors\n", central_atom_index, data->neighbors[central_atom_index * MAX_NEIGHBORS + i].index);
-        // }
-    }
     size_t atom_i_index = threadIdx.x;
     size_t atom_j_index = threadIdx.y; // each thread in block handles one pair of atoms
     if (atom_i_index >= data->num_neighbors[central_atom_index] || atom_j_index >= data->num_neighbors[central_atom_index]) {
@@ -194,11 +199,15 @@ __global__ void energy_force_kernel(device_data_t *data) {
         size_t atom_2_index = data->neighbors[central_atom_index * MAX_NEIGHBORS + atom_j_index].index; // index of the second atom in the pair
         real_t coordination_number_1 = data->coordination_numbers[atom_1_index];
         real_t coordination_number_2 = data->coordination_numbers[atom_2_index];
+        printf("coordination number of atom %llu: %f\n", atom_1_index, coordination_number_1);
+        printf("coordination number of atom %llu: %f\n", atom_2_index, coordination_number_2);
         size_t atom_1_type = data->atom_types[atom_1_index];
         size_t atom_2_type = data->atom_types[atom_2_index];
         atom_t atom_1 = data->atoms[atom_1_index]; // central atom
         atom_t atom_2 = data->neighbors[central_atom_index * MAX_NEIGHBORS + atom_j_index].atom; // surrounding atom
-        // printf("atom_2 is %llu, at (%f,%f,%f), acquired by %llu\n", atom_2_index, atom_2.x, atom_2.y, atom_2.z, atom_j_index);
+        if (atom_2.element == 0) {
+            return; // skip the atom if it is not valid
+        }
         real_t distance = data->neighbors[central_atom_index * MAX_NEIGHBORS + atom_j_index].distance; // distance to the neighbor atom
         /* calculate the coordination number based on dispersion coefficient
          formula: $C_6^{ij} = Z/W$ 
@@ -406,6 +415,8 @@ __host__ void compute_dispersion_energy(
     // launch the kernel
     coordination_number_kernel<<<length, total_cell_bias*length>>>(d_data); // launch the kernel to compute the coordination numbers
     CHECK_CUDA(cudaDeviceSynchronize()); // synchronize the device to ensure all threads are finished
+    adjust_coordination_number_kernel<<<1, length>>>(d_data); // launch the kernel to adjust the coordination numbers
+    CHECK_CUDA(cudaDeviceSynchronize()); // synchronize the device to ensure all threads are finished
     dim3 block_size(10, 10); // 10x10 threads per block
     dim3 grid_size(length);  // one block per atom
     energy_force_kernel<<<grid_size, block_size>>>(d_data);
@@ -432,7 +443,7 @@ __host__ void compute_dispersion_energy(
         // accumulate the total energy
         total_energy += h_results[i].energy;
     }
-    total_energy /= 2.0f; /* the energy of between two atoms is added to both of the atoms. So the totoal energy should be divided by 2 after adding all atomic energy */
+    total_energy /= 4.0f; /* the energy of between two atoms is added to both of the atoms. So the totoal energy should be divided by 2 after adding all atomic energy */
     printf("Total energy = %.9f\n", total_energy);
     // free the device memory
     CHECK_CUDA(cudaFree(d_atoms));

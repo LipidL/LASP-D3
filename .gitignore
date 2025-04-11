@@ -7,3 +7,6 @@ src/a.out
 data/params.bin
 src/result
 data/a.out
+src/ref_collect
+.gitignore
+src/ref
