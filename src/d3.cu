@@ -123,45 +123,17 @@ __global__ void coordination_number_kernel(device_data_t *data) {
     }
     __syncthreads();
     /* now we need to convert entries in neighbor_flags to indicies in neighbors.
-     algorithm: calculate prefix sum of each entry*/
-    size_t tmp_thid = thread_index / 2; // temporary thread id used for prefix sum operation
-    size_t offset = 1; // offset for the prefix sum operation
-    
-    for (size_t d = num_threads >> 1; d > 0; d >>= 1) {
-        /* build sum in place up the tree */
-        __syncthreads();
-        if (thread_index % 2 == 0 && tmp_thid < d) {
-            size_t ai = offset * (tmp_thid * 2 + 1) - 1;
-            size_t bi = offset * (tmp_thid * 2 + 2) - 1;
-            assert(ai < MAX_BLOCK_SIZE);
-            assert(bi < MAX_BLOCK_SIZE);
-            neighbor_flags[bi] += neighbor_flags[ai]; // prefix sum operation
-        }
-        offset *= 2; // double the offset for the next iteration
-    }
-    
-    __syncthreads();
-    if (thread_index % 2 == 0 && tmp_thid == 0) {
-        neighbor_flags[num_threads - 1] = 0; // set the last element
-    }
-    __syncthreads();
-    for (size_t d = 1; d < num_threads; d *= 2) {
-        /* traverse down tree & build scan */
-        offset /= 2;
-        __syncthreads();
-        if (offset == 0) break; // Prevent offset from becoming 0 to avoid underflow
-        if (thread_index % 2 == 0 && tmp_thid < d) {
-            size_t ai = offset * (tmp_thid * 2 + 1) - 1;
-            size_t bi = offset * (tmp_thid * 2 + 2) - 1;
-            assert(ai < MAX_BLOCK_SIZE);
-            assert(bi < MAX_BLOCK_SIZE);
-            /* swap the value in neighbor_flags[ai] and [bi] */
-            size_t tmp = neighbor_flags[ai];
-            neighbor_flags[ai] = neighbor_flags[bi];
-            neighbor_flags[bi] += tmp;
+     algorithm: calculate prefix sum of each entry */
+    // Perform exclusive prefix sum on neighbor_flags
+    if (thread_index == 0 || (atom_1_index == 0 && thread_index == blockDim.x - 1)) {
+        size_t sum = 0;
+        for (size_t i = 0; i < num_threads; i++) {
+            size_t temp = neighbor_flags[i];
+            neighbor_flags[i] = sum;
+            sum += temp;
         }
     }
-    __syncthreads(); // synchronize threads in the block
+    __syncthreads(); // Make sure all threads see the updated neighbor_flags
     /* now the indicies in neighbor_flags is the position to write in neighbors */
     if (distance <= data->coordination_number_cutoff) {
         /* if the distance is within cutoff range, update neighbors */
@@ -181,7 +153,6 @@ __global__ void coordination_number_kernel(device_data_t *data) {
         // increment the data.coordination_number array for both atoms
         atomicAdd(&data->coordination_numbers[atom_1_index], coordination_number); // increment the coordination number for atom 1
         atomicAdd(&data->coordination_numbers[atom_2_index], coordination_number); // increment the coordination number for atom 2
-        printf("atom_1_index: %llu, atom_2_index: %llu, distance: %f, coordination_number: %f\n", atom_1_index, atom_2_index, distance, coordination_number);
     }
     /* now the coordination number and neighbors are completed, 
      but every coordination number have been computed for two times.
@@ -202,7 +173,10 @@ __global__ void energy_force_kernel(device_data_t *data) {
     /* remember to divide the coordination number */
     if (threadIdx.x == 0 && threadIdx.y == 0) {
         data->coordination_numbers[central_atom_index] /= 2.0f; // divide the coordination number by 2
-        printf("coordination number of atom %llu: %f\n", central_atom_index, data->coordination_numbers[central_atom_index]);
+        // printf("atom %llu has %llu neighbors\n", central_atom_index, data->num_neighbors[central_atom_index]);
+        // for (size_t i = 0; i < data->num_neighbors[central_atom_index]; ++i) {
+        //     printf("atoms(%llu, %llu) are neighbors\n", central_atom_index, data->neighbors[central_atom_index * MAX_NEIGHBORS + i].index);
+        // }
     }
     size_t atom_i_index = threadIdx.x;
     size_t atom_j_index = threadIdx.y; // each thread in block handles one pair of atoms
@@ -224,6 +198,7 @@ __global__ void energy_force_kernel(device_data_t *data) {
         size_t atom_2_type = data->atom_types[atom_2_index];
         atom_t atom_1 = data->atoms[atom_1_index]; // central atom
         atom_t atom_2 = data->neighbors[central_atom_index * MAX_NEIGHBORS + atom_j_index].atom; // surrounding atom
+        // printf("atom_2 is %llu, at (%f,%f,%f), acquired by %llu\n", atom_2_index, atom_2.x, atom_2.y, atom_2.z, atom_j_index);
         real_t distance = data->neighbors[central_atom_index * MAX_NEIGHBORS + atom_j_index].distance; // distance to the neighbor atom
         /* calculate the coordination number based on dispersion coefficient
          formula: $C_6^{ij} = Z/W$ 
@@ -268,6 +243,7 @@ __global__ void energy_force_kernel(device_data_t *data) {
         /* calculate the dispersion enegry as Grimme et al. 2010, eq3 */
         real_t dispersion_energy_6 = S6*(c6_ab/powf(distance, 6.0f))*f_dn_6;
         real_t dispersion_energy_8 = S8*(c8_ab/powf(distance, 8.0f))*f_dn_8;
+        // printf("dispersion energy between atoms (%llu,%llu): %f\n",atom_1_index,atom_2_index,dispersion_energy_6 + dispersion_energy_8);
         real_t dispersion_energy = dispersion_energy_6 + dispersion_energy_8;
         /* add the energy back to results */
         atomicAdd(&data->results[atom_1_index].energy, dispersion_energy);
