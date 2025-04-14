@@ -323,17 +323,81 @@ __global__ void two_body_kernel(device_data_t *data){
 
 /**
  * @brief this kernel is used to compute the three-body force between atoms in the system.
- * @brief i.e. the dC(ij)/drm
- * @note this kernel should be launched with a 2D grid of blocks, each block containining a 1D array of threads.
- * @note the first dimention of block is the number of atoms in the system.
- * @note the second dimention of block is the maximum number of neighbors across all atoms.
- * @note the number of blocks should be equal to the maximum number of neighbors across all atoms.
+ * @brief i.e. the dC(ij)/dr_m
+ * @note this kernel should be launched with a 1D grid of blocks, each block containining a 2D array of threads.
+ * @note the dimention of block is the number of atoms in the system.
+ * @note the number of blocks can be any value
  */
 __global__ void three_body_kernel(device_data_t *data){
+    /* this kernel calculates the force entry dC_{ij}/dr_m
+     the diffrensial is not 0 if atom m (central atom) has an impact on C_{ij}
+     so atom m should be within data->CN_cutoff with at least one of atoms i and j
+     and atom i and j should be within data->cutoff so that they have a C_{ij} */
     uint64_t central_atom_index = blockIdx.x; // each block is responsible for one central atom
     atom_t central_atom = data->atoms[central_atom_index]; // central atom
-    uint64_t atom_1_index = data->neighbors[central_atom_index * MAX_NEIGHBORS + blockIdx.y].index; // the first atom is the neighbor of the central atom
-    uint64_t atom_2_index = data->neighbors[atom_1_index * MAX_NEIGHBORS + threadIdx.x].index; // the second atom is the neighbor of the first atom
+    uint64_t central_atom_type = data->atom_types[central_atom_index]; // type of the central atom
+    /* atom 1 should be within CN_cutoff with central_atom, and atom 2 should be within cutoff with atom1*/
+    for(uint64_t thread_idx_x = threadIdx.x; thread_idx_x < data->num_CN_neighbors[central_atom_index]; thread_idx_x += blockDim.x) {
+        for(uint64_t thread_idx_y = threadIdx.y; thread_idx_y < data->num_neighbors[central_atom_index]; thread_idx_y += blockDim.y) {
+            /* each thread is responsible for one atom pair, so the number of threads should be equal to num_atoms * total_cell_bias */
+            /* dC_{ij}/dr_m = dC_{ij}/dCN_i * dCN_i/dr_m + dC_{ij}/dCN_i * dCN_i/dr_m
+             dCN_i/dr_m is not 0 only if atoms i and m are CN_neighbors
+             so here we only calculate dC_{1,2}/dCN_1 * dCN_1/dr_m because atom1 is found in m's CN-neighbor list
+             the dC_{1,2}/dCN_2 * dCN_2/dr_m is calculated in next thread if atom2 is within m's CN-neighbor list,
+             or don't need to be calculated if atom2 is not within m's CN-neighbor list */
+            uint64_t atom_1_index = data->CN_neighbors[central_atom_index * MAX_NEIGHBORS + thread_idx_x].index;
+            uint64_t atom_1_type = data->atom_types[atom_1_index];
+            real_t coordination_number_1 = data->coordination_numbers[atom_1_index];
+            uint64_t atom_2_index = data->neighbors[atom_1_index * MAX_NEIGHBORS + thread_idx_y].index;
+            uint64_t atom_2_type = data->atom_types[atom_2_index];
+            real_t coordination_number_2 = data->coordination_numbers[atom_2_index];
+            atom_t atom_1 = data->CN_neighbors[central_atom_index * MAX_NEIGHBORS + thread_idx_x].atom;
+            real_t distance = data->neighbors[atom_1_index * MAX_NEIGHBORS + thread_idx_y].distance; // distance to the neighbor atom
+            /* calculate dC_{ij}/dCN_i */
+            real_t L_ij = 0.0f;
+            real_t dL_ij = 0.0f;
+            real_t c_ref_dL_ij = 0.0f;
+            real_t c_ref_L_ij = 0.0f;
+            for (uint64_t i = 0; i < NUM_REF_C6; ++i) {
+                for (uint64_t j = 0; j < NUM_REF_C6; ++j) {
+                    /* find the C6ref */
+                    uint64_t stride_1 = data->num_elements * NUM_REF_C6 * NUM_REF_C6  * NUM_C6AB_ENTRIES;
+                    uint64_t stride_2 = NUM_REF_C6 * NUM_REF_C6  * NUM_C6AB_ENTRIES;
+                    uint64_t stride_3 = NUM_REF_C6  * NUM_C6AB_ENTRIES;
+                    uint64_t stride_4 = NUM_C6AB_ENTRIES;
+                    uint64_t index = atom_1_type * stride_1 + atom_2_type * stride_2 + i * stride_3 + j * stride_4;
+                    real_t c6_ref = data->constants->c6ab_ref->data[index + 0];
+                    /* these entries could be -1.0f if they are not valid, but at least one should be valid*/
+                    real_t coordination_number_ref_1 = data->constants->c6ab_ref->data[index + 1];
+                    real_t coordination_number_ref_2 = data->constants->c6ab_ref->data[index + 2];
+                    /* because they could be invalid, L_ij cannot be used directly */
+                    real_t L_ij_candidate = expf(-K3 * (powf(coordination_number_1 - coordination_number_ref_1, 2) + powf(coordination_number_2 - coordination_number_ref_2, 2))); // scale it to avoid floating point error
+                    real_t dL_ij_candidate = -2.0f * K3 * (coordination_number_1 - coordination_number_ref_1) * L_ij_candidate; // dL_ij/dCN_1
+                    /* since we need the value $\frac{\sum_{i,j}C_{6,ref}^{A,B}L_{i,j}}{\sum_{i,j}L_{i,j}}$
+                        we can set invalid L_ij to 0.0f and perform the summation in the same loop
+                        invalid entry: have -1.0f in c6_ref, coordination_number_ref_1 and coordination_number_ref_2
+                        we check coordination_number_ref_1 here. */
+                        if (coordination_number_ref_1 - (-1.0f) > 1e-5f) {
+                            c_ref_L_ij += c6_ref * L_ij_candidate;
+                            c_ref_dL_ij += c6_ref * dL_ij_candidate;
+                            dL_ij += dL_ij_candidate;
+                            L_ij += L_ij_candidate; // accumulate the value of L_ij
+                        }
+                }
+            }
+            real_t dC_ij_dCN_1 = (L_ij > 0.0f) ? (c_ref_dL_ij*L_ij - c_ref_L_ij * dL_ij) / powf(L_ij,2.0f) : 0.0f; // avoid division by zero
+            real_t covalent_radii_central = data->constants->rcov[central_atom_type];
+            real_t covalent_radii_1 = data->constants->rcov[atom_1_type];
+            real_t exp = expf(-K1*((covalent_radii_central + covalent_radii_1)/distance - 1.0f)); // $\exp(-k_1*(\frac{R_A+R_b}{r_{ab}}-1))$
+            real_t dCN_i_datom_m = powf(1+exp,-2.0f)*(-K1)*exp*(covalent_radii_central + covalent_radii_1)*powf(distance, -3.0f); // dCN_i/dr_m * 1/r_m
+            real_t force = dC_ij_dCN_1 * dCN_i_datom_m; // dC_{ij}/dCN_i * dCN_i/dr_m * 1/r_m
+            /* add the force to central atom */
+            atomicAdd(&data->results[central_atom_index].force[0], force * (central_atom.x - atom_1.x));
+            atomicAdd(&data->results[central_atom_index].force[1], force * (central_atom.y - atom_1.y));
+            atomicAdd(&data->results[central_atom_index].force[2], force * (central_atom.z - atom_1.z));
+        }
+    }
+
 
 }
 
@@ -504,7 +568,11 @@ __host__ void compute_dispersion_energy(
     printf("launching adjust_coordination_number_kernel, size: %zu\n", length);
     adjust_coordination_number_kernel<<<1, length>>>(d_data); // launch the kernel to adjust the coordination numbers
     CHECK_CUDA(cudaDeviceSynchronize()); // synchronize the device to ensure all threads are finished
+    printf("launching two_body_kernel, size: %zu, %zu\n", length, 512);
     two_body_kernel<<<length, 512>>>(d_data);
+    CHECK_CUDA(cudaDeviceSynchronize()); // synchronize the device to ensure all threads are finished
+    printf("launching three_body_kernel, size: %zu, %zu\n", length, 512);
+    three_body_kernel<<<length, dim3(512, 512)>>>(d_data); // launch the kernel to compute the three body forces
     CHECK_CUDA(cudaDeviceSynchronize()); // synchronize the device to ensure all threads are finished
     result_t *h_results = (result_t *)malloc(length * sizeof(result_t));
     if (h_results == NULL) {
