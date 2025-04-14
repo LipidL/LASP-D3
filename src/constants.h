@@ -120,7 +120,8 @@ typedef struct atom {
 } atom_t;
 
 typedef struct result {
-    real_t energy, fx, fy, fz;
+    real_t energy;
+    real_t force[3];
 } result_t;
 
 // structure to hold the reference C6 values for a specific system

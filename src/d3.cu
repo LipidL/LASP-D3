@@ -267,6 +267,23 @@ __global__ void two_body_kernel(device_data_t *data){
     /* add the energy back to results */
     atomicAdd(&data->results[atom_1_index].energy, dispersion_energy);
     atomicAdd(&data->results[atom_2_index].energy, dispersion_energy);
+    /* the first entry of two-body force
+     $F_a = S_n C_n^{ab} f_{d,n}(r_{ab}) \frac{\partial}{\partial r_a} r_{ab}^{-n}$
+     $F_a = S_n C_n^{ab} f_{d,n}(r_{ab}) * (-n)r_{ab}^{-n-2} * \uparrow{r_{ab}}$ */
+    real_t force = 0.0f;
+    force += S6 * c6_ab * f_dn_6 * (-6.0f) * powf(distance, -8.0f); // force_6
+    force += S8 * c8_ab * f_dn_8 * (-8.0f) * powf(distance, -10.0f); // force_8
+    /* the second entry of two-body force 
+     $F_a = S_n C_n^{ab} r_{ab}^{-n} \frac{\partial}{\partial r_a} f_{d,n}(r_{ab})$
+     $F_a = S_n C_n^{ab} r_{ab}^{-n} -f_{d,n}^2 * (6*(-\alpha_n)*(r_{ab}/{S_{r,n}R_0^{AB}})^(-\alpha_n - 1) * 1/(S_{r,n}R_0^{AB}})) \uparrow{r_{ab}}$*/
+    force += S6 * c6_ab * powf(distance, -6.0f) * (-f_dn_6 * f_dn_6) * (6.0f * (-ALPHA_N(6.0f))* powf(distance/(SR_6*cutoff_radius), -ALPHA_N(6.0f) - 1.0f) / (SR_6*cutoff_radius)); // force_6
+    force += S8 * c8_ab * powf(distance, -8.0f) * (-f_dn_8 * f_dn_8) * (8.0f * (-ALPHA_N(8.0f))* powf(distance/(SR_8*cutoff_radius), -ALPHA_N(8.0f) - 1.0f) / (SR_8*cutoff_radius)); // force_8
+    atomicAdd(&data->results[atom_1_index].force[0], force * (atom_1.x - atom_2.x));
+    atomicAdd(&data->results[atom_1_index].force[1], force * (atom_1.y - atom_2.y));
+    atomicAdd(&data->results[atom_1_index].force[2], force * (atom_1.z - atom_2.z));
+    atomicAdd(&data->results[atom_2_index].force[0], -force * (atom_1.x - atom_2.x));
+    atomicAdd(&data->results[atom_2_index].force[1], -force * (atom_1.y - atom_2.y));
+    atomicAdd(&data->results[atom_2_index].force[2], -force * (atom_1.z - atom_2.z));
 }
 
 /**
@@ -450,6 +467,7 @@ __host__ void compute_dispersion_energy(
     for (uint64_t i = 0; i < length; ++i) {
         // print the results
         printf("Atom %zu: energy = %f\n", i, h_results[i].energy);
+        printf("Atom %zu: force = (%f, %f, %f)\n", i, h_results[i].force[0], h_results[i].force[1], h_results[i].force[2]);
         // accumulate the total energy
         total_energy += h_results[i].energy;
     }
