@@ -63,13 +63,13 @@ typedef struct device_data {
     d3_constant_t *constants; // constants for the simulation
     real_t cell[3][3]; // cell matrix, specify the three vectors of the cell
     uint64_t max_cell_bias[3]; // the maximum bias of the cell in each direction, this must be an odd number (because of symmetry)
-    uint64_t *num_neighbors; // array of number of neighbors for each atom, length: num_atoms.
+    // uint64_t *num_neighbors; // array of number of neighbors for each atom, length: num_atoms.
     neighbor_t *neighbors; // array of neighbors, size: num_atoms * MAX_NEIGHBORS.
     real_t coordination_number_cutoff; // the cutof radius for CN computation
     real_t cutoff_radius; // the cutoff radius for the dispersion energy calculation
     /* some intermediate variables, not initialized but used during computation*/
     real_t *coordination_numbers; // array of coordination numbers, length: num_atoms.
-    uint64_t *max_num_neighbors; // array of maximum number of neighbors for each atom, length: num_atoms.
+    uint64_t *num_neighbors; // array of maximum number of neighbors for each atom, length: num_atoms.
     uint64_t max_num_neighbor; // the maximum nimber of neighbors for the system
     result_t *results; // results of the simulation
 } device_data_t;
@@ -139,23 +139,22 @@ __global__ void coordination_number_kernel(device_data_t *data) {
             neighbor_flags[i] = sum;
             sum += temp;
         }
-        data->max_num_neighbors[atom_1_index] = sum; // set the maximum number of neighbors for the central atom
+        data->num_neighbors[atom_1_index] = sum; // set the maximum number of neighbors for the central atom
     }
     __syncthreads(); // Make sure all threads see the updated neighbor_flags
     /* now the indicies in neighbor_flags is the position to write in neighbors */
     for(uint64_t i = 0; i < neighbors_index; ++i) {
         real_t distance = neighbors[i].distance; // distance to the neighbor atom
         /* if the distance is within cutoff range, update neighbors */
-        atomicAdd((unsigned long long int*)&data->num_neighbors[atom_1_index], (unsigned long long int)1); // increment the number of neighbors for atom 1
         uint64_t neighbor_index = neighbor_flags[thread_index]; // index of the neighbor in the neighbors array
-        neighbor_t *neighbors = &data->neighbors[atom_1_index * MAX_NEIGHBORS]; // pointer to the neighbors array for the central atom
+        neighbor_t *data_neighbors = &data->neighbors[atom_1_index * MAX_NEIGHBORS]; // pointer to the neighbors array for the central atom
         assert(neighbor_index < MAX_NEIGHBORS); // make sure the index is in bounds
-        neighbors[neighbor_index].index = neighbors[i].index; // set the index of the neighbor atom
-        neighbors[neighbor_index].distance = distance; // set the distance to the neighbor atom
-        neighbors[neighbor_index].atom = neighbors[i].atom; // set the atom data of the neighbor atom
+        data_neighbors[neighbor_index+i].index = neighbors[i].index;
+        data_neighbors[neighbor_index+i].distance = distance;
+        data_neighbors[neighbor_index+i].atom = neighbors[i].atom;
         /* compute the coordination number and add to the CN of atom 1 and atom 2 */
-        real_t covalent_radii_1 = data->constants->rcov[atom_1_type]; // covalent radii of atom 1
-        real_t covalent_radii_2 = data->constants->rcov[atom_2_type]; // covalent radii of atom 2
+        real_t covalent_radii_1 = data->constants->rcov[atom_1_type];
+        real_t covalent_radii_2 = data->constants->rcov[atom_2_type];
         /* eq 15 in Grimme et al. 2010
         $CN^A = \sum_{B \neq A}^{N} \sqrt{1}{1+exp(-k_1(k_2(R_{A,cov}+R_{B,cov})/r_{AB}-1))}$ */
         real_t coordination_number = 1.0f/(1.0f+expf(-K1*((covalent_radii_1 + covalent_radii_2)/distance - 1.0f))); // the covalent radii in input table have already taken K2 coefficient into onsideration
@@ -190,7 +189,7 @@ __global__ void adjust_coordination_number_kernel(device_data_t *data) {
     }
     __syncthreads();
 
-    atomicMax((unsigned long long *)&max_neighbors, (unsigned long long)data->max_num_neighbors[atom_index]);
+    atomicMax((unsigned long long *)&max_neighbors, (unsigned long long)data->num_neighbors[atom_index]);
     __syncthreads();
 
     if (atom_index == 0) {
@@ -268,96 +267,6 @@ __global__ void two_body_kernel(device_data_t *data){
     /* add the energy back to results */
     atomicAdd(&data->results[atom_1_index].energy, dispersion_energy);
     atomicAdd(&data->results[atom_2_index].energy, dispersion_energy);
-}
-
-/**
- * @brief this kernel is used to compute the energy and force of each atom in the system.
- * @note this kernel should be launched with a 1D grid of blocks, each block containing a 2D array of threads.
- * @note the number of blocks should be equal to the number of atoms in the system.
- * @note the dimention of threads in each block should be equal to the maximum number of neighbors
- */
-__global__ void energy_force_kernel(device_data_t *data) {
-    printf("0d00\n");
-    uint64_t central_atom_index = blockIdx.x; // each block is responsible for one central atom
-    uint64_t atom_i_index = threadIdx.x;
-    uint64_t atom_j_index = threadIdx.y; // each thread in block handles one pair of atoms
-    
-    if (atom_i_index >= data->num_neighbors[central_atom_index] || atom_j_index >= data->num_neighbors[central_atom_index]) {
-        return; // thread is out of bounds
-    }
-    
-    /* work distribution:
-     thread where atom_i_index != atom_j_index handle the derivative $\partial C_n^{i,j}/partial r_m$ 
-     thread where atom_i_index == atom_j_index handle the rest two derivatives and energy calculation */
-    if (atom_i_index == atom_j_index) {
-        /* this thread is responsible for the rest two derivatives and energy*/
-        /* here we implement energy part first */
-        /* compute the energy between central atom and atom_i*/
-        uint64_t atom_1_index = central_atom_index;
-        uint64_t atom_2_index = data->neighbors[central_atom_index * MAX_NEIGHBORS + atom_j_index].index; // index of the second atom in the pair
-        real_t coordination_number_1 = data->coordination_numbers[atom_1_index];
-        real_t coordination_number_2 = data->coordination_numbers[atom_2_index];
-        printf("coordination number of atom %llu: %f\n", atom_1_index, coordination_number_1);
-        printf("coordination number of atom %llu: %f\n", atom_2_index, coordination_number_2);
-        uint64_t atom_1_type = data->atom_types[atom_1_index];
-        uint64_t atom_2_type = data->atom_types[atom_2_index];
-        atom_t atom_1 = data->atoms[atom_1_index]; // central atom
-        atom_t atom_2 = data->neighbors[central_atom_index * MAX_NEIGHBORS + atom_j_index].atom; // surrounding atom
-        if (atom_2.element == 0) {
-            return; // skip the atom if it is not valid
-        }
-        real_t distance = data->neighbors[central_atom_index * MAX_NEIGHBORS + atom_j_index].distance; // distance to the neighbor atom
-        /* calculate the coordination number based on dispersion coefficient
-         formula: $C_6^{ij} = Z/W$ 
-         where $Z = \sum_{a,b}C_{6,ref}^{i,j}L_{a,b}$
-            $W = \sum_{a,b}L_{a,b}$
-            $L_{a,b} = \exp(-k3((CN^A-CN^A_{ref,a})^2 + (CN^B-CN^B_{ref,b})^2))$*/
-        real_t Z = 0.0f;
-        real_t W = 0.0f;
-        for (uint64_t i = 0; i < NUM_REF_C6; ++i) {
-            for (uint64_t j = 0; j < NUM_REF_C6; ++j) {
-                /* find the C6ref */
-                uint64_t stride_1 = data->num_elements * NUM_REF_C6 * NUM_REF_C6  * NUM_C6AB_ENTRIES;
-                uint64_t stride_2 = NUM_REF_C6 * NUM_REF_C6  * NUM_C6AB_ENTRIES;
-                uint64_t stride_3 = NUM_REF_C6  * NUM_C6AB_ENTRIES;
-                uint64_t stride_4 = NUM_C6AB_ENTRIES;
-                uint64_t index = atom_1_type * stride_1 + atom_2_type * stride_2 + i * stride_3 + j * stride_4;
-                real_t c6_ref = data->constants->c6ab_ref->data[index + 0];
-                /* these entries could be -1.0f if they are not valid, but at least one should be valid*/
-                real_t coordination_number_ref_1 = data->constants->c6ab_ref->data[index + 1];
-                real_t coordination_number_ref_2 = data->constants->c6ab_ref->data[index + 2];
-                /* because they could be invalid, L_ij cannot be used directly */
-                real_t L_ij_candidate = expf(-K3 * (powf(coordination_number_1 - coordination_number_ref_1, 2) + powf(coordination_number_2 - coordination_number_ref_2, 2))) * 1e5f; // scale it to avoid floating point error
-                /* since we need the value $\frac{\sum_{i,j}C_{6,ref}^{A,B}L_{i,j}}{\sum_{i,j}L_{i,j}}$
-                 we can set invalid L_ij to 0.0f and perform the summation in the same loop
-                 invalid entry: have -1.0f in c6_ref, coordination_number_ref_1 and coordination_number_ref_2
-                 we check coordination_number_ref_1 here. */
-                real_t L_ij = ((coordination_number_ref_1 - (-1.0f) <= 1e-5f) ? 0.0f : L_ij_candidate); // conditional move, no branching, fast!
-                Z += c6_ref * L_ij; // accumulate the value of Z
-                W += L_ij; // accumulate the value of W
-            }
-        }
-        real_t c6_ab = (W > 0.0f) ? Z / W : 0.0f; // avoid division by zero
-        /* calculate c8_ab by $C_8^{AB} = 3C_6^{AB}\sqrt{Q^AQ^B}$*/
-        real_t r2r4_1 = data->constants->r2r4[atom_1_type];
-        real_t r2r4_2 = data->constants->r2r4[atom_2_type];
-        real_t c8_ab = 3.0f * c6_ab * r2r4_1 * r2r4_2; // the value in r2r4 is already squared
-        /* acquire the cutoff radius between the two atoms */
-        real_t cutoff_radius = data->constants->r0ab[atom_1_type][atom_2_type];
-        /* calculate the dampling function as Grimme et al. 2010, eq4 */
-        real_t f_dn_6 = 1/(1+6.0f*powf(distance/(SR_6*cutoff_radius), -ALPHA_N(6.0f)));
-        real_t f_dn_8 = 1/(1+6.0f*powf(distance/(SR_8*cutoff_radius), -ALPHA_N(8.0f)));
-        /* calculate the dispersion enegry as Grimme et al. 2010, eq3 */
-        real_t dispersion_energy_6 = S6*(c6_ab/powf(distance, 6.0f))*f_dn_6;
-        real_t dispersion_energy_8 = S8*(c8_ab/powf(distance, 8.0f))*f_dn_8;
-        // printf("dispersion energy between atoms (%llu,%llu): %f\n",atom_1_index,atom_2_index,dispersion_energy_6 + dispersion_energy_8);
-        real_t dispersion_energy = dispersion_energy_6 + dispersion_energy_8;
-        /* add the energy back to results */
-        atomicAdd(&data->results[atom_1_index].energy, dispersion_energy);
-        atomicAdd(&data->results[atom_2_index].energy, dispersion_energy);
-        return;
-    }
-
 }
 
 /**
@@ -480,19 +389,15 @@ __host__ void compute_dispersion_energy(
     // initialize constants
     printf("sorted_elements is at %p\n", sorted_elements);
     h_data.constants = d3_constant_init(num_elements, sorted_elements); // initialize the constants
-    /* allocate memory for data.neighbors and data.num_neighbors */
-    uint64_t *d_num_neighbors;
-    CHECK_CUDA(cudaMalloc((void **)&d_num_neighbors, length * sizeof(uint64_t)));
-    CHECK_CUDA(cudaMemset(d_num_neighbors, 0, length * sizeof(uint64_t)));
-    h_data.num_neighbors = d_num_neighbors; // set the number of neighbors in the device data
+    /* allocate memory for data.neighbors */
     neighbor_t *d_neighbors;
     CHECK_CUDA(cudaMalloc((void **)&d_neighbors, length * MAX_NEIGHBORS * sizeof(neighbor_t)));
     CHECK_CUDA(cudaMemset(d_neighbors, 0, length * MAX_NEIGHBORS * sizeof(neighbor_t)));
     h_data.neighbors = d_neighbors; // set the neighbors in the device data
-    uint64_t *d_max_num_neighbors;
-    CHECK_CUDA(cudaMalloc((void **)&d_max_num_neighbors, length * sizeof(uint64_t)));
-    CHECK_CUDA(cudaMemset(d_max_num_neighbors, 0, length * sizeof(uint64_t))); // initialize the max number of neighbors array to zero
-    h_data.max_num_neighbors = d_max_num_neighbors; // set the max number of neighbors in the device data
+    uint64_t *d_num_neighbors;
+    CHECK_CUDA(cudaMalloc((void **)&d_num_neighbors, length * sizeof(uint64_t)));
+    CHECK_CUDA(cudaMemset(d_num_neighbors, 0, length * sizeof(uint64_t))); // initialize the max number of neighbors array to zero
+    h_data.num_neighbors = d_num_neighbors; // set the max number of neighbors in the device data
     h_data.max_num_neighbor = 0; // set the maximum number of neighbors to zero
     /* initiate cell info and cutoff parameters */
     uint64_t total_cell_bias = 1;
@@ -524,7 +429,6 @@ __host__ void compute_dispersion_energy(
     CHECK_CUDA(cudaDeviceSynchronize()); // synchronize the device to ensure all threads are finished
     device_data_t temp_data;
     CHECK_CUDA(cudaMemcpy(&temp_data, d_data, sizeof(device_data_t), cudaMemcpyDeviceToHost)); // copy the device data back to host memory
-    printf("maximum number of neighbors: %llu\n", temp_data.max_num_neighbor);
     two_body_kernel<<<length, temp_data.max_num_neighbor>>>(d_data);
     CHECK_CUDA(cudaDeviceSynchronize()); // synchronize the device to ensure all threads are finished
     result_t *h_results = (result_t *)malloc(length * sizeof(result_t));
