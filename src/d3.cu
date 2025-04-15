@@ -243,8 +243,10 @@ __global__ void two_body_kernel(device_data_t *data){
     for (uint64_t neighbor_index = threadIdx.x; neighbor_index < data->num_neighbors[atom_1_index]; neighbor_index += blockDim.x) {
         /* each thread is responsible for one atom pair, so the number of threads should be equal to num_atoms * total_cell_bias */
         uint64_t atom_2_index = data->neighbors[atom_1_index * MAX_NEIGHBORS + neighbor_index].index; // index of the second atom in the pair
-        atom_t atom_2 = data->neighbors[atom_1_index * MAX_NEIGHBORS + neighbor_index].atom; // surrounding atom
-        real_t distance = data->neighbors[atom_1_index * MAX_NEIGHBORS + neighbor_index].distance; // distance to the neighbor atom
+        // atom_t atom_2 = data->neighbors[atom_1_index * MAX_NEIGHBORS + neighbor_index].atom; // surrounding atom
+        atom_t atom_2 = data->atoms[atom_2_index]; // this is wrong, only used in debug
+        // real_t distance = data->neighbors[atom_1_index * MAX_NEIGHBORS + neighbor_index].distance; // distance to the neighbor atom
+        real_t distance = sqrtf(powf(atom_1.x - atom_2.x, 2) + powf(atom_1.y - atom_2.y, 2) + powf(atom_1.z - atom_2.z, 2)); // this is wrong, only used in debug
         if (atom_2.element == 0) {
             return; // skip the atom if it is not valid
         }
@@ -308,15 +310,15 @@ __global__ void two_body_kernel(device_data_t *data){
         force += S8 * c8_ab * f_dn_8 * (-8.0f) * powf(distance, -10.0f); // force_8
         /* the second entry of two-body force 
          $F_a = S_n C_n^{ab} r_{ab}^{-n} \frac{\partial}{\partial r_a} f_{d,n}(r_{ab})$
-         $F_a = S_n C_n^{ab} r_{ab}^{-n} -f_{d,n}^2 * (6*(-\alpha_n)*(r_{ab}/{S_{r,n}R_0^{AB}})^(-\alpha_n - 1) * 1/(S_{r,n}R_0^{AB}})) \uparrow{r_{ab}}$*/
-        force += S6 * c6_ab * powf(distance, -6.0f) * (-f_dn_6 * f_dn_6) * (6.0f * (-ALPHA_N(6.0f))* powf(distance/(SR_6*cutoff_radius), -ALPHA_N(6.0f) - 1.0f) / (SR_6*cutoff_radius)); // force_6
-        force += S8 * c8_ab * powf(distance, -8.0f) * (-f_dn_8 * f_dn_8) * (8.0f * (-ALPHA_N(8.0f))* powf(distance/(SR_8*cutoff_radius), -ALPHA_N(8.0f) - 1.0f) / (SR_8*cutoff_radius)); // force_8
-        atomicAdd(&data->results[atom_1_index].force[0], force * (atom_1.x - atom_2.x));
-        atomicAdd(&data->results[atom_1_index].force[1], force * (atom_1.y - atom_2.y));
-        atomicAdd(&data->results[atom_1_index].force[2], force * (atom_1.z - atom_2.z));
-        atomicAdd(&data->results[atom_2_index].force[0], -force * (atom_1.x - atom_2.x));
-        atomicAdd(&data->results[atom_2_index].force[1], -force * (atom_1.y - atom_2.y));
-        atomicAdd(&data->results[atom_2_index].force[2], -force * (atom_1.z - atom_2.z));
+         $F_a = S_n C_n^{ab} r_{ab}^{-n} -f_{d,n}^2 * (6*(-\alpha_n)*(r_{ab}/{S_{r,n}R_0^{AB}})^(-\alpha_n - 1) * 1/(S_{r,n}R_0^{AB}})) / r_ab \uparrow{r_{ab}}$*/
+        force += S6 * c6_ab * powf(distance, -6.0f) * (-f_dn_6 * f_dn_6) * (6.0f * (-ALPHA_N(6.0f))* powf(distance/(SR_6*cutoff_radius), -ALPHA_N(6.0f) - 1.0f) / (SR_6*cutoff_radius)) / distance; // force_6
+        force += S8 * c8_ab * powf(distance, -8.0f) * (-f_dn_8 * f_dn_8) * (6.0f * (-ALPHA_N(8.0f))* powf(distance/(SR_8*cutoff_radius), -ALPHA_N(8.0f) - 1.0f) / (SR_8*cutoff_radius)) / distance; // force_8
+        atomicAdd(&data->results[atom_1_index].force[0], force * (atom_1.x - atom_2.x)/2.0f);
+        atomicAdd(&data->results[atom_1_index].force[1], force * (atom_1.y - atom_2.y)/2.0f);
+        atomicAdd(&data->results[atom_1_index].force[2], force * (atom_1.z - atom_2.z)/2.0f);
+        atomicAdd(&data->results[atom_2_index].force[0], -force * (atom_1.x - atom_2.x)/2.0f);
+        atomicAdd(&data->results[atom_2_index].force[1], -force * (atom_1.y - atom_2.y)/2.0f);
+        atomicAdd(&data->results[atom_2_index].force[2], -force * (atom_1.z - atom_2.z)/2.0f);
     }
 
 }
@@ -592,13 +594,12 @@ __host__ void compute_dispersion_energy(
     real_t total_energy = 0.0f;
     for (uint64_t i = 0; i < length; ++i) {
         // print the results
-        printf("Atom %zu: energy = %f\n", i, h_results[i].energy);
-        printf("Atom %zu: force = (%f, %f, %f)\n", i, h_results[i].force[0], h_results[i].force[1], h_results[i].force[2]);
+        printf("Atom %zu: force = (%.13f, %.13f, %.13f)\n", i, h_results[i].force[0], h_results[i].force[1], h_results[i].force[2]);
         // accumulate the total energy
         total_energy += h_results[i].energy;
     }
     total_energy /= 4.0f; /* the energy of between two atoms is added to both of the atoms. So the totoal energy should be divided by 2 after adding all atomic energy */
-    printf("Total energy = %.9f\n", total_energy);
+    printf("Total energy = %.13f\n", total_energy);
     // free the device memory
     CHECK_CUDA(cudaFree(d_atoms));
     CHECK_CUDA(cudaFree(d_atom_types));
@@ -636,9 +637,9 @@ int main()
     init_params();
     debug("Computing dispersion energy...\n");
     real_t cell[3][3] = {
-        {20.0f, 0.0f, 0.0f},
-        {0.0f, 20.0f, 0.0f},
-        {0.0f, 0.0f, 20.0f}
+        {100.0f, 0.0f, 0.0f},
+        {0.0f, 100.0f, 0.0f},
+        {0.0f, 0.0f, 100.0f}
     };
     for (uint64_t i = 0; i < 3; ++i) {
         for (uint64_t j = 0; j < 3; ++j) {
@@ -647,6 +648,6 @@ int main()
     }
     real_t CN_cutoff_radius = 40.0f * angstron_to_bohr; // cutoff radius in bohr
     real_t cutoff_radius = 94.8683f * angstron_to_bohr;
-    compute_dispersion_energy(atoms, 10, cell, cutoff_radius, CN_cutoff_radius);
+    compute_dispersion_energy(atoms, 2, cell, cutoff_radius, CN_cutoff_radius);
     return 0;
 }
