@@ -14,6 +14,10 @@
             __func__, __FILE__, __LINE__, cudaGetErrorString(err)); \
         exit(EXIT_FAILURE); \
     } \
+    cudaError_t error = cudaGetLastError(); \
+    if (error != cudaSuccess) { \
+        printf("CUDA Error: %s\n", cudaGetErrorString(error)); \
+    } \
 } while (0)
 #define debug(...) printf(__VA_ARGS__)
 #else
@@ -26,7 +30,7 @@
 #define MAX_BLOCK_SIZE 512 // number of threads per block
 #define GRID_SIZE 65536 // number of blocks per grid
 #define MAX_ELEMENTS 118
-#define MAX_NEIGHBORS 5000 // the maximum number of neighbors, dependent on the cutoff choice
+#define MAX_NEIGHBORS 1000 // the maximum number of neighbors, dependent on the cutoff choice
 
 /* 
 constants used in the simulation
@@ -634,10 +638,10 @@ __host__ void compute_dispersion_energy(
     printf("launching adjust_coordination_number_kernel, size: %zu\n", length);
     adjust_coordination_number_kernel<<<1, length>>>(d_data); // launch the kernel to adjust the coordination numbers
     CHECK_CUDA(cudaDeviceSynchronize()); // synchronize the device to ensure all threads are finished
-    printf("launching two_body_kernel, size: %zu, %zu\n", length, 512);
+    printf("launching two_body_kernel, size: %zu, %zu\n", length, (uint64_t)512);
     two_body_kernel<<<length, 512>>>(d_data);
     CHECK_CUDA(cudaDeviceSynchronize()); // synchronize the device to ensure all threads are finished
-    printf("launching three_body_kernel, size: %zu, %zu\n", length, 512);
+    printf("launching three_body_kernel, size: %zu, %zu\n", length, (uint64_t)64);
     three_body_kernel<<<length, dim3(8, 8)>>>(d_data); // launch the kernel to compute the three body forces
     CHECK_CUDA(cudaDeviceSynchronize()); // synchronize the device to ensure all threads are finished
     result_t *h_results = (result_t *)malloc(length * sizeof(result_t));

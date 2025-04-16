@@ -30,3 +30,20 @@ target_compile_options(MyExecutable PRIVATE
 target_compile_options(MyExecutable PRIVATE
     $<$<COMPILE_LANGUAGE:CXX>:/W4>
 )
+
+# Add the d3 target
+add_executable(d3 src/d3.cu src/constants.h)
+
+# Set C++20 standard for d3
+set_target_properties(d3 PROPERTIES
+    CUDA_STANDARD 20
+    CUDA_STANDARD_REQUIRED ON
+)
+
+# Set CUDA compiler options for d3
+target_compile_options(d3 PRIVATE
+    $<$<COMPILE_LANGUAGE:CUDA>:-Xptxas -O2 -lineinfo>
+)
+
+# Link with math library
+target_link_libraries(d3 PRIVATE m CUDA::cudart)

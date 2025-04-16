@@ -10,3 +10,5 @@ data/a.out
 src/ref_collect
 .gitignore
 src/ref
+d3
+params.bin
