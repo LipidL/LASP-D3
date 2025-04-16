@@ -169,10 +169,13 @@ __global__ void coordination_number_kernel(device_data_t *data) {
     /* now the indicies in neighbor_flags is the position to write in neighbors */
     for(uint64_t i = 0; i < CN_neighbors_index; ++i) {
         real_t distance = CN_neighbors[i].distance; // distance to the neighbor atom
+        assert(distance <= data->coordination_number_cutoff); // make sure the distance is in bounds
         /* if the distance is within cutoff range, update neighbors */
         uint64_t neighbor_index = CN_neighbor_flags[thread_index]; // index of the neighbor in the neighbors array
         neighbor_t *data_neighbors = &data->CN_neighbors[atom_1_index * MAX_NEIGHBORS]; // pointer to the neighbors array for the central atom
-        assert(neighbor_index < MAX_NEIGHBORS); // make sure the index is in bounds
+        assert(neighbor_index + i < MAX_NEIGHBORS); // make sure the index is in bounds
+        assert(data_neighbors[neighbor_index+i].index == 0); // make sure the index is not already set
+        assert(distance <= data->coordination_number_cutoff); // make sure the distance is in bounds
         data_neighbors[neighbor_index+i].index = CN_neighbors[i].index;
         data_neighbors[neighbor_index+i].distance = distance;
         data_neighbors[neighbor_index+i].atom = CN_neighbors[i].atom;
@@ -185,7 +188,6 @@ __global__ void coordination_number_kernel(device_data_t *data) {
         real_t coordination_number = 1.0f/(1.0f+exp); // the covalent radii in input table have already taken K2 coefficient into onsideration
         real_t dCN_datom = powf(1.0f+exp,-2.0f)*(-K1)*exp*(covalent_radii_1 + covalent_radii_2)*powf(distance, -3.0f); // dCN_ij/dr_i * 1/r_m
         // increment the data.coordination_number array for both atoms
-        printf("CN between atoms (%llu,%llu): %f, distance is %f\n", atom_1_index, CN_neighbors[i].index, coordination_number, distance);
         atomicAdd(&data->coordination_numbers[atom_1_index], coordination_number); // increment the coordination number for atom 1
         atomicAdd(&data->coordination_numbers[atom_2_index], coordination_number); // increment the coordination number for atom 2
         /* increment the data.dCNi_datomi entry for both atoms*/
@@ -198,10 +200,13 @@ __global__ void coordination_number_kernel(device_data_t *data) {
     }
     for (uint64_t i = 0; i < neighbors_index; ++i) {
         real_t distance = neighbors[i].distance; // distance to the neighbor atom
+        assert(distance <= data->cutoff);
         /* if the distance is within cutoff range, update neighbors */
         uint64_t neighbor_index = neighbor_flags[thread_index]; // index of the neighbor in the neighbors array
         neighbor_t *data_neighbors = &data->neighbors[atom_1_index * MAX_NEIGHBORS]; // pointer to the neighbors array for the central atom
-        assert(neighbor_index < MAX_NEIGHBORS); // make sure the index is in bounds
+        assert(neighbor_index + i < MAX_NEIGHBORS); // make sure the index is in bounds
+        assert(data_neighbors[neighbor_index+i].index == 0); // make sure the index is not already set
+        assert(distance <= data->cutoff); // make sure the distance is in bounds
         data_neighbors[neighbor_index+i].index = neighbors[i].index;
         data_neighbors[neighbor_index+i].distance = distance;
         data_neighbors[neighbor_index+i].atom = neighbors[i].atom;
@@ -226,7 +231,6 @@ __global__ void adjust_coordination_number_kernel(device_data_t *data) {
     uint64_t atom_index = threadIdx.x; // each block is responsible for one atom
     data->coordination_numbers[atom_index] /= 2.0f; // divide the coordination number by 2
     printf("coordination number of atom %llu: %.13f\n", atom_index, data->coordination_numbers[atom_index]);
-    printf("dCN%lld/datom%lld: %f %f %f\n", atom_index, atom_index, data->dCNi_datom_i[3*atom_index+0], data->dCNi_datom_i[3*atom_index+1], data->dCNi_datom_i[3*atom_index+2]);
     // Find the maximum number of neighbors
     __shared__ uint64_t max_neighbors;
     if (atom_index == 0) {
@@ -255,10 +259,9 @@ __global__ void two_body_kernel(device_data_t *data){
     for (uint64_t neighbor_index = threadIdx.x; neighbor_index < data->num_neighbors[atom_1_index]; neighbor_index += blockDim.x) {
         /* each thread is responsible for one atom pair, so the number of threads should be equal to num_atoms * total_cell_bias */
         uint64_t atom_2_index = data->neighbors[atom_1_index * MAX_NEIGHBORS + neighbor_index].index; // index of the second atom in the pair
-        // atom_t atom_2 = data->neighbors[atom_1_index * MAX_NEIGHBORS + neighbor_index].atom; // surrounding atom
-        atom_t atom_2 = data->atoms[atom_2_index]; // this is wrong, only used in debug
-        // real_t distance = data->neighbors[atom_1_index * MAX_NEIGHBORS + neighbor_index].distance; // distance to the neighbor atom
-        real_t distance = sqrtf(powf(atom_1.x - atom_2.x, 2) + powf(atom_1.y - atom_2.y, 2) + powf(atom_1.z - atom_2.z, 2)); // this is wrong, only used in debug
+        atom_t atom_2 = data->neighbors[atom_1_index * MAX_NEIGHBORS + neighbor_index].atom; // surrounding atom
+        real_t distance = data->neighbors[atom_1_index * MAX_NEIGHBORS + neighbor_index].distance; // distance to the neighbor atom
+        // printf("atom_1: %llu, atom_2: %llu, distance: %f\n", atom_1_index, atom_2_index, distance);
         if (atom_2.element == 0) {
             return; // skip the atom if it is not valid
         }
@@ -439,7 +442,6 @@ __global__ void three_body_kernel(device_data_t *data){
             real_t covalent_radii_1 = data->constants->rcov[atom_1_type];
             real_t exp = expf(-K1*((covalent_radii_central + covalent_radii_1)/distance_mi - 1.0f)); // $\exp(-k_1*(\frac{R_A+R_b}{r_{ab}}-1))$
             real_t dCN_1_datom_m = powf(1+exp,-2.0f)*(-K1)*exp*(covalent_radii_central + covalent_radii_1)*powf(distance_mi, -3.0f); // dCN_i/dr_m * 1/r_m
-            printf("dCN%llu,%llu_datom_%llu: (%f,%f,%f)\n", atom_1_index, central_atom_index, central_atom_index, dCN_1_datom_m*(central_atom.x - atom_1.x), dCN_1_datom_m*(central_atom.y - atom_1.y), dCN_1_datom_m*(central_atom.z - atom_1.z));
             real_t cutoff_radius = data->constants->r0ab[atom_1_type][atom_2_type];
             real_t r2r4_1 = data->constants->r2r4[atom_1_type];
             real_t r2r4_2 = data->constants->r2r4[atom_2_type];
@@ -656,7 +658,7 @@ __host__ void compute_dispersion_energy(
     real_t total_energy = 0.0f;
     for (uint64_t i = 0; i < length; ++i) {
         // print the results
-        printf("Atom %zu: force = (%.13f, %.13f, %.13f)\n", i, h_results[i].force[0], h_results[i].force[1], h_results[i].force[2]);
+        printf("Atom %zu: energy: %f, force = (%.13f, %.13f, %.13f)\n", i, h_results[i].energy, h_results[i].force[0], h_results[i].force[1], h_results[i].force[2]);
         // accumulate the total energy
         total_energy += h_results[i].energy;
     }
@@ -699,17 +701,17 @@ int main()
     init_params();
     debug("Computing dispersion energy...\n");
     real_t cell[3][3] = {
-        {100.0f, 0.0f, 0.0f},
-        {0.0f, 100.0f, 0.0f},
-        {0.0f, 0.0f, 100.0f}
+        {20.0f, 0.0f, 0.0f},
+        {0.0f, 20.0f, 0.0f},
+        {0.0f, 0.0f, 20.0f}
     };
     for (uint64_t i = 0; i < 3; ++i) {
         for (uint64_t j = 0; j < 3; ++j) {
             cell[i][j] *= angstron_to_bohr; // convert to bohr
         }
     }
-    real_t CN_cutoff_radius = 40.0f * angstron_to_bohr; // cutoff radius in bohr
-    real_t cutoff_radius = 94.8683f * angstron_to_bohr;
-    compute_dispersion_energy(atoms, 3, cell, cutoff_radius, CN_cutoff_radius);
+    real_t CN_cutoff_radius = 40.0f; // cutoff radius in bohr
+    real_t cutoff_radius = 94.8683f;
+    compute_dispersion_energy(atoms, 10, cell, cutoff_radius, CN_cutoff_radius);
     return 0;
 }
