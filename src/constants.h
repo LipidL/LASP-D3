@@ -3,6 +3,7 @@
 #include <stdlib.h>
 #include <stdio.h>
 #include <stdint.h>
+#include "d3.h"
 
 // d3 system parameters
 #define NUM_ELEMENTS 95

@@ -3,6 +3,8 @@
 #include <stdio.h>
 #include <stdint.h>
 
+#include "d3.h"
+
 #define DEBUG
 
 // macros for debugging
@@ -500,7 +502,7 @@ __host__ int32_t find(uint64_t *elements, uint64_t length, uint64_t element){
  * @param length the number of atoms in the system.
  * @note the function is not thread safe, and should be called from a single thread.
  */
-__host__ void compute_dispersion_energy(
+__host__ real_t *compute_dispersion_energy(
     real_t atoms[][4], 
     uint64_t length, 
     real_t cell[3][3],
@@ -659,15 +661,16 @@ __host__ void compute_dispersion_energy(
     }
     // copy the results back to host memory
     CHECK_CUDA(cudaMemcpy(h_results, d_results, length * sizeof(result_t), cudaMemcpyDeviceToHost));
-    real_t total_energy = 0.0f;
-    for (uint64_t i = 0; i < length; ++i) {
+    real_t *result = (real_t *)malloc((length+1) * 3 * sizeof(real_t));
+    memset(result, 0, (length+1) * 3 * sizeof(real_t)); // initialize the result array to zero
+    for (uint64_t i = 1; i <= length; ++i) {
+        result[i*3+0] = h_results[i].force[0];
+        result[i*3+1] = h_results[i].force[1];
+        result[i*3+2] = h_results[i].force[2];
+        result[0] += h_results[i].energy; // accumulate the energy
         // print the results
-        printf("Atom %zu: energy: %f, force = (%.13f, %.13f, %.13f)\n", i, h_results[i].energy, h_results[i].force[0], h_results[i].force[1], h_results[i].force[2]);
-        // accumulate the total energy
-        total_energy += h_results[i].energy;
     }
-    total_energy /= 4.0f; /* the energy of between two atoms is added to both of the atoms. So the totoal energy should be divided by 2 after adding all atomic energy */
-    printf("Total energy = %.13f\n", total_energy);
+    result[0] /= 4.0f; /* the energy of between two atoms is added to both of the atoms. So the totoal energy should be divided by 2 after adding all atomic energy */
     // free the device memory
     CHECK_CUDA(cudaFree(d_atoms));
     CHECK_CUDA(cudaFree(d_atom_types));
@@ -676,8 +679,10 @@ __host__ void compute_dispersion_energy(
     CHECK_CUDA(cudaFree(d_data));
     // free the host memory
     free(h_atoms);
+    return result;
 }
 
+#ifndef BUILD_LIBRARY
 int main()
 {
     // example usage of the compute_dispersion_energy function
@@ -716,6 +721,14 @@ int main()
     }
     real_t CN_cutoff_radius = 40.0f; // cutoff radius in bohr
     real_t cutoff_radius = 94.8683f;
-    compute_dispersion_energy(atoms, 10, cell, cutoff_radius, CN_cutoff_radius);
+    real_t *result = compute_dispersion_energy(atoms, 10, cell, cutoff_radius, CN_cutoff_radius);
+    printf("energy: %f\n", result[0]);
+    for (int i = 0; i < 10; ++i) {
+        real_t force_x = result[0 + i * 3];
+        real_t force_y = result[1 + i * 3];
+        real_t force_z = result[2 + i * 3];
+        printf("force[%d]: %f %f %f\n", i, force_x, force_y, force_z);
+    }
     return 0;
 }
+#endif

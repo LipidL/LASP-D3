@@ -12,3 +12,6 @@ src/ref_collect
 src/ref
 d3
 params.bin
+temp_objs/*
+a.out
+*.a
