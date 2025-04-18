@@ -663,10 +663,10 @@ __host__ real_t *compute_dispersion_energy(
     CHECK_CUDA(cudaMemcpy(h_results, d_results, length * sizeof(result_t), cudaMemcpyDeviceToHost));
     real_t *result = (real_t *)malloc((length+1) * 3 * sizeof(real_t));
     memset(result, 0, (length+1) * 3 * sizeof(real_t)); // initialize the result array to zero
-    for (uint64_t i = 1; i <= length; ++i) {
-        result[i*3+0] = h_results[i].force[0];
-        result[i*3+1] = h_results[i].force[1];
-        result[i*3+2] = h_results[i].force[2];
+    for (uint64_t i = 0; i < length; ++i) {
+        result[(i+1)*3+0] = h_results[i].force[0];
+        result[(i+1)*3+1] = h_results[i].force[1];
+        result[(i+1)*3+2] = h_results[i].force[2];
         result[0] += h_results[i].energy; // accumulate the energy
         // print the results
     }

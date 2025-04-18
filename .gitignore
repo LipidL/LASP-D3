@@ -1,4 +1,3 @@
-data/dftd3_params.npz
 data/parameters.o
 .gitignore
 data/parameters.h
