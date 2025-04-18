@@ -723,7 +723,7 @@ int main()
     real_t cutoff_radius = 94.8683f;
     real_t *result = compute_dispersion_energy(atoms, 10, cell, cutoff_radius, CN_cutoff_radius);
     printf("energy: %f\n", result[0]);
-    for (int i = 0; i < 10; ++i) {
+    for (int i = 1; i <= 10; ++i) {
         real_t force_x = result[0 + i * 3];
         real_t force_y = result[1 + i * 3];
         real_t force_z = result[2 + i * 3];

@@ -22,7 +22,6 @@ int main()
         atoms[i][2] *= angstron_to_bohr; // convert to bohr
         atoms[i][3] *= angstron_to_bohr; // convert to bohr
     }
-    // fill the atoms array with Po element
     // initialize parameters
     init_params();
     real_t cell[3][3] = {
