@@ -88,15 +88,18 @@ typedef struct device_data {
  * @brief this kernel is used to compute the coordination number of each atom in the system.
  * @note this kernel should be launched with a 1D grid of blocks, each block containing a 1D array of threads.
  * @note the number of blocks equals the number of atoms in the system.
- * @note and the number of threads in each block equals to num_atoms
+ * @note and the number of threads in each block shouldn't exceed the number of atoms in the system
+ * @note it's best to use a division of the number of atoms in the system as the number of threads in each block.
+ * @note the number of threads in each block must not exceed MAX_BLOCK_SIZE.
  * @note the total_cell_bias should be precomputed at host
  */
 __global__ void coordination_number_kernel(device_data_t *data) {
     uint64_t atom_1_index = blockIdx.x; // each block is responsible for one central atom
+    uint64_t atom_1_type = data->atom_types[atom_1_index]; // type of the central atom
+    atom_t atom_1 = data->atoms[atom_1_index]; // central atom
     uint64_t total_cell_bias = data->max_cell_bias[0] * data->max_cell_bias[1] * data->max_cell_bias[2]; // total number of cell bias
     uint64_t num_threads = blockDim.x; // total number of threads in the block
     uint64_t thread_index = threadIdx.x; // the linear index of thread in current block
-    uint64_t atom_2_index = thread_index;
     /* a chunk of shared memory block is used to store neighbor indicies 
      each thread can have 1 entry */
     __shared__ uint64_t neighbor_flags[MAX_BLOCK_SIZE]; // shared memory for neighbor indices
@@ -112,44 +115,44 @@ __global__ void coordination_number_kernel(device_data_t *data) {
     neighbor_t CN_neighbors[MAX_NEIGHBORS]; // array of neighbors for the CN calculation
     uint64_t neighbors_index = 0; // index of the neighbor in the neighbors array
     uint64_t CN_neighbors_index = 0; // index of the neighbor in the CN neighbors array
-    uint64_t atom_1_type = data->atom_types[atom_1_index]; // type of the central atom
-    uint64_t atom_2_type = data->atom_types[atom_2_index]; // type of the surrounding atom
-    atom_t atom_1 = data->atoms[atom_1_index]; // central atom
-    for(uint64_t bias_index = 0; bias_index < total_cell_bias; ++bias_index) {
-        /* each thread is responsible for one atom pair, so the number of threads should be equal to num_atoms * total_cell_bias */
-        int64_t x_bias = (bias_index % data->max_cell_bias[0]) - (data->max_cell_bias[0]/2); // x bias
-        int64_t y_bias = (bias_index / data->max_cell_bias[0] % data->max_cell_bias[1]) - (data->max_cell_bias[1]/2); // y bias
-        int64_t z_bias = (bias_index / (data->max_cell_bias[0] * data->max_cell_bias[1]) % data->max_cell_bias[2]) - (data->max_cell_bias[2]/2); // z bias
-        assert(atom_2_index < data->num_atoms); // make sure the index is in bounds
+    for(uint64_t atom_2_index = thread_index; atom_2_index < data->num_atoms; atom_2_index += num_threads) {
+        uint64_t atom_2_type = data->atom_types[atom_2_index]; // type of the surrounding atom
+        for(uint64_t bias_index = 0; bias_index < total_cell_bias; ++bias_index) {
+            /* each thread is responsible for one atom pair, so the number of threads should be equal to num_atoms * total_cell_bias */
+            int64_t x_bias = (bias_index % data->max_cell_bias[0]) - (data->max_cell_bias[0]/2); // x bias
+            int64_t y_bias = (bias_index / data->max_cell_bias[0] % data->max_cell_bias[1]) - (data->max_cell_bias[1]/2); // y bias
+            int64_t z_bias = (bias_index / (data->max_cell_bias[0] * data->max_cell_bias[1]) % data->max_cell_bias[2]) - (data->max_cell_bias[2]/2); // z bias
+            assert(atom_2_index < data->num_atoms); // make sure the index is in bounds
 
-        atom_t atom_2 = data->atoms[atom_2_index]; // surrounding atom
-        /* translate atom_2 due to periodic boundaries */
-        atom_2.x += x_bias * data->cell[0][0] + y_bias * data->cell[1][0] + z_bias * data->cell[2][0]; // translate in x direction
-        atom_2.y += x_bias * data->cell[0][1] + y_bias * data->cell[1][1] + z_bias * data->cell[2][1]; // translate in y direction
-        atom_2.z += x_bias * data->cell[0][2] + y_bias * data->cell[1][2] + z_bias * data->cell[2][2]; // translate in z direction
-        /* calculate the distance between the two atoms */
-        real_t distance = sqrtf(powf(atom_1.x - atom_2.x, 2) + powf(atom_1.y - atom_2.y, 2) + powf(atom_1.z - atom_2.z, 2));
-        /* if the distance is within cutoff range, update neighbor_flags */
-        if (distance <= data->coordination_number_cutoff && distance > 0.0f) {
-            CN_neighbor_flags[thread_index] += 1; // mark the atom as a neighbor
-            if (CN_neighbors_index < MAX_NEIGHBORS) {
-                CN_neighbors[CN_neighbors_index].index = atom_2_index; // set the index of the neighbor atom
-                CN_neighbors[CN_neighbors_index].distance = distance; // set the distance to the neighbor atom
-                CN_neighbors[CN_neighbors_index].atom = atom_2; // set the atom data of the neighbor atom
-                CN_neighbors_index++; // increment the index of the neighbor
-            } else {
-                printf("Warning: too many neighbors for atom %llu\n", atom_1_index); // too many neighbors, skip this one
+            atom_t atom_2 = data->atoms[atom_2_index]; // surrounding atom
+            /* translate atom_2 due to periodic boundaries */
+            atom_2.x += x_bias * data->cell[0][0] + y_bias * data->cell[1][0] + z_bias * data->cell[2][0]; // translate in x direction
+            atom_2.y += x_bias * data->cell[0][1] + y_bias * data->cell[1][1] + z_bias * data->cell[2][1]; // translate in y direction
+            atom_2.z += x_bias * data->cell[0][2] + y_bias * data->cell[1][2] + z_bias * data->cell[2][2]; // translate in z direction
+            /* calculate the distance between the two atoms */
+            real_t distance = sqrtf(powf(atom_1.x - atom_2.x, 2) + powf(atom_1.y - atom_2.y, 2) + powf(atom_1.z - atom_2.z, 2));
+            /* if the distance is within cutoff range, update neighbor_flags */
+            if (distance <= data->coordination_number_cutoff && distance > 0.0f) {
+                CN_neighbor_flags[thread_index] += 1; // mark the atom as a neighbor
+                if (CN_neighbors_index < MAX_NEIGHBORS) {
+                    CN_neighbors[CN_neighbors_index].index = atom_2_index; // set the index of the neighbor atom
+                    CN_neighbors[CN_neighbors_index].distance = distance; // set the distance to the neighbor atom
+                    CN_neighbors[CN_neighbors_index].atom = atom_2; // set the atom data of the neighbor atom
+                    CN_neighbors_index++; // increment the index of the neighbor
+                } else {
+                    printf("Warning: too many neighbors for atom %llu\n", atom_1_index); // too many neighbors, skip this one
+                }
             }
-        }
-        if (distance <= data->cutoff && distance > 0.0f) {
-            neighbor_flags[thread_index] += 1; // mark the atom as a neighbor for CN calculation
-            if (neighbors_index < MAX_NEIGHBORS) {
-                neighbors[neighbors_index].index = atom_2_index; // set the index of the neighbor atom
-                neighbors[neighbors_index].distance = distance; // set the distance to the neighbor atom
-                neighbors[neighbors_index].atom = atom_2; // set the atom data of the neighbor atom
-                neighbors_index++; // increment the index of the neighbor
-            } else {
-                printf("Warning: too many neighbors for atom %llu\n", atom_1_index); // too many neighbors, skip this one
+            if (distance <= data->cutoff && distance > 0.0f) {
+                neighbor_flags[thread_index] += 1; // mark the atom as a neighbor for CN calculation
+                if (neighbors_index < MAX_NEIGHBORS) {
+                    neighbors[neighbors_index].index = atom_2_index; // set the index of the neighbor atom
+                    neighbors[neighbors_index].distance = distance; // set the distance to the neighbor atom
+                    neighbors[neighbors_index].atom = atom_2; // set the atom data of the neighbor atom
+                    neighbors_index++; // increment the index of the neighbor
+                } else {
+                    printf("Warning: too many neighbors for atom %llu\n", atom_1_index); // too many neighbors, skip this one
+                }
             }
         }
     }
@@ -178,6 +181,8 @@ __global__ void coordination_number_kernel(device_data_t *data) {
         assert(distance <= data->coordination_number_cutoff); // make sure the distance is in bounds
         /* if the distance is within cutoff range, update neighbors */
         uint64_t neighbor_index = CN_neighbor_flags[thread_index]; // index of the neighbor in the neighbors array
+        uint64_t atom_2_index = CN_neighbors[i].index; // index of the second atom in the pair
+        uint64_t atom_2_type = data->atom_types[atom_2_index]; // type of the surrounding atom
         neighbor_t *data_neighbors = &data->CN_neighbors[atom_1_index * MAX_NEIGHBORS]; // pointer to the neighbors array for the central atom
         assert(neighbor_index + i < MAX_NEIGHBORS); // make sure the index is in bounds
         assert(data_neighbors[neighbor_index+i].index == 0); // make sure the index is not already set
