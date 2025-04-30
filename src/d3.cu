@@ -52,6 +52,68 @@ obtained from Grimme et al. 2010, Table SI1
 #define SR_6 1.217f
 #define SR_8 1.0f
 
+// Calculate inverse of a 3x3 matrix
+void matrix_inverse(const real_t mat[3][3], real_t inv[3][3]) {
+    // Calculate determinant
+    real_t det = mat[0][0] * (mat[1][1] * mat[2][2] - mat[1][2] * mat[2][1])
+              - mat[0][1] * (mat[1][0] * mat[2][2] - mat[1][2] * mat[2][0])
+              + mat[0][2] * (mat[1][0] * mat[2][1] - mat[1][1] * mat[2][0]);
+    
+              real_t inv_det = 1.0 / det;
+    
+    // Calculate cofactor matrix (transposed)
+    inv[0][0] = (mat[1][1] * mat[2][2] - mat[1][2] * mat[2][1]) * inv_det;
+    inv[0][1] = (mat[0][2] * mat[2][1] - mat[0][1] * mat[2][2]) * inv_det;
+    inv[0][2] = (mat[0][1] * mat[1][2] - mat[0][2] * mat[1][1]) * inv_det;
+    
+    inv[1][0] = (mat[1][2] * mat[2][0] - mat[1][0] * mat[2][2]) * inv_det;
+    inv[1][1] = (mat[0][0] * mat[2][2] - mat[0][2] * mat[2][0]) * inv_det;
+    inv[1][2] = (mat[0][2] * mat[1][0] - mat[0][0] * mat[1][2]) * inv_det;
+    
+    inv[2][0] = (mat[1][0] * mat[2][1] - mat[1][1] * mat[2][0]) * inv_det;
+    inv[2][1] = (mat[0][1] * mat[2][0] - mat[0][0] * mat[2][1]) * inv_det;
+    inv[2][2] = (mat[0][0] * mat[1][1] - mat[0][1] * mat[1][0]) * inv_det;
+}
+
+// Transpose a 3x3 matrix
+void matrix_transpose(const real_t mat[3][3], real_t trans[3][3]) {
+    for (int i = 0; i < 3; i++) {
+        for (int j = 0; j < 3; j++) {
+            trans[j][i] = mat[i][j];
+        }
+    }
+}
+
+// Calculate row-wise norm of a 3x3 matrix
+void row_norms(const real_t mat[3][3], real_t norms[3]) {
+    for (int i = 0; i < 3; i++) {
+        norms[i] = sqrt(mat[i][0] * mat[i][0] + 
+                         mat[i][1] * mat[i][1] + 
+                         mat[i][2] * mat[i][2]);
+    }
+}
+
+// Equivalent to torch.ceil(cutoff * inv_distances).long()
+void calculate_cell_repeats(const real_t cell[3][3], real_t cutoff, uint64_t repeats[3]) {
+    real_t inv[3][3];
+    real_t trans[3][3];
+    real_t norms[3];
+    
+    // Calculate inverse of cell matrix
+    matrix_inverse(cell, inv);
+    
+    // Transpose the inverse matrix
+    matrix_transpose(inv, trans);
+    
+    // Calculate norms of each row
+    row_norms(trans, norms);
+    
+    // Multiply by cutoff and round up to nearest integer
+    for (int i = 0; i < 3; i++) {
+        repeats[i] = (int)ceil(cutoff * norms[i]);
+    }
+}
+
 typedef struct neighbor {
     uint64_t index; // index of the neighbor atom
     atom_t atom; // atom data of the neighbor atom
@@ -59,14 +121,17 @@ typedef struct neighbor {
 } neighbor_t;
 
 typedef struct device_data {
-    uint64_t num_atoms;
-    uint64_t num_elements;
-    /*
-    to construct it, sort the elements by their atomic number, and then assign the index of the element in the sorted array to the atom_types array.
-    */
+    uint64_t num_atoms; // number of atoms in the system
+    uint64_t num_elements; // number of unique elements in the system
+    // uint64_t *unique_elements; // array of unique elements in the system, length: num_elements
     uint64_t *atom_types; // array of atom types, length: num_atoms. the entries is not the atomic number, but the index of the corresponding entry in constants.
     atom_t *atoms; // array of atom data
-    d3_constant_t *constants; // constants for the simulation
+    real_t *c6_ab_ref; // size: num_elements*num_elements*NUM_REF_C6*NUM_REF_C6*NUM_C6AB_ENTRIES
+    uint64_t c6_stride_1, c6_stride_2, c6_stride_3, c6_stride_4; // strides for c6ab array
+    real_t *r0ab; // size: num_elements*num_elements
+    real_t *rcov; // size: num_elements
+    real_t *r2r4;// size: num_elements
+    // d3_constant_t *constants; // constants for the simulation
     real_t cell[3][3]; // cell matrix, specify the three vectors of the cell
     uint64_t max_cell_bias[3]; // the maximum bias of the cell in each direction, this must be an odd number (because of symmetry)
     // uint64_t *num_neighbors; // array of number of neighbors for each atom, length: num_atoms.
@@ -83,6 +148,278 @@ typedef struct device_data {
     real_t *dCNi_datom_i; // array of dCN_i/dr_i, used in force computation, length: 3*num_atoms.
     result_t *results; // results of the simulation
 } device_data_t;
+
+/**
+ * @brief class to store unique elements in the system
+ * @note the user must not construct a Unique_Elements object directly, but use the Unique_Elements constructor instead
+ */
+class Unique_Elements {
+public:
+    uint16_t num_elements; // number of unique elements in the system
+    Unique_Elements(uint16_t *elements, uint16_t length) {
+        uint16_t *all_elements = (uint16_t *)malloc(MAX_ELEMENTS * sizeof(uint16_t));
+        memset(all_elements, 0, MAX_ELEMENTS * sizeof(uint16_t)); // initialize all elements to 0
+        this->num_elements = 0;
+        for (uint16_t i = 0; i < length; ++i) {
+            if (elements[i] >= MAX_ELEMENTS) {
+                fprintf(stderr, "Error: element %d is out of range\n", elements[i]);
+                free(all_elements);
+                exit(EXIT_FAILURE);
+            }
+            if (all_elements[elements[i]] == 0) {
+                this->num_elements++;
+            }
+            all_elements[elements[i]] = 1; // mark the element as present
+        }
+        this->elements_ = (uint16_t *)malloc(this->num_elements * sizeof(uint16_t));
+        uint16_t index = 0;
+        for (uint16_t i = 0; i < MAX_ELEMENTS; ++i) {
+            if (all_elements[i] == 1) {
+                this->elements_[index] = i;
+                index++;
+            }
+        }
+        assert(index == this->num_elements); // check if the number of unique elements is correct
+        free(all_elements); // free the temporary array        
+    } // Unique_Elements constructor
+    ~Unique_Elements() {
+        free(this->elements_); // free the unique elements array
+    } // Unique_Elements destructor
+    uint16_t find(uint16_t element) {
+        for (uint16_t i = 0; i < this->num_elements; ++i) {
+            if (this->elements_[i] == element) {
+                return i; // return the index of the element
+            }
+        }
+        fprintf(stderr, "Error: element %d not found\n", element);
+        exit(EXIT_FAILURE);
+    }
+    uint16_t operator[](uint16_t index) {
+        if (index >= this->num_elements) {
+            fprintf(stderr, "Error: index %d is out of range\n", index);
+            exit(EXIT_FAILURE);
+        }
+        return this->elements_[index]; // return the element at the given index
+    }
+
+private:
+    uint16_t *elements_; // array of unique elements in the system
+}; // Unique_Elements
+
+/**
+ * @brief class on host to store the device data
+ * @note the data is stored in device memory, so no host access is allowed
+ */
+class Device_Buffer {
+public:
+    result_t *results; // pointer to result array on device, used in cudaMemcpy
+    device_data_t data; // device data structure on host
+    __host__ Device_Buffer(real_t coords[][3], uint16_t *elements, real_t cell[3][3], uint64_t length, real_t cutoff, real_t CN_cutoff){
+        Unique_Elements unique_elements(elements, length); // create the unique elements object
+        {
+            /* construct elements */
+            this->data.num_atoms = length; // number of atoms in the system
+            this->data.num_elements = unique_elements.num_elements; // number of unique elements in the system
+
+   
+            uint64_t *h_atom_types = (uint64_t *)malloc(sizeof(uint64_t) * length);
+            for (uint64_t i = 0; i < length; ++i) {
+                h_atom_types[i] = unique_elements.find(elements[i]);
+            }
+       
+            uint64_t *d_atom_types;
+            CHECK_CUDA(cudaMalloc((void**)&d_atom_types, sizeof(uint64_t) * length));
+            CHECK_CUDA(cudaMemcpy(d_atom_types, h_atom_types, sizeof(uint64_t)*length, cudaMemcpyHostToDevice));
+            free(h_atom_types);
+            this->data.atom_types = d_atom_types;
+        }
+        {
+            /* construct cell */
+            for (uint16_t i = 0; i < 3; ++i) {
+                for (uint16_t j = 0; j < 3; ++j) {
+                    this->data.cell[i][j] = cell[i][j];
+                }
+            }
+        }
+        {
+            /* construct atoms */
+            atom_t *h_atoms = (atom_t *)malloc(length * sizeof(atom_t));
+            if (h_atoms == NULL) {
+                fprintf(stderr, "Error: failed to allocate memory for atoms on host");
+                exit(EXIT_FAILURE);
+            }
+            for (uint64_t i = 0; i < length; ++i) {
+                h_atoms[i].element = elements[i];
+                h_atoms[i].x = coords[i][0];
+                h_atoms[i].y = coords[i][1];
+                h_atoms[i].z = coords[i][2];
+            }
+            atom_t *d_atoms;
+            CHECK_CUDA(cudaMalloc((void**)&d_atoms, length * sizeof(atom_t)));
+            CHECK_CUDA(cudaMemcpy(d_atoms, h_atoms, length * sizeof(atom_t), cudaMemcpyHostToDevice));
+            this->data.atoms = d_atoms; // set the atoms pointer in device data
+            free(h_atoms); // free the host atoms array
+        }
+
+        /* construct constants */
+        uint16_t num_elements = unique_elements.num_elements;
+        {
+            /* c6ab_ref array */
+            this->data.c6_stride_1 = num_elements*NUM_REF_C6*NUM_REF_C6*NUM_C6AB_ENTRIES;
+            this->data.c6_stride_2 = NUM_REF_C6*NUM_REF_C6*NUM_C6AB_ENTRIES;
+            this->data.c6_stride_3 = NUM_REF_C6*NUM_C6AB_ENTRIES;
+            this->data.c6_stride_4 = NUM_C6AB_ENTRIES;
+            real_t *h_c6ab_ref = (real_t *)malloc(num_elements*num_elements*NUM_REF_C6*NUM_REF_C6*NUM_C6AB_ENTRIES*sizeof(real_t));
+            for (uint16_t i = 0; i < num_elements; ++i) {
+                for(uint16_t j = 0; j < num_elements; ++j) {
+                    uint16_t element_i = unique_elements[i];
+                    uint16_t element_j = unique_elements[j];
+                    for(uint16_t k = 0; k < NUM_REF_C6; ++k) {
+                        for (uint16_t l = 0; l < NUM_REF_C6; ++l) {
+                            uint64_t index = this->data.c6_stride_1 * i + this->data.c6_stride_2 * j + this->data.c6_stride_3 * k + this->data.c6_stride_4 * l;
+                            for(uint16_t m = 0; m < NUM_C6AB_ENTRIES; ++m) {
+                                h_c6ab_ref[index+m] = c6ab_ref[element_i][element_j][k][l][m];
+                            }
+                        }
+                    }
+                }
+            }
+            real_t *d_c6ab_ref;
+            CHECK_CUDA(cudaMalloc((void**)&d_c6ab_ref, num_elements*num_elements*NUM_REF_C6*NUM_REF_C6*NUM_C6AB_ENTRIES*sizeof(real_t)));
+            CHECK_CUDA(cudaMemcpy(d_c6ab_ref, h_c6ab_ref, num_elements*num_elements*NUM_REF_C6*NUM_REF_C6*NUM_C6AB_ENTRIES*sizeof(real_t), cudaMemcpyHostToDevice));
+            this->data.c6_ab_ref = d_c6ab_ref;
+            free(h_c6ab_ref);
+        } // c6ab_ref array
+        {
+            /* r0ab array */
+            real_t *h_r0ab = (real_t *)malloc(num_elements * num_elements * sizeof(real_t));
+            for(uint16_t i = 0; i < num_elements; ++i) {
+                for(uint16_t j = 0; j < num_elements; ++j) {
+                    uint16_t element_i = unique_elements[i];
+                    uint16_t element_j = unique_elements[j];
+                    h_r0ab[i*num_elements+j] = r0ab[element_i][element_j];
+                }
+            }
+            real_t *d_r0ab;
+            CHECK_CUDA(cudaMalloc((void**)&d_r0ab, num_elements*num_elements));
+            CHECK_CUDA(cudaMemcpy(d_r0ab, h_r0ab, num_elements*num_elements, cudaMemcpyHostToDevice));
+            this->data.r0ab = d_r0ab;
+            free(h_r0ab);
+        } // r0ab array
+        {
+            /* rcov array */
+            real_t *h_rcov = (real_t *)malloc(num_elements * sizeof(real_t));
+            for(uint16_t i = 0; i < num_elements; ++i) {
+                h_rcov[i] = rcov[unique_elements[i]];
+            }
+            real_t *d_rcov;
+            CHECK_CUDA(cudaMalloc((void**)&d_rcov, num_elements*sizeof(real_t)));
+            CHECK_CUDA(cudaMemcpy(d_rcov, h_rcov, num_elements*sizeof(real_t), cudaMemcpyHostToDevice));
+            this->data.rcov = d_rcov;
+            free(h_rcov);
+        } // rcov array
+        {
+            /* r2r4 array */
+            real_t *h_r2r4 = (real_t *)malloc(num_elements * sizeof(real_t));
+            for(uint16_t i = 0; i < num_elements; ++i) {
+                h_r2r4[i] = r2r4[unique_elements[i]];
+            }
+            real_t *d_r2r4;
+            CHECK_CUDA(cudaMalloc((void**)&d_r2r4, num_elements*sizeof(real_t)));
+            CHECK_CUDA(cudaMemcpy(d_r2r4, h_r2r4, num_elements*sizeof(real_t), cudaMemcpyHostToDevice));
+            this->data.r2r4 = d_r2r4;
+            free(h_r2r4);
+        } // r2r4 array
+        {
+            /* construct supercell information */
+            this->data.coordination_number_cutoff = CN_cutoff;
+            this->data.cutoff = cutoff;
+            real_t larger_cutoff = CN_cutoff > cutoff ? CN_cutoff : cutoff;
+            calculate_cell_repeats(cell, larger_cutoff, this->data.max_cell_bias); 
+        } // cupercell information
+        {
+            /* construct other fields */
+            neighbor_t *neighbors;
+            cudaMalloc((void**)&neighbors, length * MAX_NEIGHBORS * sizeof(neighbor_t));
+            cudaMemset(neighbors, 0, length * MAX_NEIGHBORS * sizeof(neighbor_t));
+            this->data.neighbors = neighbors;
+            neighbor_t *CN_neighbors;
+            cudaMalloc((void**)&CN_neighbors, length * MAX_NEIGHBORS * sizeof(neighbor_t));
+            cudaMemset(CN_neighbors, 0, length * MAX_NEIGHBORS * sizeof(neighbor_t));
+            this->data.CN_neighbors = CN_neighbors;
+            real_t *coordination_numbers;
+            cudaMalloc((void**)&coordination_numbers, length * sizeof(real_t));
+            cudaMemset(coordination_numbers, 0, length * sizeof(real_t));
+            this->data.coordination_numbers = coordination_numbers;
+            uint64_t *num_neighbors;
+            cudaMalloc((void**)&num_neighbors, length * sizeof(uint64_t));
+            cudaMemset(num_neighbors, 0, length * sizeof(uint64_t));
+            this->data.num_neighbors = num_neighbors;
+            uint64_t *num_CN_neighbors;
+            cudaMalloc((void**)&num_CN_neighbors, length * sizeof(uint64_t));
+            cudaMemset(num_CN_neighbors, 0, length * sizeof(uint64_t));
+            this->data.num_CN_neighbors = num_CN_neighbors;
+            real_t *dCNi_datom_i;
+            cudaMalloc((void**)&dCNi_datom_i, length * 3 * sizeof(real_t));
+            cudaMemset(dCNi_datom_i, 0, length * 3 * sizeof(real_t));
+            this->data.dCNi_datom_i = dCNi_datom_i;
+            this->data.max_num_neighbor = 0; // initialize the maximum number of neighbors to 0
+            this->data.max_num_CN_neighbor = 0; // initialize the maximum number of CN neighbors to 0
+            result_t *results;
+            cudaMalloc((void**)&results, length * sizeof(result_t));
+            cudaMemset(results, 0, length * sizeof(result_t));
+            this->data.results = results;
+            this->results = results; // set the results pointer in the class
+        }
+        /* copy the data to device */
+        device_data_t *d_data;
+        CHECK_CUDA(cudaMalloc((void**)&d_data, sizeof(device_data_t)));
+        CHECK_CUDA(cudaMemcpy(d_data, &this->data, sizeof(device_data_t), cudaMemcpyHostToDevice));
+        this->data_ = d_data; // set the data pointer in the class
+    };
+    __host__ ~Device_Buffer() {
+        if (this->data_ != NULL) {
+            CHECK_CUDA(cudaFree(this->data.atom_types)); // free the atom types array
+            CHECK_CUDA(cudaFree(this->data.atoms)); // free the atoms array
+            CHECK_CUDA(cudaFree(this->data.c6_ab_ref)); // free the c6ab_ref array
+            CHECK_CUDA(cudaFree(this->data.r0ab)); // free the r0ab array
+            CHECK_CUDA(cudaFree(this->data.rcov)); // free the rcov array
+            CHECK_CUDA(cudaFree(this->data.r2r4)); // free the r2r4 array
+            CHECK_CUDA(cudaFree(this->data.neighbors)); // free the neighbors array
+            CHECK_CUDA(cudaFree(this->data.CN_neighbors)); // free the CN neighbors array
+            CHECK_CUDA(cudaFree(this->data.coordination_numbers)); // free the coordination numbers array
+            CHECK_CUDA(cudaFree(this->data.num_neighbors)); // free the number of neighbors array
+            CHECK_CUDA(cudaFree(this->data.num_CN_neighbors)); // free the number of CN neighbors array
+            CHECK_CUDA(cudaFree(this->data.dCNi_datom_i)); // free the dCNi_datom_i array
+            CHECK_CUDA(cudaFree(this->data.results)); // free the results array
+        }
+    }
+
+    /* disable copying */
+    Device_Buffer(const Device_Buffer&) = delete; // disable copy constructor
+    Device_Buffer& operator=(const Device_Buffer&) = delete; // disable copy assignment operator
+
+    /* enable moving */
+    __host__ Device_Buffer(Device_Buffer&& other) noexcept : data_(other.data_) {
+        other.data_ = nullptr; // transfer ownership of the data pointer
+    } // move constructor
+    __host__ Device_Buffer& operator=(Device_Buffer&& other) noexcept {
+        if (this != &other) {
+            if (this->data_ != nullptr){
+                CHECK_CUDA(cudaFree(this->data_)); // free the current data
+            }
+            this->data_ = other.data_; // transfer ownership of the data pointer
+            other.data_ = nullptr; // set the other data pointer to null
+        }
+        return *this;
+    } // move assignment operator
+
+    __host__ device_data_t* get() {
+        return this->data_; // return the device data pointer
+    } // get device data pointer
+private:
+    device_data_t *data_; // pointer to the device data
+}; // Device_Buffer
 
 /**
  * @brief this kernel is used to compute the coordination number of each atom in the system.
@@ -191,8 +528,8 @@ __global__ void coordination_number_kernel(device_data_t *data) {
         data_neighbors[neighbor_index+i].distance = distance;
         data_neighbors[neighbor_index+i].atom = CN_neighbors[i].atom;
         /* compute the coordination number and add to the CN of atom 1 and atom 2 */
-        real_t covalent_radii_1 = data->constants->rcov[atom_1_type];
-        real_t covalent_radii_2 = data->constants->rcov[atom_2_type];
+        real_t covalent_radii_1 = data->rcov[atom_1_type];
+        real_t covalent_radii_2 = data->rcov[atom_2_type];
         /* eq 15 in Grimme et al. 2010
         $CN^A = \sum_{B \neq A}^{N} \sqrt{1}{1+exp(-k_1(k_2(R_{A,cov}+R_{B,cov})/r_{AB}-1))}$ */
         real_t exp = expf(-K1*((covalent_radii_1 + covalent_radii_2)/distance - 1.0f)); // $\exp(-k_1*(\frac{R_A+R_b}{r_{ab}}-1))$
@@ -300,10 +637,10 @@ __global__ void two_body_kernel(device_data_t *data){
                 uint64_t stride_3 = NUM_REF_C6  * NUM_C6AB_ENTRIES;
                 uint64_t stride_4 = NUM_C6AB_ENTRIES;
                 uint64_t index = atom_1_type * stride_1 + atom_2_type * stride_2 + i * stride_3 + j * stride_4;
-                real_t c6_ref = data->constants->c6ab_ref->data[index + 0];
+                real_t c6_ref = data->c6_ab_ref[index + 0];
                 /* these entries could be -1.0f if they are not valid, but at least one should be valid*/
-                real_t coordination_number_ref_1 = data->constants->c6ab_ref->data[index + 1];
-                real_t coordination_number_ref_2 = data->constants->c6ab_ref->data[index + 2];
+                real_t coordination_number_ref_1 = data->c6_ab_ref[index + 1];
+                real_t coordination_number_ref_2 = data->c6_ab_ref[index + 2];
                 /* because they could be invalid, L_ij cannot be used directly */
                 real_t L_ij_candidate = expf(-K3 * (powf(coordination_number_1 - coordination_number_ref_1, 2) + powf(coordination_number_2 - coordination_number_ref_2, 2)));
                 real_t dL_ij_candidate_1 = -2.0f * K3 * (coordination_number_1 - coordination_number_ref_1) * L_ij_candidate; // dL_ij/dCN_1
@@ -330,11 +667,11 @@ __global__ void two_body_kernel(device_data_t *data){
         /* add dC12/dr1 */
         real_t c6_ab = (W > 0.0f) ? Z / W : 0.0f; // avoid division by zero
         /* calculate c8_ab by $C_8^{AB} = 3C_6^{AB}\sqrt{Q^AQ^B}$*/
-        real_t r2r4_1 = data->constants->r2r4[atom_1_type];
-        real_t r2r4_2 = data->constants->r2r4[atom_2_type];
+        real_t r2r4_1 = data->r2r4[atom_1_type];
+        real_t r2r4_2 = data->r2r4[atom_2_type];
         real_t c8_ab = 3.0f * c6_ab * r2r4_1 * r2r4_2; // the value in r2r4 is already squared
         /* acquire the cutoff radius between the two atoms */
-        real_t cutoff_radius = data->constants->r0ab[atom_1_type][atom_2_type];
+        real_t cutoff_radius = data->r0ab[atom_1_type*data->num_elements + atom_2_type];
         /* calculate the dampling function as Grimme et al. 2010, eq4 */
         real_t f_dn_6 = 1/(1+6.0f*powf(distance/(SR_6*cutoff_radius), -ALPHA_N(6.0f)));
         real_t f_dn_8 = 1/(1+6.0f*powf(distance/(SR_8*cutoff_radius), -ALPHA_N(8.0f)));
@@ -429,10 +766,10 @@ __global__ void three_body_kernel(device_data_t *data){
                     uint64_t stride_3 = NUM_REF_C6  * NUM_C6AB_ENTRIES;
                     uint64_t stride_4 = NUM_C6AB_ENTRIES;
                     uint64_t index = atom_1_type * stride_1 + atom_2_type * stride_2 + i * stride_3 + j * stride_4;
-                    real_t c6_ref = data->constants->c6ab_ref->data[index + 0];
+                    real_t c6_ref = data->c6_ab_ref[index + 0];
                     /* these entries could be -1.0f if they are not valid, but at least one should be valid*/
-                    real_t coordination_number_ref_1 = data->constants->c6ab_ref->data[index + 1];
-                    real_t coordination_number_ref_2 = data->constants->c6ab_ref->data[index + 2];
+                    real_t coordination_number_ref_1 = data->c6_ab_ref[index + 1];
+                    real_t coordination_number_ref_2 = data->c6_ab_ref[index + 2];
                     /* because they could be invalid, L_ij cannot be used directly */
                     real_t L_ij_candidate = expf(-K3 * (powf(coordination_number_1 - coordination_number_ref_1, 2) + powf(coordination_number_2 - coordination_number_ref_2, 2))); // scale it to avoid floating point error
                     real_t dL_ij_candidate = -2.0f * K3 * (coordination_number_1 - coordination_number_ref_1) * L_ij_candidate; // dL_ij/dCN_1
@@ -449,13 +786,13 @@ __global__ void three_body_kernel(device_data_t *data){
                 }
             }
             real_t dC_ab_dCN_1 = (L_ij > 0.0f) ? (c_ref_dL_ij*L_ij - c_ref_L_ij * dL_ij) / powf(L_ij,2.0f) : 0.0f; // avoid division by zero
-            real_t covalent_radii_central = data->constants->rcov[central_atom_type];
-            real_t covalent_radii_1 = data->constants->rcov[atom_1_type];
+            real_t covalent_radii_central = data->rcov[central_atom_type];
+            real_t covalent_radii_1 = data->rcov[atom_1_type];
             real_t exp = expf(-K1*((covalent_radii_central + covalent_radii_1)/distance_mi - 1.0f)); // $\exp(-k_1*(\frac{R_A+R_b}{r_{ab}}-1))$
             real_t dCN_1_datom_m = powf(1+exp,-2.0f)*(-K1)*exp*(covalent_radii_central + covalent_radii_1)*powf(distance_mi, -3.0f); // dCN_i/dr_m * 1/r_m
-            real_t cutoff_radius = data->constants->r0ab[atom_1_type][atom_2_type];
-            real_t r2r4_1 = data->constants->r2r4[atom_1_type];
-            real_t r2r4_2 = data->constants->r2r4[atom_2_type];
+            real_t cutoff_radius = data->r0ab[atom_1_type * data->num_elements + atom_2_type];
+            real_t r2r4_1 = data->r2r4[atom_1_type];
+            real_t r2r4_2 = data->r2r4[atom_2_type];
             real_t f_dn_6 = 1/(1+6.0f*powf(distance_ij/(SR_6*cutoff_radius), -ALPHA_N(6.0f)));
             real_t f_dn_8 = 1/(1+6.0f*powf(distance_ij/(SR_8*cutoff_radius), -ALPHA_N(8.0f)));
             real_t force = 0.0f;
@@ -507,202 +844,64 @@ __host__ int32_t find(uint64_t *elements, uint64_t length, uint64_t element){
  * @param length the number of atoms in the system.
  * @note the function is not thread safe, and should be called from a single thread.
  */
-__host__ real_t *compute_dispersion_energy(
-    real_t atoms[][4], 
+__host__ void compute_dispersion_energy(
+    real_t coords[][3], 
+    uint16_t *elements,
     uint64_t length, 
     real_t cell[3][3],
     real_t cutoff_radius,
-    real_t coordination_number_cutoff) {
+    real_t coordination_number_cutoff,
+    real_t *energy,
+    real_t *force
+    ) {
     // allocate memory for device_data_t
     debug("starting compute_dispersion_energy...\n");
-    device_data_t h_data;
-    h_data.num_atoms = length;
-    // allocate memory for atoms
-    atom_t *h_atoms = (atom_t *)malloc(length * sizeof(atom_t));
-    if (h_atoms == NULL) {
-        fprintf(stderr, "Error: failed to allocate memory for atoms\n");
-        exit(EXIT_FAILURE);
-    }
-    uint64_t elements_presence[MAX_ELEMENTS + 1] = {0}; // bucket sort :)
-    uint64_t maximum_atomic_number = 0;
-    for (uint64_t i = 0; i < length; ++i) {
-        h_atoms[i].element = (uint64_t)atoms[i][0];
-        h_atoms[i].x = atoms[i][1];
-        h_atoms[i].y = atoms[i][2];
-        h_atoms[i].z = atoms[i][3];
-        // the element cannot exceed MAX_ELEMENTS
-        assert(h_atoms[i].element <= MAX_ELEMENTS); // if you toggle this assertion, check if the length exceeds actual number of atoms
-        elements_presence[h_atoms[i].element] = 1; // mark the element as present in the array
-        maximum_atomic_number = (h_atoms[i].element > maximum_atomic_number) ? h_atoms[i].element : maximum_atomic_number;
-    }
-    debug("maximum atomic number: %zu\n", maximum_atomic_number);
-    // h_atoms is ready, now construct d_atoms
-    atom_t *d_atoms;
-    CHECK_CUDA(cudaMalloc((void **)&d_atoms, length * sizeof(atom_t)));
-    CHECK_CUDA(cudaMemcpy(d_atoms, h_atoms, length * sizeof(atom_t), cudaMemcpyHostToDevice));
-    h_data.atoms = d_atoms;
-    uint64_t *sorted_elements = (uint64_t *)malloc((maximum_atomic_number + 1) * sizeof(uint64_t));
-    if (sorted_elements == NULL) {
-        fprintf(stderr, "Error: failed to allocate memory for sorted elements\n");
-        free(h_atoms);
-        exit(EXIT_FAILURE);
-    }
-    // sort the elements in ascending order
-    uint64_t num_elements = 0; // the number of elements in the sorted array
-    for (uint64_t i = 0; i <= maximum_atomic_number; ++i) {
-        if (elements_presence[i] == 1) {
-            sorted_elements[num_elements] = i;
-            debug("sorted_elements[%zu] = %zu\n", num_elements, i);
-            num_elements++;
-        }
-    }
-    h_data.num_elements = num_elements; // set the number of elements in the device data
-    // assign the atom types
-    uint64_t *atom_types = (uint64_t *)malloc(length * sizeof(uint64_t));
-    if (atom_types == NULL) {
-        fprintf(stderr, "Error: failed to allocate memory for atom types\n");
-        free(h_atoms);
-        free(sorted_elements);
-        exit(EXIT_FAILURE);
-    }
-    for (uint64_t i = 0; i < length; ++i) {
-        int32_t find_result = find(sorted_elements, num_elements, h_atoms[i].element);
-        if (find_result == -1) {
-            fprintf(stderr, "Error: failed to find the element in the array\n");
-            free(h_atoms);
-            free(sorted_elements);
-            free(atom_types);
-            exit(EXIT_FAILURE);
-        } else {
-            atom_types[i] = find_result; // assign the index of the element in the sorted array to the atom_types array
-        }
-    }
-    // now the atom_types array is ready, copy it to device memory
-    uint64_t *d_atom_types;
-    CHECK_CUDA(cudaMalloc((void **)&d_atom_types, length * sizeof(uint64_t)));
-    CHECK_CUDA(cudaMemcpy(d_atom_types, atom_types, length * sizeof(uint64_t), cudaMemcpyHostToDevice));
-    h_data.atom_types = d_atom_types;
-    // allocate memory for results and coordination_numbers
-    result_t *d_results;
-    CHECK_CUDA(cudaMalloc((void **)&d_results, length * sizeof(result_t)));
-    CHECK_CUDA(cudaMemset(d_results, 0, length * sizeof(result_t))); // initialize the results array to zero
-    h_data.results = d_results;
-    real_t *d_coordination_numbers;
-    CHECK_CUDA(cudaMalloc((void **)&d_coordination_numbers, length * sizeof(real_t)));
-    CHECK_CUDA(cudaMemset(d_coordination_numbers, 0, length * sizeof(real_t))); // initialize the coordination numbers array to zero
-    h_data.coordination_numbers = d_coordination_numbers;
-    // initialize constants
-    printf("sorted_elements is at %p\n", sorted_elements);
-    h_data.constants = d3_constant_init(num_elements, sorted_elements); // initialize the constants
-    /* allocate memory for data.neighbors */
-    neighbor_t *d_neighbors;
-    CHECK_CUDA(cudaMalloc((void **)&d_neighbors, length * MAX_NEIGHBORS * sizeof(neighbor_t)));
-    CHECK_CUDA(cudaMemset(d_neighbors, 0, length * MAX_NEIGHBORS * sizeof(neighbor_t)));
-    h_data.neighbors = d_neighbors; // set the neighbors in the device data
-    uint64_t *d_num_neighbors;
-    CHECK_CUDA(cudaMalloc((void **)&d_num_neighbors, length * sizeof(uint64_t)));
-    CHECK_CUDA(cudaMemset(d_num_neighbors, 0, length * sizeof(uint64_t))); // initialize the max number of neighbors array to zero
-    h_data.num_neighbors = d_num_neighbors; // set the max number of neighbors in the device data
-    h_data.max_num_neighbor = 0; // set the maximum number of neighbors to zero
-    neighbor_t *d_CN_neighbors;
-    CHECK_CUDA(cudaMalloc((void **)&d_CN_neighbors, length * MAX_NEIGHBORS * sizeof(neighbor_t)));
-    CHECK_CUDA(cudaMemset(d_CN_neighbors, 0, length * MAX_NEIGHBORS * sizeof(neighbor_t))); // initialize the CN neighbors array to zero
-    h_data.CN_neighbors = d_CN_neighbors; // set the CN neighbors in the device data
-    uint64_t *d_num_CN_neighbors;
-    CHECK_CUDA(cudaMalloc((void **)&d_num_CN_neighbors, length * sizeof(uint64_t)));
-    CHECK_CUDA(cudaMemset(d_num_CN_neighbors, 0, length * sizeof(uint64_t))); // initialize the max number of CN neighbors array to zero
-    real_t *d_dCNi_datom_i;
-    CHECK_CUDA(cudaMalloc((void **)&d_dCNi_datom_i,3 *  length * sizeof(real_t)));
-    CHECK_CUDA(cudaMemset(d_dCNi_datom_i, 0, 3 * length * sizeof(real_t))); // initialize the dCNi/datom_i array to zero
-    h_data.dCNi_datom_i = d_dCNi_datom_i; // set the dCNi/datom_i in the device data
-    h_data.num_CN_neighbors = d_num_CN_neighbors; // set the max number of CN neighbors in the device data
-    h_data.max_num_CN_neighbor = 0; // set the maximum number of CN neighbors to zero
-    /* initiate cell info and cutoff parameters */
-    uint64_t total_cell_bias = 1;
-    for(uint64_t i = 0; i < 3; ++i) {
-        real_t length = 0.0f;
-        for(uint64_t j = 0; j < 3; ++j) {
-            h_data.cell[i][j] = cell[i][j]; // set the cell info in the device data
-            length += cell[i][j] * cell[i][j]; // calculate the length of the cell vector
-        }
-        /* calculate max_cell_bias */
-        h_data.max_cell_bias[i] = (uint64_t)ceilf(cutoff_radius / sqrtf(length))*2+1; // set the max cell bias in the device data
-        printf("max_cell_bias[%zu] = %zu\n", i, h_data.max_cell_bias[i]);
-        total_cell_bias *= h_data.max_cell_bias[i]; // calculate the total cell bias
-    }
-    h_data.cutoff = cutoff_radius; // set the cutoff radius in the device data
-    h_data.coordination_number_cutoff = coordination_number_cutoff; // set the coordination number cutoff in the device data
-
-    // initialize the device data
-    device_data_t *d_data;
-    CHECK_CUDA(cudaMalloc((void **)&d_data, sizeof(device_data_t)));
-    CHECK_CUDA(cudaMemcpy(d_data, &h_data, sizeof(device_data_t), cudaMemcpyHostToDevice));
+    Device_Buffer buffer(coords, elements, cell, length, cutoff_radius, coordination_number_cutoff); // create a buffer to hold the data
 
     // launch the kernel
     printf("launching coordination_number_kernel, size: %zu, %zu\n", length, length);
-    coordination_number_kernel<<<length, length>>>(d_data); // launch the kernel to compute the coordination numbers
+    coordination_number_kernel<<<length, length>>>(buffer.get()); // launch the kernel to compute the coordination numbers
     CHECK_CUDA(cudaDeviceSynchronize()); // synchronize the device to ensure all threads are finished
     printf("launching adjust_coordination_number_kernel, size: %zu\n", length);
-    adjust_coordination_number_kernel<<<1, length>>>(d_data); // launch the kernel to adjust the coordination numbers
+    adjust_coordination_number_kernel<<<1, length>>>(buffer.get()); // launch the kernel to adjust the coordination numbers
     CHECK_CUDA(cudaDeviceSynchronize()); // synchronize the device to ensure all threads are finished
     printf("launching two_body_kernel, size: %zu, %zu\n", length, (uint64_t)512);
-    two_body_kernel<<<length, 512>>>(d_data);
+    two_body_kernel<<<length, 512>>>(buffer.get());
     CHECK_CUDA(cudaDeviceSynchronize()); // synchronize the device to ensure all threads are finished
     printf("launching three_body_kernel, size: %zu, %zu\n", length, (uint64_t)64);
-    three_body_kernel<<<length, dim3(8, 8)>>>(d_data); // launch the kernel to compute the three body forces
+    three_body_kernel<<<length, dim3(8, 8)>>>(buffer.get()); // launch the kernel to compute the three body forces
     CHECK_CUDA(cudaDeviceSynchronize()); // synchronize the device to ensure all threads are finished
+    
     result_t *h_results = (result_t *)malloc(length * sizeof(result_t));
-    if (h_results == NULL) {
-        fprintf(stderr, "Error: failed to allocate memory for results\n");
-        free(h_atoms);
-        free(sorted_elements);
-        free(atom_types);
-        CHECK_CUDA(cudaFree(d_atoms));
-        CHECK_CUDA(cudaFree(d_atom_types));
-        CHECK_CUDA(cudaFree(d_results));
-        CHECK_CUDA(cudaFree(d_coordination_numbers));
-        CHECK_CUDA(cudaFree(d_data));
-        exit(EXIT_FAILURE);
-    }
     // copy the results back to host memory
-    CHECK_CUDA(cudaMemcpy(h_results, d_results, length * sizeof(result_t), cudaMemcpyDeviceToHost));
-    real_t *result = (real_t *)malloc((length+1) * 3 * sizeof(real_t));
-    memset(result, 0, (length+1) * 3 * sizeof(real_t)); // initialize the result array to zero
+    CHECK_CUDA(cudaMemcpy(h_results, buffer.results, length * sizeof(result_t), cudaMemcpyDeviceToHost));
+    *energy = 0;
     for (uint64_t i = 0; i < length; ++i) {
-        result[(i+1)*3+0] = h_results[i].force[0];
-        result[(i+1)*3+1] = h_results[i].force[1];
-        result[(i+1)*3+2] = h_results[i].force[2];
-        result[0] += h_results[i].energy; // accumulate the energy
-        // print the results
+        force[(i)*3+0] = h_results[i].force[0];
+        force[(i)*3+1] = h_results[i].force[1];
+        force[(i)*3+2] = h_results[i].force[2];
+        *energy += h_results[i].energy; // accumulate the energy
     }
-    result[0] /= 4.0f; /* the energy of between two atoms is added to both of the atoms. So the totoal energy should be divided by 2 after adding all atomic energy */
-    // free the device memory
-    CHECK_CUDA(cudaFree(d_atoms));
-    CHECK_CUDA(cudaFree(d_atom_types));
-    CHECK_CUDA(cudaFree(d_results));
-    CHECK_CUDA(cudaFree(d_coordination_numbers));
-    CHECK_CUDA(cudaFree(d_data));
-    // free the host memory
-    free(h_atoms);
-    return result;
+    free(h_results);
 }
 
 #ifndef BUILD_LIBRARY
 int main()
 {
     // example usage of the compute_dispersion_energy function
-    real_t atoms[10][4] = {
-        {6, 5.137f, 5.551f, 10.1047f},
-        {6, 4.5168f, 6.1365f, 11.36043f},
-        {6, 6.1936f, 4.4752f, 10.2703f},
-        {8, 4.78716f, 5.9358f, 8.99372f},
-        {1, 6.7474f, 4.3475f, 9.3339f},
-        {1, 5.69748f, 3.5214f, 10.5181f},
-        {1, 6.88699f, 4.7006f, 11.0939f},
-        {1, 4.85788f, 5.6442f, 12.2774f},
-        {1, 3.42038, 6.0677, 11.29354},
-        {1, 4.7677f, 7.20752f, 11.4098f}
+    real_t atoms[10][3] = {
+        {5.137f, 5.551f, 10.1047f},
+        {4.5168f, 6.1365f, 11.36043f},
+        {6.1936f, 4.4752f, 10.2703f},
+        {4.78716f, 5.9358f, 8.99372f},
+        {6.7474f, 4.3475f, 9.3339f},
+        {5.69748f, 3.5214f, 10.5181f},
+        {6.88699f, 4.7006f, 11.0939f},
+        {4.85788f, 5.6442f, 12.2774f},
+        {3.42038, 6.0677, 11.29354},
+        {4.7677f, 7.20752f, 11.4098f}
     };
+    uint16_t elements[10] = {6, 6, 6, 8, 1, 1, 1, 1, 1, 1}; // atomic numbers of the atoms
     real_t angstron_to_bohr = 1/0.529f; // angstron to bohr conversion factor
     for(uint64_t i = 0; i < 10; ++i) {
         atoms[i][1] *= angstron_to_bohr; // convert to bohr
@@ -726,12 +925,15 @@ int main()
     }
     real_t CN_cutoff_radius = 40.0f; // cutoff radius in bohr
     real_t cutoff_radius = 94.8683f;
-    real_t *result = compute_dispersion_energy(atoms, 10, cell, cutoff_radius, CN_cutoff_radius);
-    printf("energy: %f\n", result[0]);
-    for (int i = 1; i <= 10; ++i) {
-        real_t force_x = result[0 + i * 3];
-        real_t force_y = result[1 + i * 3];
-        real_t force_z = result[2 + i * 3];
+    real_t energy;
+    real_t *force = (real_t *)malloc(sizeof(real_t) * 10 * 3); // allocate memory for force
+    compute_dispersion_energy(atoms, elements, 10, cell, cutoff_radius, CN_cutoff_radius,&energy, force);
+    printf("0d00\n");
+    printf("energy: %f\n", energy);
+    for (int i = 0; i < 10; ++i) {
+        real_t force_x = force[0 + i * 3];
+        real_t force_y = force[1 + i * 3];
+        real_t force_z = force[2 + i * 3];
         printf("force[%d]: %f %f %f\n", i, force_x, force_y, force_z);
     }
     return 0;

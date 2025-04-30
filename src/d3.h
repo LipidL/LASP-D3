@@ -15,7 +15,8 @@ void init_params();
 
 // Main function to compute dispersion energy
 real_t* compute_dispersion_energy(
-    real_t atoms[][4], 
+    real_t coords[][3], 
+    uint16_t *elements,
     uint64_t length, 
     real_t cell[3][3],
     real_t cutoff_radius,
