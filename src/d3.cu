@@ -301,8 +301,8 @@ public:
                 }
             }
             real_t *d_r0ab;
-            CHECK_CUDA(cudaMalloc((void**)&d_r0ab, num_elements*num_elements));
-            CHECK_CUDA(cudaMemcpy(d_r0ab, h_r0ab, num_elements*num_elements, cudaMemcpyHostToDevice));
+            CHECK_CUDA(cudaMalloc((void**)&d_r0ab, num_elements*num_elements*sizeof(real_t)));
+            CHECK_CUDA(cudaMemcpy(d_r0ab, h_r0ab, num_elements*num_elements*sizeof(real_t), cudaMemcpyHostToDevice));
             this->data.r0ab = d_r0ab;
             free(h_r0ab);
         } // r0ab array
@@ -883,6 +883,7 @@ __host__ void compute_dispersion_energy(
         *energy += h_results[i].energy; // accumulate the energy
     }
     free(h_results);
+    *energy /= 4.0; // energy between each neighbor is added to both atoms, and each pair is accounted twice
 }
 
 #ifndef BUILD_LIBRARY
