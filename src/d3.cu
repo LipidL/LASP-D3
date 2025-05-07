@@ -904,9 +904,9 @@ int main()
     uint16_t elements[10] = {6, 6, 6, 8, 1, 1, 1, 1, 1, 1}; // atomic numbers of the atoms
     real_t angstron_to_bohr = 1/0.529f; // angstron to bohr conversion factor
     for(uint64_t i = 0; i < 10; ++i) {
+        atoms[i][0] *= angstron_to_bohr; // convert to bohr
         atoms[i][1] *= angstron_to_bohr; // convert to bohr
         atoms[i][2] *= angstron_to_bohr; // convert to bohr
-        atoms[i][3] *= angstron_to_bohr; // convert to bohr
     }
     // fill the atoms array with Po element
     debug("Computing dispersion energy for %zu atoms...\n", sizeof(atoms)/sizeof(atoms[0]));
