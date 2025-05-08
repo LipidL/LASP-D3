@@ -118,6 +118,8 @@ typedef struct neighbor {
     uint64_t index; // index of the neighbor atom
     atom_t atom; // atom data of the neighbor atom
     real_t distance; // distance to the neighbor atom
+    real_t dCN_dr; // dCN_ab/dr_ab for the neighbor atom
+    real_t delta_x, delta_y, delta_z; // the distance vector between the two atoms
 } neighbor_t;
 
 typedef struct device_data {
@@ -146,7 +148,9 @@ typedef struct device_data {
     uint64_t max_num_neighbor; // the maximum nimber of neighbors for the system
     uint64_t max_num_CN_neighbor;
     real_t *dCNi_datom_i; // array of dCN_i/dr_i, used in force computation, length: 3*num_atoms.
-    result_t *results; // results of the simulation
+    real_t *energy; // energy of the system, length: 1
+    real_t *forces; // forces on each atom, length: 3*num_atoms.
+    real_t *stress; // stress tensor, length: 9
 } device_data_t;
 
 /**
@@ -212,7 +216,6 @@ private:
  */
 class Device_Buffer {
 public:
-    result_t *results; // pointer to result array on device, used in cudaMemcpy
     device_data_t data; // device data structure on host
     __host__ Device_Buffer(real_t coords[][3], uint16_t *elements, real_t cell[3][3], uint64_t length, real_t cutoff, real_t CN_cutoff){
         Unique_Elements unique_elements(elements, length); // create the unique elements object
@@ -365,11 +368,18 @@ public:
             this->data.dCNi_datom_i = dCNi_datom_i;
             this->data.max_num_neighbor = 0; // initialize the maximum number of neighbors to 0
             this->data.max_num_CN_neighbor = 0; // initialize the maximum number of CN neighbors to 0
-            result_t *results;
-            cudaMalloc((void**)&results, length * sizeof(result_t));
-            cudaMemset(results, 0, length * sizeof(result_t));
-            this->data.results = results;
-            this->results = results; // set the results pointer in the class
+            real_t *energy;
+            cudaMalloc((void**)&energy, sizeof(real_t));
+            cudaMemset(energy, 0, sizeof(real_t));
+            this->data.energy = energy;
+            real_t *forces;
+            cudaMalloc((void**)&forces, length * 3 * sizeof(real_t));
+            cudaMemset(forces, 0, length * 3 * sizeof(real_t));
+            this->data.forces = forces;
+            real_t *stress;
+            cudaMalloc((void**)&stress, 9 * sizeof(real_t));
+            cudaMemset(stress, 0, 9 * sizeof(real_t));
+            this->data.stress = stress;
         }
         /* copy the data to device */
         device_data_t *d_data;
@@ -391,7 +401,9 @@ public:
             CHECK_CUDA(cudaFree(this->data.num_neighbors)); // free the number of neighbors array
             CHECK_CUDA(cudaFree(this->data.num_CN_neighbors)); // free the number of CN neighbors array
             CHECK_CUDA(cudaFree(this->data.dCNi_datom_i)); // free the dCNi_datom_i array
-            CHECK_CUDA(cudaFree(this->data.results)); // free the results array
+            CHECK_CUDA(cudaFree(this->data.energy)); // free the energy array
+            CHECK_CUDA(cudaFree(this->data.forces)); // free the forces array
+            CHECK_CUDA(cudaFree(this->data.stress)); // free the stress array
         }
     }
 
@@ -534,7 +546,11 @@ __global__ void coordination_number_kernel(device_data_t *data) {
         $CN^A = \sum_{B \neq A}^{N} \sqrt{1}{1+exp(-k_1(k_2(R_{A,cov}+R_{B,cov})/r_{AB}-1))}$ */
         real_t exp = expf(-K1*((covalent_radii_1 + covalent_radii_2)/distance - 1.0f)); // $\exp(-k_1*(\frac{R_A+R_b}{r_{ab}}-1))$
         real_t coordination_number = 1.0f/(1.0f+exp); // the covalent radii in input table have already taken K2 coefficient into onsideration
-        real_t dCN_datom = powf(1.0f+exp,-2.0f)*(-K1)*exp*(covalent_radii_1 + covalent_radii_2)*powf(distance, -3.0f); // dCN_ij/dr_i * 1/r_m
+        real_t dCN_datom = powf(1.0f+exp,-2.0f)*(-K1)*exp*(covalent_radii_1 + covalent_radii_2)*powf(distance, -3.0f); // dCN_ij/dr_ij * 1/r_ij
+        data_neighbors[neighbor_index+i].dCN_dr = dCN_datom; // set the dCN/dr for the neighbor atom
+        data_neighbors[neighbor_index+i].delta_x = CN_neighbors[i].atom.x - atom_1.x; // set the delta x for the neighbor atom
+        data_neighbors[neighbor_index+i].delta_y = CN_neighbors[i].atom.y - atom_1.y; // set the delta y for the neighbor atom
+        data_neighbors[neighbor_index+i].delta_z = CN_neighbors[i].atom.z - atom_1.z; // set the delta z for the neighbor atom
         // increment the data.coordination_number array for both atoms
         atomicAdd(&data->coordination_numbers[atom_1_index], coordination_number); // increment the coordination number for atom 1
         atomicAdd(&data->coordination_numbers[atom_2_index], coordination_number); // increment the coordination number for atom 2
@@ -662,14 +678,16 @@ __global__ void two_body_kernel(device_data_t *data){
             }
         }
         real_t L_ij = W;
-        real_t dC_ab_dCN_1 = (L_ij > 0.0f) ? (c_ref_dL_ij_1*L_ij - c_ref_L_ij * dL_ij_1) / powf(L_ij,2.0f) : 0.0f; // avoid division by zero
-        real_t dC_ab_dCN_2 = (L_ij > 0.0f) ? (c_ref_dL_ij_2*L_ij - c_ref_L_ij * dL_ij_2) / powf(L_ij,2.0f) : 0.0f; // avoid division by zero
+        real_t dC6ab_dCN_1 = (L_ij > 0.0f) ? (c_ref_dL_ij_1*L_ij - c_ref_L_ij * dL_ij_1) / powf(L_ij,2.0f) : 0.0f; // avoid division by zero
+        real_t dC6ab_dCN_2 = (L_ij > 0.0f) ? (c_ref_dL_ij_2*L_ij - c_ref_L_ij * dL_ij_2) / powf(L_ij,2.0f) : 0.0f; // avoid division by zero
         /* add dC12/dr1 */
         real_t c6_ab = (W > 0.0f) ? Z / W : 0.0f; // avoid division by zero
         /* calculate c8_ab by $C_8^{AB} = 3C_6^{AB}\sqrt{Q^AQ^B}$*/
         real_t r2r4_1 = data->r2r4[atom_1_type];
         real_t r2r4_2 = data->r2r4[atom_2_type];
         real_t c8_ab = 3.0f * c6_ab * r2r4_1 * r2r4_2; // the value in r2r4 is already squared
+        real_t dC8ab_dCN_1 = 3.0f * dC6ab_dCN_1 * r2r4_1 * r2r4_2; // dC8ab/dCN_1
+        real_t dC8ab_dCN_2 = 3.0f * dC6ab_dCN_2 * r2r4_1 * r2r4_2; // dC8ab/dCN_2
         /* acquire the cutoff radius between the two atoms */
         real_t cutoff_radius = data->r0ab[atom_1_type*data->num_elements + atom_2_type];
         /* calculate the dampling function as Grimme et al. 2010, eq4 */
@@ -681,23 +699,28 @@ __global__ void two_body_kernel(device_data_t *data){
         // printf("dispersion energy between atoms (%llu,%llu): %f\n",atom_1_index,atom_2_index,dispersion_energy_6 + dispersion_energy_8);
         real_t dispersion_energy = dispersion_energy_6 + dispersion_energy_8;
         /* add the energy back to results */
-        atomicAdd(&data->results[atom_1_index].energy, dispersion_energy);
-        atomicAdd(&data->results[atom_2_index].energy, dispersion_energy);
+        // atomicAdd(&data->results[atom_1_index].energy, dispersion_energy);
+        // atomicAdd(&data->results[atom_2_index].energy, dispersion_energy);
+        atomicAdd(data->energy, dispersion_energy/2.0f); // add the energy to the total energy
+
         /* increment the dCab/dr_a and dC_ab/dr_b to force of atom a and b */
-        real_t force_1 = 0.0f;
-        real_t *dCN1_datom_1 = &data->dCNi_datom_i[3*atom_1_index]; // dCN_1/dr_1
-        force_1 += S6 * f_dn_6 * powf(distance, -6.0f) * dC_ab_dCN_1; // force_6
-        force_1 += S8 * f_dn_8 * powf(distance, -8.0f) * dC_ab_dCN_1; // force_8
-        atomicAdd(&data->results[atom_1_index].force[0], force_1 * dCN1_datom_1[0]);
-        atomicAdd(&data->results[atom_1_index].force[1], force_1 * dCN1_datom_1[1]);
-        atomicAdd(&data->results[atom_1_index].force[2], force_1 * dCN1_datom_1[2]);
-        real_t force_2 = 0.0f;
-        real_t *dCN2_datom_2 = &data->dCNi_datom_i[3*atom_2_index]; // dCN_2/dr_2
-        force_2 += S6 * f_dn_6 * powf(distance, -6.0f) * dC_ab_dCN_2; // force_8
-        force_2 += S8 * f_dn_8 * powf(distance, -8.0f) * dC_ab_dCN_2; // force_8
-        atomicAdd(&data->results[atom_2_index].force[0], force_2 * dCN2_datom_2[0]);
-        atomicAdd(&data->results[atom_2_index].force[1], force_2 * dCN2_datom_2[1]);
-        atomicAdd(&data->results[atom_2_index].force[2], force_2 * dCN2_datom_2[2]);
+        // real_t force_1 = 0.0f;
+        // real_t *dCN1_datom_1 = &data->dCNi_datom_i[3*atom_1_index]; // dCN_1/dr_1
+        // force_1 += S6 * f_dn_6 * powf(distance, -6.0f) * dC_ab_dCN_1; // force_6
+        // force_1 += S8 * f_dn_8 * powf(distance, -8.0f) * dC_ab_dCN_1; // force_8
+        // // atomicAdd(&data->results[atom_1_index].force[0], force_1 * dCN1_datom_1[0]);
+        // // atomicAdd(&data->results[atom_1_index].force[1], force_1 * dCN1_datom_1[1]);
+        // // atomicAdd(&data->results[atom_1_index].force[2], force_1 * dCN1_datom_1[2]);
+        // for (uint16_t i = 0; i < 3; ++i) {
+        //     // atomicAdd(&data->forces[atom_1_index*3+i], force_1 * dCN1_datom_1[i]);
+        // }
+        // real_t force_2 = 0.0f;
+        // real_t *dCN2_datom_2 = &data->dCNi_datom_i[3*atom_2_index]; // dCN_2/dr_2
+        // force_2 += S6 * f_dn_6 * powf(distance, -6.0f) * dC_ab_dCN_2; // force_8
+        // force_2 += S8 * f_dn_8 * powf(distance, -8.0f) * dC_ab_dCN_2; // force_8
+        // for (uint16_t i = 0; i < 3; ++i) {
+        //     // atomicAdd(&data->forces[atom_2_index*3+i], force_2 * dCN2_datom_2[i]);
+        // }
         /* the first entry of two-body force
          $F_a = S_n C_n^{ab} f_{d,n}(r_{ab}) \frac{\partial}{\partial r_a} r_{ab}^{-n}$
          $F_a = S_n C_n^{ab} f_{d,n}(r_{ab}) * (-n)r_{ab}^{-n-2} * \uparrow{r_{ab}}$ */
@@ -709,12 +732,79 @@ __global__ void two_body_kernel(device_data_t *data){
          $F_a = S_n C_n^{ab} r_{ab}^{-n} -f_{d,n}^2 * (6*(-\alpha_n)*(r_{ab}/{S_{r,n}R_0^{AB}})^(-\alpha_n - 1) * 1/(S_{r,n}R_0^{AB}})) / r_ab \uparrow{r_{ab}}$*/
         force += S6 * c6_ab * powf(distance, -6.0f) * (-f_dn_6 * f_dn_6) * (6.0f * (-ALPHA_N(6.0f))* powf(distance/(SR_6*cutoff_radius), -ALPHA_N(6.0f) - 1.0f) / (SR_6*cutoff_radius)) / distance; // force_6
         force += S8 * c8_ab * powf(distance, -8.0f) * (-f_dn_8 * f_dn_8) * (6.0f * (-ALPHA_N(8.0f))* powf(distance/(SR_8*cutoff_radius), -ALPHA_N(8.0f) - 1.0f) / (SR_8*cutoff_radius)) / distance; // force_8
-        atomicAdd(&data->results[atom_1_index].force[0], force * (atom_1.x - atom_2.x)/2.0f);
-        atomicAdd(&data->results[atom_1_index].force[1], force * (atom_1.y - atom_2.y)/2.0f);
-        atomicAdd(&data->results[atom_1_index].force[2], force * (atom_1.z - atom_2.z)/2.0f);
-        atomicAdd(&data->results[atom_2_index].force[0], -force * (atom_1.x - atom_2.x)/2.0f);
-        atomicAdd(&data->results[atom_2_index].force[1], -force * (atom_1.y - atom_2.y)/2.0f);
-        atomicAdd(&data->results[atom_2_index].force[2], -force * (atom_1.z - atom_2.z)/2.0f);
+        /* accumulate force */
+        atomicAdd(&data->forces[atom_1_index*3+0], force * (atom_1.x - atom_2.x)/2.0f);
+        atomicAdd(&data->forces[atom_1_index*3+1], force * (atom_1.y - atom_2.y)/2.0f);
+        atomicAdd(&data->forces[atom_1_index*3+2], force * (atom_1.z - atom_2.z)/2.0f);
+        atomicAdd(&data->forces[atom_2_index*3+0], -force * (atom_1.x - atom_2.x)/2.0f);
+        atomicAdd(&data->forces[atom_2_index*3+1], -force * (atom_1.y - atom_2.y)/2.0f);
+        atomicAdd(&data->forces[atom_2_index*3+2], -force * (atom_1.z - atom_2.z)/2.0f);
+
+        /* accumulate stress. */
+        atomicAdd(&data->stress[0*3+0], -1.0f * (atom_1.x - atom_2.x) * force * (atom_1.x - atom_2.x)/2.0f); // stress_xx
+        atomicAdd(&data->stress[0*3+1], -1.0f * (atom_1.x - atom_2.x) * force * (atom_1.y - atom_2.y)/2.0f); // stress_xy
+        atomicAdd(&data->stress[0*3+2], -1.0f * (atom_1.x - atom_2.x) * force * (atom_1.z - atom_2.z)/2.0f); // stress_xz
+        atomicAdd(&data->stress[1*3+0], -1.0f * (atom_1.y - atom_2.y) * force * (atom_1.x - atom_2.x)/2.0f); // stress_yx
+        atomicAdd(&data->stress[1*3+1], -1.0f * (atom_1.y - atom_2.y) * force * (atom_1.y - atom_2.y)/2.0f); // stress_yy
+        atomicAdd(&data->stress[1*3+2], -1.0f * (atom_1.y - atom_2.y) * force * (atom_1.z - atom_2.z)/2.0f); // stress_yz
+        atomicAdd(&data->stress[2*3+0], -1.0f * (atom_1.z - atom_2.z) * force * (atom_1.x - atom_2.x)/2.0f); // stress_zx
+        atomicAdd(&data->stress[2*3+1], -1.0f * (atom_1.z - atom_2.z) * force * (atom_1.y - atom_2.y)/2.0f); // stress_zy
+        atomicAdd(&data->stress[2*3+2], -1.0f * (atom_1.z - atom_2.z) * force * (atom_1.z - atom_2.z)/2.0f); // stress_zz
+
+        /* increment contribution of dC6ab/dri where i is neighbor of a to force of a and i */
+        for (uint64_t neighbor_a = 0; neighbor_a < data->num_CN_neighbors[atom_1_index]; ++neighbor_a) {
+            uint64_t neighbor_a_index = data->CN_neighbors[atom_1_index * MAX_NEIGHBORS + neighbor_a].index; // index of the neighbor atom
+            atom_t neighbor_a_atom = data->CN_neighbors[atom_1_index * MAX_NEIGHBORS + neighbor_a].atom; // atom data of the neighbor atom
+            real_t dC6ab_drai = dC6ab_dCN_1 * data->CN_neighbors[atom_1_index * MAX_NEIGHBORS + neighbor_a].dCN_dr; // dC6ab/dr_i * 1/r_i
+            real_t dC8ab_drai = dC8ab_dCN_1 * data->CN_neighbors[atom_1_index * MAX_NEIGHBORS + neighbor_a].dCN_dr; // dC8ab/dr_i * 1/r_i
+            real_t dE_drai = 0.0f;
+            dE_drai += S6 * f_dn_6 * powf(distance, -6.0f) * dC6ab_drai; // force_6
+            dE_drai += S8 * f_dn_8 * powf(distance, -8.0f) * dC8ab_drai; // force_8
+            /* accumulate force */
+            atomicAdd(&data->forces[neighbor_a_index*3+0], dE_drai * (neighbor_a_atom.x - atom_1.x)/2.0f);
+            atomicAdd(&data->forces[neighbor_a_index*3+1], dE_drai * (neighbor_a_atom.y - atom_1.y)/2.0f);
+            atomicAdd(&data->forces[neighbor_a_index*3+2], dE_drai * (neighbor_a_atom.z - atom_1.z)/2.0f);
+            atomicAdd(&data->forces[atom_1_index*3+0], -dE_drai * (neighbor_a_atom.x - atom_1.x)/2.0f);
+            atomicAdd(&data->forces[atom_1_index*3+1], -dE_drai * (neighbor_a_atom.y - atom_1.y)/2.0f);
+            atomicAdd(&data->forces[atom_1_index*3+2], -dE_drai * (neighbor_a_atom.z - atom_1.z)/2.0f);
+            /* accumulate stress */
+            atomicAdd(&data->stress[0*3+0], -1.0f * (atom_1.x - neighbor_a_atom.x) * dE_drai * (atom_1.x - neighbor_a_atom.x)/2.0f); // stress_xx
+            atomicAdd(&data->stress[0*3+1], -1.0f * (atom_1.x - neighbor_a_atom.x) * dE_drai * (atom_1.y - neighbor_a_atom.y)/2.0f); // stress_xy
+            atomicAdd(&data->stress[0*3+2], -1.0f * (atom_1.x - neighbor_a_atom.x) * dE_drai * (atom_1.z - neighbor_a_atom.z)/2.0f); // stress_xz
+            atomicAdd(&data->stress[1*3+0], -1.0f * (atom_1.y - neighbor_a_atom.y) * dE_drai * (atom_1.x - neighbor_a_atom.x)/2.0f); // stress_yx
+            atomicAdd(&data->stress[1*3+1], -1.0f * (atom_1.y - neighbor_a_atom.y) * dE_drai * (atom_1.y - neighbor_a_atom.y)/2.0f); // stress_yy
+            atomicAdd(&data->stress[1*3+2], -1.0f * (atom_1.y - neighbor_a_atom.y) * dE_drai * (atom_1.z - neighbor_a_atom.z)/2.0f); // stress_yz
+            atomicAdd(&data->stress[2*3+0], -1.0f * (atom_1.z - neighbor_a_atom.z) * dE_drai * (atom_1.x - neighbor_a_atom.x)/2.0f); // stress_zx
+            atomicAdd(&data->stress[2*3+1], -1.0f * (atom_1.z - neighbor_a_atom.z) * dE_drai * (atom_1.y - neighbor_a_atom.y)/2.0f); // stress_zy
+            atomicAdd(&data->stress[2*3+2], -1.0f * (atom_1.z - neighbor_a_atom.z) * dE_drai * (atom_1.z - neighbor_a_atom.z)/2.0f); // stress_zz
+        }
+        /* increment contribution of dC6a/dri where i is the neighbor of b to force of b and i */
+        for (uint64_t neighbor_b = 0; neighbor_b < data->num_CN_neighbors[atom_2_index]; ++neighbor_b) {
+            uint64_t neighbor_b_index = data->CN_neighbors[atom_2_index * MAX_NEIGHBORS + neighbor_b].index; // index of the neighbor atom
+            atom_t neighbor_b_atom = data->CN_neighbors[atom_2_index * MAX_NEIGHBORS + neighbor_b].atom; // atom data of the neighbor atom
+            real_t dC6ab_drbi = dC6ab_dCN_2 * data->CN_neighbors[atom_2_index * MAX_NEIGHBORS + neighbor_b].dCN_dr; // dC6ab/dr_i * 1/r_i
+            real_t dC8ab_drbi = dC8ab_dCN_2 * data->CN_neighbors[atom_2_index * MAX_NEIGHBORS + neighbor_b].dCN_dr; // dC8ab/dr_i * 1/r_i
+            real_t dE_drbi = 0.0f;
+            dE_drbi += S6 * f_dn_6 * powf(distance, -6.0f) * dC6ab_drbi; // force_6
+            dE_drbi += S8 * f_dn_8 * powf(distance, -8.0f) * dC8ab_drbi; // force_8
+            atomicAdd(&data->forces[neighbor_b_index*3+0], dE_drbi * (neighbor_b_atom.x - atom_2.x)/2.0f);
+            atomicAdd(&data->forces[neighbor_b_index*3+1], dE_drbi * (neighbor_b_atom.y - atom_2.y)/2.0f);
+            atomicAdd(&data->forces[neighbor_b_index*3+2], dE_drbi * (neighbor_b_atom.z - atom_2.z)/2.0f);
+            atomicAdd(&data->forces[atom_2_index*3+0], -dE_drbi * (neighbor_b_atom.x - atom_2.x)/2.0f);
+            atomicAdd(&data->forces[atom_2_index*3+1], -dE_drbi * (neighbor_b_atom.y - atom_2.y)/2.0f);
+            atomicAdd(&data->forces[atom_2_index*3+2], -dE_drbi * (neighbor_b_atom.z - atom_2.z)/2.0f);
+            /* accumulate stress */
+            atomicAdd(&data->stress[0*3+0], -1.0f * (atom_2.x - neighbor_b_atom.x) * dE_drbi * (atom_2.x - neighbor_b_atom.x)/2.0f); // stress_xx
+            atomicAdd(&data->stress[0*3+1], -1.0f * (atom_2.x - neighbor_b_atom.x) * dE_drbi * (atom_2.y - neighbor_b_atom.y)/2.0f); // stress_xy
+            atomicAdd(&data->stress[0*3+2], -1.0f * (atom_2.x - neighbor_b_atom.x) * dE_drbi * (atom_2.z - neighbor_b_atom.z)/2.0f); // stress_xz
+            atomicAdd(&data->stress[1*3+0], -1.0f * (atom_2.y - neighbor_b_atom.y) * dE_drbi * (atom_2.x - neighbor_b_atom.x)/2.0f); // stress_yx
+            atomicAdd(&data->stress[1*3+1], -1.0f * (atom_2.y - neighbor_b_atom.y) * dE_drbi * (atom_2.y - neighbor_b_atom.y)/2.0f); // stress_yy
+            atomicAdd(&data->stress[1*3+2], -1.0f * (atom_2.y - neighbor_b_atom.y) * dE_drbi * (atom_2.z - neighbor_b_atom.z)/2.0f); // stress_yz
+            atomicAdd(&data->stress[2*3+0], -1.0f * (atom_2.z - neighbor_b_atom.z) * dE_drbi * (atom_2.x - neighbor_b_atom.x)/2.0f); // stress_zx
+            atomicAdd(&data->stress[2*3+1], -1.0f * (atom_2.z - neighbor_b_atom.z) * dE_drbi * (atom_2.y - neighbor_b_atom.y)/2.0f); // stress_zy
+            atomicAdd(&data->stress[2*3+2], -1.0f * (atom_2.z - neighbor_b_atom.z) * dE_drbi * (atom_2.z - neighbor_b_atom.z)/2.0f); // stress_zz
+        }
+
     }
 
 }
@@ -799,12 +889,22 @@ __global__ void three_body_kernel(device_data_t *data){
             /* F_{a,n} = S_n * f_{d,n}  * r_{AB}^{-n} * (dC_n^{AB}/dCNi) * (dCNi/dr_m) */
             force += S6 * f_dn_6 * powf(distance_ij, -6.0f) * dC_ab_dCN_1 * dCN_1_datom_m; // force_6
             /* c8_ab = 3.0f * c6_ab * r2r4_1 * r2r4_2 and all value except c6_ab are constant
-             so (dC_8^{AB}/dCNi) = (dC_6^{AB}/dCNi) *3 * r2r4_1 * r2r4*2 */
+             so (dC_8^{AB}/dCNi) = (dC_6^{AB}/dCNi) * 3 * r2r4_1 * r2r4_2 */
             force += S8 * f_dn_8 * powf(distance_ij, -8.0f) * dC_ab_dCN_1 * dCN_1_datom_m * 3.0f * r2r4_1 * r2r4_2; // force_8
             /* add the force to central atom */
-            atomicAdd(&data->results[central_atom_index].force[0], force * (central_atom.x - atom_1.x));
-            atomicAdd(&data->results[central_atom_index].force[1], force * (central_atom.y - atom_1.y));
-            atomicAdd(&data->results[central_atom_index].force[2], force * (central_atom.z - atom_1.z));
+            // atomicAdd(&data->forces[central_atom_index*3+0], force * (central_atom.x - atom_1.x)/2.0f);
+            // atomicAdd(&data->forces[central_atom_index*3+1], force * (central_atom.y - atom_1.y)/2.0f);
+            // atomicAdd(&data->forces[central_atom_index*3+2], force * (central_atom.z - atom_1.z)/2.0f);
+            /* accumulate stress. */
+            atomicAdd(&data->stress[0*3+0], -1.0f * central_atom.x * force * (central_atom.x - atom_1.x)/2.0f); // stress_xx
+            atomicAdd(&data->stress[0*3+1], -1.0f * central_atom.x * force * (central_atom.y - atom_1.y)/2.0f); // stress_xy
+            atomicAdd(&data->stress[0*3+2], -1.0f * central_atom.x * force * (central_atom.z - atom_1.z)/2.0f); // stress_xz
+            atomicAdd(&data->stress[1*3+0], -1.0f * central_atom.y * force * (central_atom.x - atom_1.x)/2.0f); // stress_yx
+            atomicAdd(&data->stress[1*3+1], -1.0f * central_atom.y * force * (central_atom.y - atom_1.y)/2.0f); // stress_yy
+            atomicAdd(&data->stress[1*3+2], -1.0f * central_atom.y * force * (central_atom.z - atom_1.z)/2.0f); // stress_yz
+            atomicAdd(&data->stress[2*3+0], -1.0f * central_atom.z * force * (central_atom.x - atom_1.x)/2.0f); // stress_zx
+            atomicAdd(&data->stress[2*3+1], -1.0f * central_atom.z * force * (central_atom.y - atom_1.y)/2.0f); // stress_zy
+            atomicAdd(&data->stress[2*3+2], -1.0f * central_atom.z * force * (central_atom.z - atom_1.z)/2.0f); // stress_zz
         }
     }
 
@@ -852,7 +952,8 @@ __host__ void compute_dispersion_energy(
     real_t cutoff_radius,
     real_t coordination_number_cutoff,
     real_t *energy,
-    real_t *force
+    real_t *force,
+    real_t *stress
     ) {
     // allocate memory for device_data_t
     debug("starting compute_dispersion_energy...\n");
@@ -869,21 +970,27 @@ __host__ void compute_dispersion_energy(
     two_body_kernel<<<length, 512>>>(buffer.get());
     CHECK_CUDA(cudaDeviceSynchronize()); // synchronize the device to ensure all threads are finished
     printf("launching three_body_kernel, size: %zu, %zu\n", length, (uint64_t)64);
-    three_body_kernel<<<length, dim3(8, 8)>>>(buffer.get()); // launch the kernel to compute the three body forces
-    CHECK_CUDA(cudaDeviceSynchronize()); // synchronize the device to ensure all threads are finished
+    // three_body_kernel<<<length, dim3(8, 8)>>>(buffer.get()); // launch the kernel to compute the three body forces
+    // CHECK_CUDA(cudaDeviceSynchronize()); // synchronize the device to ensure all threads are finished
+
+    cudaMemcpy(force, buffer.data.forces, length * 3 * sizeof(real_t), cudaMemcpyDeviceToHost); // copy the forces back to host memory
+    cudaMemcpy(energy, buffer.data.energy, sizeof(real_t), cudaMemcpyDeviceToHost); // copy the energy back to host memory
+    cudaMemcpy(stress, buffer.data.stress, 9 * sizeof(real_t), cudaMemcpyDeviceToHost); // copy the stress back to host memory
+    // real_t stress[9] = {0.0f};
+    // cudaMemcpy(stress, buffer.data.stress, 9 * sizeof(real_t), cudaMemcpyDeviceToHost); // copy the stress back to host memory
     
-    result_t *h_results = (result_t *)malloc(length * sizeof(result_t));
-    // copy the results back to host memory
-    CHECK_CUDA(cudaMemcpy(h_results, buffer.results, length * sizeof(result_t), cudaMemcpyDeviceToHost));
-    *energy = 0;
-    for (uint64_t i = 0; i < length; ++i) {
-        force[(i)*3+0] = h_results[i].force[0];
-        force[(i)*3+1] = h_results[i].force[1];
-        force[(i)*3+2] = h_results[i].force[2];
-        *energy += h_results[i].energy; // accumulate the energy
-    }
-    free(h_results);
-    *energy /= 4.0; // energy between each neighbor is added to both atoms, and each pair is accounted twice
+    // result_t *h_results = (result_t *)malloc(length * sizeof(result_t));
+    // // copy the results back to host memory
+    // CHECK_CUDA(cudaMemcpy(h_results, buffer.data.results, length * sizeof(result_t), cudaMemcpyDeviceToHost));
+    // *energy = 0;
+    // for (uint64_t i = 0; i < length; ++i) {
+    //     force[(i)*3+0] = h_results[i].force[0];
+    //     force[(i)*3+1] = h_results[i].force[1];
+    //     force[(i)*3+2] = h_results[i].force[2];
+    //     *energy += h_results[i].energy; // accumulate the energy
+    // }
+    // free(h_results);
+    // *energy /= 4.0; // energy between each neighbor is added to both atoms, and each pair is accounted twice
 }
 
 #ifndef BUILD_LIBRARY
@@ -891,16 +998,16 @@ int main()
 {
     // example usage of the compute_dispersion_energy function
     real_t atoms[10][3] = {
-        {5.137f, 5.551f, 10.1047f},
-        {4.5168f, 6.1365f, 11.36043f},
-        {6.1936f, 4.4752f, 10.2703f},
-        {4.78716f, 5.9358f, 8.99372f},
+        {5.1372f, 5.5512f, 10.1047f},
+        {4.5169f, 6.1365f, 11.3604f},
+        {6.1937f, 4.4752f, 10.2703f},
+        {4.7872f, 5.9358f, 8.9937f},
         {6.7474f, 4.3475f, 9.3339f},
-        {5.69748f, 3.5214f, 10.5181f},
-        {6.88699f, 4.7006f, 11.0939f},
-        {4.85788f, 5.6442f, 12.2774f},
-        {3.42038, 6.0677, 11.29354},
-        {4.7677f, 7.20752f, 11.4098f}
+        {5.6975f, 3.5214f, 10.5181f},
+        {6.8870f, 4.7006f, 11.0939f},
+        {4.8579f, 5.6442f, 12.2774f},
+        {3.4204f, 6.0677f, 11.2935f},
+        {4.7678f, 7.2075f, 11.4098f}
     };
     uint16_t elements[10] = {6, 6, 6, 8, 1, 1, 1, 1, 1, 1}; // atomic numbers of the atoms
     real_t angstron_to_bohr = 1/0.529f; // angstron to bohr conversion factor
@@ -928,14 +1035,24 @@ int main()
     real_t cutoff_radius = 94.8683f;
     real_t energy;
     real_t *force = (real_t *)malloc(sizeof(real_t) * 10 * 3); // allocate memory for force
-    compute_dispersion_energy(atoms, elements, 10, cell, cutoff_radius, CN_cutoff_radius,&energy, force);
-    printf("0d00\n");
+    real_t *stress = (real_t *)malloc(sizeof(real_t) * 9); // allocate memory for stress
+    compute_dispersion_energy(atoms, elements, 10, cell, cutoff_radius, CN_cutoff_radius,&energy, force, stress);
     printf("energy: %f\n", energy);
+    real_t force_sum[3] = {0.0f, 0.0f, 0.0f};
     for (int i = 0; i < 10; ++i) {
         real_t force_x = force[0 + i * 3];
         real_t force_y = force[1 + i * 3];
         real_t force_z = force[2 + i * 3];
-        printf("force[%d]: %f %f %f\n", i, force_x, force_y, force_z);
+        force_sum[0] += force_x;
+        force_sum[1] += force_y;
+        force_sum[2] += force_z;
+        printf("force[%d]: %.13f %.13f %.13f\n", i, force_x, force_y, force_z);
+    }
+    printf("force sum: %.13f %.13f %.13f\n", force_sum[0], force_sum[1], force_sum[2]);
+    for (int i = 0; i < 3; ++i) {
+        for (int j = 0; j < 3; ++j) {
+            printf("stress[%d][%d]: %f\n", i, j, stress[i * 3 + j]);
+        }
     }
     return 0;
 }
