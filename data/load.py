@@ -15,15 +15,16 @@ print(f"shape of r0ab: {d3_params['r0ab'].shape}")
 print(f"shape of rcov: {d3_params['rcov'].shape}")
 print(f"shape of r2r4: {d3_params['r2r4'].shape}") # used to calculate c8 from c6
 # Save d3_params to a binary file for direct mapping in C/C++
-# with open(f"{os.path.abspath(__file__)}/../params.bin", "wb") as f:
-#     for key in ["c6ab", "r0ab", "rcov", "r2r4"]:
-#         data = d3_params[key]
-#         data = data.astype(np.float32).copy(order='C')  # Convert to C-contiguous array of bytes
-#         # Write the shape of the array as metadata
-#         f.write(struct.pack("I", len(data.shape)))  # Number of dimensions (32-bit unsigned integer)
-#         f.write(struct.pack("I" * len(data.shape), *data.shape))  # Shape
-#         # Write the array data
-#         f.write(data.tobytes())
+binary_file_path = os.path.join(script_directory, "params.bin")
+with open(binary_file_path, "wb") as f:
+    for key in ["c6ab", "r0ab", "rcov", "r2r4"]:
+        data = d3_params[key]
+        data = data.astype(np.float32).copy(order='C')  # Convert to C-contiguous array of bytes
+        # Write the shape of the array as metadata
+        f.write(struct.pack("I", len(data.shape)))  # Number of dimensions (32-bit unsigned integer)
+        f.write(struct.pack("I" * len(data.shape), *data.shape))  # Shape
+        # Write the array data
+        f.write(data.tobytes())
 atom_number = 6
 data = d3_params["c6ab"]
 print(f"c6ab between {atom_number}: {data[atom_number, atom_number]}")
