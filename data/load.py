@@ -2,7 +2,9 @@ import numpy as np
 import os
 import struct
 
-d3_params = np.load(f"{os.path.abspath(__file__)}/../dftd3_params.npz")
+script_directory = os.path.dirname(os.path.abspath(__file__))
+file_path = os.path.join(script_directory, "dftd3_params.npz")
+d3_params = np.load(file_path)
 print(f"keys: {list(d3_params.keys())}")
 print(f"shape of c6ab: {d3_params['c6ab'].shape}") # (95,95,5,5,3)
 # meaning: element pair between 95 elements, 5 different CN values each.
