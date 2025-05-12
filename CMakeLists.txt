@@ -1,49 +1,55 @@
-cmake_minimum_required(VERSION 3.18)
+cmake_minimum_required(VERSION 3.25.2 FATAL_ERROR)
 
-# Set the project name and enable CUDA
-project(MyProject LANGUAGES CXX CUDA)
+project(d3_project LANGUAGES CXX CUDA)
 
-# Require C++20 standard
+# Set C++ standard
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
-
-# Enable CUDA standard
-set(CMAKE_CUDA_STANDARD 14)
+set(CMAKE_CUDA_STANDARD 20)
 set(CMAKE_CUDA_STANDARD_REQUIRED ON)
 
-# Add your source files here
-add_executable(MyExecutable src/main.cpp)
+# Source files
+set(SOURCES src/d3.cu)
+set(HEADERS src/constants.h)
 
-# Link CUDA to the target
-target_link_libraries(MyExecutable PRIVATE CUDA::cudart)
+# Create executable
+add_executable(d3 ${SOURCES} ${HEADERS})
 
-# Set the compiler for C++ and CUDA
-set(CMAKE_CXX_COMPILER cl)
-set(CMAKE_CUDA_COMPILER nvcc)
+# Set CUDA compilation options
+target_compile_options(d3 PRIVATE $<$<COMPILE_LANGUAGE:CUDA>:
+    -Xptxas -O2
+    -lineinfo
+>)
 
-# Specify compile options for CUDA
-target_compile_options(MyExecutable PRIVATE
-    $<$<COMPILE_LANGUAGE:CUDA>:--use_fast_math>
-)
+# Link math library
+target_link_libraries(d3 PRIVATE m)
 
-# Specify compile options for C++
-target_compile_options(MyExecutable PRIVATE
-    $<$<COMPILE_LANGUAGE:CXX>:/W4>
-)
-
-# Add the d3 target
-add_executable(d3 src/d3.cu src/constants.h)
-
-# Set C++20 standard for d3
+# Set CUDA properties
 set_target_properties(d3 PROPERTIES
-    CUDA_STANDARD 20
-    CUDA_STANDARD_REQUIRED ON
+    CUDA_SEPARABLE_COMPILATION ON
 )
 
-# Set CUDA compiler options for d3
-target_compile_options(d3 PRIVATE
-    $<$<COMPILE_LANGUAGE:CUDA>:-Xptxas -O2 -lineinfo>
+# Create a static library target
+add_library(d3_lib STATIC src/d3.cu src/d3.h ${HEADERS})
+
+# Define BUILD_LIBRARY for the library target
+target_compile_definitions(d3_lib PRIVATE BUILD_LIBRARY)
+
+# Set CUDA compilation options for the library
+target_compile_options(d3_lib PRIVATE $<$<COMPILE_LANGUAGE:CUDA>:
+    -Xptxas -O2
+    -lineinfo
+>)
+
+# Set output name and properties
+set_target_properties(d3_lib PROPERTIES
+    OUTPUT_NAME d3
+    CUDA_SEPARABLE_COMPILATION ON
 )
 
-# Link with math library
-target_link_libraries(d3 PRIVATE m CUDA::cudart)
+# Link with the static CUDA runtime library
+target_link_libraries(d3_lib PRIVATE
+    /usr/local/cuda-12.6/targets/x86_64-linux/lib/libcudart_static.a
+    ${CMAKE_DL_LIBS}  # Required for static CUDA runtime
+    rt                # Required for static CUDA runtime
+)
