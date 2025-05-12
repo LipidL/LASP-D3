@@ -14,3 +14,4 @@ params.bin
 temp_objs/*
 a.out
 *.a
+build/*

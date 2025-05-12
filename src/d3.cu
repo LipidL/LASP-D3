@@ -540,8 +540,11 @@ __global__ void coordination_number_kernel(device_data_t *data) {
         /* eq 15 in Grimme et al. 2010
         $CN^A = \sum_{B \neq A}^{N} \sqrt{1}{1+exp(-k_1(k_2(R_{A,cov}+R_{B,cov})/r_{AB}-1))}$ */
         real_t exp = expf(-K1*((covalent_radii_1 + covalent_radii_2)/distance - 1.0f)); // $\exp(-k_1*(\frac{R_A+R_b}{r_{ab}}-1))$
-        real_t coordination_number = 1.0f/(1.0f+exp); // the covalent radii in input table have already taken K2 coefficient into onsideration
-        real_t dCN_datom = powf(1.0f+exp,-2.0f)*(-K1)*exp*(covalent_radii_1 + covalent_radii_2)*powf(distance, -3.0f); // dCN_ij/dr_ij * 1/r_ij
+        real_t tanh_value = tanhf(data->coordination_number_cutoff - distance); // $\tanh(R_A + R_B - r_{ab})$
+        real_t smooth_cutoff = powf(tanh_value, 3); // $\tanh^3(R_A + R_B - r_{ab})})$, this is a smooth cutoff function added in LASP code.
+        real_t d_smooth_cutoff_dr = 3.0f * powf(tanh_value, 2) * (1.0f - tanh_value) * (-1.0f); // derivative of the smooth cutoff function with respect to distance       
+        real_t coordination_number = 1.0f/(1.0f+exp) * smooth_cutoff; // the covalent radii in input table have already taken K2 coefficient into onsideration
+        real_t dCN_datom = powf(1.0f+exp,-2.0f)*(-K1)*exp*(covalent_radii_1 + covalent_radii_2)*powf(distance, -3.0f) * smooth_cutoff + d_smooth_cutoff_dr * 1.0f/(1.0f+exp) / distance; // dCN_ij/dr_ij * 1/r_ij
         data_neighbors[neighbor_index+i].dCN_dr = dCN_datom; // set the dCN/dr for the neighbor atom
         // increment the data.coordination_number array for both atoms
         atomicAdd(&data->coordination_numbers[atom_1_index], coordination_number); // increment the coordination number for atom 1
@@ -819,7 +822,7 @@ int main()
         {4.7678f, 7.2075f, 11.4098f}
     };
     uint16_t elements[10] = {6, 6, 6, 8, 1, 1, 1, 1, 1, 1}; // atomic numbers of the atoms
-    real_t angstron_to_bohr = 1/0.529f; // angstron to bohr conversion factor
+    real_t angstron_to_bohr = 1/0.52917726f; // angstron to bohr conversion factor
     for(uint64_t i = 0; i < 10; ++i) {
         atoms[i][0] *= angstron_to_bohr; // convert to bohr
         atoms[i][1] *= angstron_to_bohr; // convert to bohr
@@ -846,7 +849,7 @@ int main()
     real_t *force = (real_t *)malloc(sizeof(real_t) * 10 * 3); // allocate memory for force
     real_t *stress = (real_t *)malloc(sizeof(real_t) * 9); // allocate memory for stress
     compute_dispersion_energy(atoms, elements, 10, cell, cutoff_radius, CN_cutoff_radius,&energy, force, stress);
-    printf("energy: %f\n", energy);
+    printf("energy: %f eV\n", energy * 27.211396641308); // convert to eV
     real_t force_sum[3] = {0.0f, 0.0f, 0.0f};
     for (int i = 0; i < 10; ++i) {
         real_t force_x = force[0 + i * 3];
