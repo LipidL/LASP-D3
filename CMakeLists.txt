@@ -58,3 +58,34 @@ add_custom_command(
 
 # Custom target to ensure .o file is built
 add_custom_target(d3_o ALL DEPENDS ${CMAKE_CURRENT_BINARY_DIR}/d3.o)
+
+# Enable Fortran language
+enable_language(Fortran)
+
+# Find CUDA runtime location
+find_library(CUDA_RUNTIME_LIBRARY cudart
+    HINTS ${CMAKE_CUDA_IMPLICIT_LINK_DIRECTORIES})
+
+# Create Fortran executable
+add_executable(d3_fortran src/fortran_d3.f90)
+
+# Add d3.o as dependency
+add_dependencies(d3_fortran d3_o)
+
+# Link with the d3.o file and required libraries
+target_link_libraries(d3_fortran PRIVATE
+    ${CMAKE_CURRENT_BINARY_DIR}/d3.o
+    ${CUDA_RUNTIME_LIBRARY}
+    m stdc++ )
+
+    # Create benchmark executable
+    add_executable(d3_cpp src/main.cpp)
+
+    # Add d3.o as dependency
+    add_dependencies(d3_cpp d3_o)
+
+    # Link with the d3.o file and required libraries
+    target_link_libraries(d3_cpp PRIVATE
+        ${CMAKE_CURRENT_BINARY_DIR}/d3.o
+        ${CUDA_RUNTIME_LIBRARY}
+        m stdc++)
