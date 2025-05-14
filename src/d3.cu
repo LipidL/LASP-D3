@@ -803,6 +803,20 @@ __host__ void compute_dispersion_energy(
     cudaMemcpy(force, buffer.data.forces, length * 3 * sizeof(real_t), cudaMemcpyDeviceToHost); // copy the forces back to host memory
     cudaMemcpy(energy, buffer.data.energy, sizeof(real_t), cudaMemcpyDeviceToHost); // copy the energy back to host memory
     cudaMemcpy(stress, buffer.data.stress, 9 * sizeof(real_t), cudaMemcpyDeviceToHost); // copy the stress back to host memory
+    real_t angstron_to_bohr = 1/0.52917726f; // angstron to bohr conversion factor
+    real_t hartree_to_eV = 27.211396641308f; // hartree to eV conversion factor
+    *energy *= hartree_to_eV; // convert energy to eV
+    for (uint64_t i = 0; i < length; ++i) {
+        /* convert force from hartree/bohr to eV/angstron */
+        force[i * 3 + 0] *= hartree_to_eV * angstron_to_bohr;
+        force[i * 3 + 1] *= hartree_to_eV * angstron_to_bohr;
+        force[i * 3 + 2] *= hartree_to_eV * angstron_to_bohr;
+    }
+    for (uint64_t i = 0; i < 3; ++i) {
+        for (uint64_t j = 0; j < 3; ++j) {
+            stress[i * 3 + j] *= hartree_to_eV * powf(angstron_to_bohr,3); // convert stress to from hartree/bohr^3 to eV/angstron^3
+        }
+    }
 }
 
 #ifndef BUILD_LIBRARY
@@ -849,7 +863,7 @@ int main()
     real_t *force = (real_t *)malloc(sizeof(real_t) * 10 * 3); // allocate memory for force
     real_t *stress = (real_t *)malloc(sizeof(real_t) * 9); // allocate memory for stress
     compute_dispersion_energy(atoms, elements, 10, cell, cutoff_radius, CN_cutoff_radius,&energy, force, stress);
-    printf("energy: %f eV\n", energy * 27.211396641308); // convert to eV
+    printf("energy: %f eV\n", energy);
     real_t force_sum[3] = {0.0f, 0.0f, 0.0f};
     for (int i = 0; i < 10; ++i) {
         real_t force_x = force[0 + i * 3];

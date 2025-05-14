@@ -29,27 +29,32 @@ set_target_properties(d3 PROPERTIES
     CUDA_SEPARABLE_COMPILATION ON
 )
 
-# Create a static library target
-add_library(d3_lib STATIC src/d3.cu src/d3.h ${HEADERS})
+# Generate object file
+add_library(d3_obj OBJECT ${SOURCES} ${HEADERS})
 
-# Define BUILD_LIBRARY for the library target
-target_compile_definitions(d3_lib PRIVATE BUILD_LIBRARY)
-
-# Set CUDA compilation options for the library
-target_compile_options(d3_lib PRIVATE $<$<COMPILE_LANGUAGE:CUDA>:
+# Apply same CUDA options to object file
+target_compile_options(d3_obj PRIVATE $<$<COMPILE_LANGUAGE:CUDA>:
     -Xptxas -O2
     -lineinfo
 >)
 
-# Set output name and properties
-set_target_properties(d3_lib PROPERTIES
-    OUTPUT_NAME d3
+# Set same CUDA properties for object file
+set_target_properties(d3_obj PROPERTIES
     CUDA_SEPARABLE_COMPILATION ON
+    POSITION_INDEPENDENT_CODE ON
 )
 
-# Link with the static CUDA runtime library
-target_link_libraries(d3_lib PRIVATE
-    /usr/local/cuda-12.6/targets/x86_64-linux/lib/libcudart_static.a
-    ${CMAKE_DL_LIBS}  # Required for static CUDA runtime
-    rt                # Required for static CUDA runtime
+# Link math library for object file
+target_link_libraries(d3_obj PRIVATE m)
+
+# Custom command to create standalone .o file
+add_custom_command(
+    OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/d3.o
+    COMMAND ${CMAKE_CUDA_COMPILER} -c ${CMAKE_CURRENT_SOURCE_DIR}/src/d3.cu -o ${CMAKE_CURRENT_BINARY_DIR}/d3.o
+        -Xptxas -O2 -lineinfo -DBUILD_LIBRARY
+    DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/src/d3.cu ${CMAKE_CURRENT_SOURCE_DIR}/src/constants.h
+    COMMENT "Generating standalone d3.o file"
 )
+
+# Custom target to ensure .o file is built
+add_custom_target(d3_o ALL DEPENDS ${CMAKE_CURRENT_BINARY_DIR}/d3.o)

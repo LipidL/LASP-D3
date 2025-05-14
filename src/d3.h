@@ -14,13 +14,17 @@ extern "C" {
 void init_params();
 
 // Main function to compute dispersion energy
-real_t* compute_dispersion_energy(
-    real_t coords[][3], 
-    uint16_t *elements,
-    uint64_t length, 
-    real_t cell[3][3],
-    real_t cutoff_radius,
-    real_t coordination_number_cutoff);
+void compute_dispersion_energy(
+    real_t atoms[][3], // array of atom positions
+    uint16_t *elements, // array of atomic numbers
+    uint64_t num_atoms, // number of atoms
+    real_t cell[3][3], // cell parameters
+    real_t cutoff_radius, // cutoff radius for dispersion energy calculation
+    real_t CN_cutoff_radius, // cutoff radius for coordination number calculation
+    real_t *energy, // pointer to store the computed energy
+    real_t *force, // pointer to store the computed forces
+    real_t *stress // pointer to store the computed stress    
+);
 
 #ifdef __cplusplus
 }
