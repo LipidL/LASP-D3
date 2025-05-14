@@ -57,6 +57,9 @@
         "list": "cpp",
         "unordered_map": "cpp",
         "xhash": "cpp",
-        "d3.h": "c"
+        "d3.h": "c",
+        "cstdarg": "cpp",
+        "fstream": "cpp",
+        "sstream": "cpp"
     }
 }
