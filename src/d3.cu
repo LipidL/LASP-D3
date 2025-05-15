@@ -460,7 +460,6 @@ __global__ void coordination_number_kernel(device_data_t *data) {
     uint64_t neighbors_index = 0; // index of the neighbor in the neighbors array
     uint64_t CN_neighbors_index = 0; // index of the neighbor in the CN neighbors array
     for(uint64_t atom_2_index = thread_index; atom_2_index < data->num_atoms; atom_2_index += num_threads) {
-        uint64_t atom_2_type = data->atom_types[atom_2_index]; // type of the surrounding atom
         for(uint64_t bias_index = 0; bias_index < total_cell_bias; ++bias_index) {
             /* each thread is responsible for one atom pair, so the number of threads should be equal to num_atoms * total_cell_bias */
             int64_t x_bias = (bias_index % data->max_cell_bias[0]) - (data->max_cell_bias[0]/2); // x bias
