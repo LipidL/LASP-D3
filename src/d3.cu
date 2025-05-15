@@ -676,6 +676,9 @@ __global__ void two_body_kernel(device_data_t *data){
         /* add the energy back to results */
         atomicAdd(data->energy, dispersion_energy/2.0f); // add the energy to the total energy
 
+        /* local stress matrix, accumulate all stres and then add to the global stress matrix */
+        real_t local_stress[9] = {0.0f}; // local stress matrix
+
         /* the first entry of two-body force
          $F_a = S_n C_n^{ab} f_{d,n}(r_{ab}) \frac{\partial}{\partial r_a} r_{ab}^{-n}$
          $F_a = S_n C_n^{ab} f_{d,n}(r_{ab}) * (-n)r_{ab}^{-n-2} * \uparrow{r_{ab}}$ */
@@ -698,16 +701,16 @@ __global__ void two_body_kernel(device_data_t *data){
         /* calculate cell volume */
         real_t cell_volume = data->cell[0][0] * data->cell[1][1] * data->cell[2][2] - data->cell[0][1] * data->cell[1][0] * data->cell[2][2] - data->cell[0][2] * data->cell[1][1] * data->cell[2][0] + data->cell[0][1] * data->cell[1][2] * data->cell[2][0] + data->cell[0][2] * data->cell[1][0] * data->cell[2][1];
 
-        /* accumulate stress. */
-        atomicAdd(&data->stress[0*3+0], -1.0f * (atom_1.x - atom_2.x) * force * (atom_1.x - atom_2.x)/2.0f / cell_volume); // stress_xx
-        atomicAdd(&data->stress[0*3+1], -1.0f * (atom_1.x - atom_2.x) * force * (atom_1.y - atom_2.y)/2.0f / cell_volume); // stress_xy
-        atomicAdd(&data->stress[0*3+2], -1.0f * (atom_1.x - atom_2.x) * force * (atom_1.z - atom_2.z)/2.0f / cell_volume); // stress_xz
-        atomicAdd(&data->stress[1*3+0], -1.0f * (atom_1.y - atom_2.y) * force * (atom_1.x - atom_2.x)/2.0f / cell_volume); // stress_yx
-        atomicAdd(&data->stress[1*3+1], -1.0f * (atom_1.y - atom_2.y) * force * (atom_1.y - atom_2.y)/2.0f / cell_volume); // stress_yy
-        atomicAdd(&data->stress[1*3+2], -1.0f * (atom_1.y - atom_2.y) * force * (atom_1.z - atom_2.z)/2.0f / cell_volume); // stress_yz
-        atomicAdd(&data->stress[2*3+0], -1.0f * (atom_1.z - atom_2.z) * force * (atom_1.x - atom_2.x)/2.0f / cell_volume); // stress_zx
-        atomicAdd(&data->stress[2*3+1], -1.0f * (atom_1.z - atom_2.z) * force * (atom_1.y - atom_2.y)/2.0f / cell_volume); // stress_zy
-        atomicAdd(&data->stress[2*3+2], -1.0f * (atom_1.z - atom_2.z) * force * (atom_1.z - atom_2.z)/2.0f / cell_volume); // stress_zz
+        /* accumulate stress to local matrix instead of directly using atomicAdd */
+        local_stress[0*3+0] += -1.0f * (atom_1.x - atom_2.x) * force * (atom_1.x - atom_2.x)/2.0f / cell_volume; // stress_xx
+        local_stress[0*3+1] += -1.0f * (atom_1.x - atom_2.x) * force * (atom_1.y - atom_2.y)/2.0f / cell_volume; // stress_xy
+        local_stress[0*3+2] += -1.0f * (atom_1.x - atom_2.x) * force * (atom_1.z - atom_2.z)/2.0f / cell_volume; // stress_xz
+        local_stress[1*3+0] += -1.0f * (atom_1.y - atom_2.y) * force * (atom_1.x - atom_2.x)/2.0f / cell_volume; // stress_yx
+        local_stress[1*3+1] += -1.0f * (atom_1.y - atom_2.y) * force * (atom_1.y - atom_2.y)/2.0f / cell_volume; // stress_yy
+        local_stress[1*3+2] += -1.0f * (atom_1.y - atom_2.y) * force * (atom_1.z - atom_2.z)/2.0f / cell_volume; // stress_yz
+        local_stress[2*3+0] += -1.0f * (atom_1.z - atom_2.z) * force * (atom_1.x - atom_2.x)/2.0f / cell_volume; // stress_zx
+        local_stress[2*3+1] += -1.0f * (atom_1.z - atom_2.z) * force * (atom_1.y - atom_2.y)/2.0f / cell_volume; // stress_zy
+        local_stress[2*3+2] += -1.0f * (atom_1.z - atom_2.z) * force * (atom_1.z - atom_2.z)/2.0f / cell_volume; // stress_zz
 
         /* increment contribution of dC6ab/dri where i is neighbor of a to force of a and i */
         for (uint64_t neighbor_a = 0; neighbor_a < data->num_CN_neighbors[atom_1_index]; ++neighbor_a) {
@@ -726,15 +729,15 @@ __global__ void two_body_kernel(device_data_t *data){
             atomicAdd(&data->forces[atom_1_index*3+1], -dE_drai * (neighbor_a_atom.y - atom_1.y)/2.0f);
             atomicAdd(&data->forces[atom_1_index*3+2], -dE_drai * (neighbor_a_atom.z - atom_1.z)/2.0f);
             /* accumulate stress */
-            atomicAdd(&data->stress[0*3+0], -1.0f * (atom_1.x - neighbor_a_atom.x) * dE_drai * (atom_1.x - neighbor_a_atom.x)/2.0f / cell_volume); // stress_xx
-            atomicAdd(&data->stress[0*3+1], -1.0f * (atom_1.x - neighbor_a_atom.x) * dE_drai * (atom_1.y - neighbor_a_atom.y)/2.0f / cell_volume); // stress_xy
-            atomicAdd(&data->stress[0*3+2], -1.0f * (atom_1.x - neighbor_a_atom.x) * dE_drai * (atom_1.z - neighbor_a_atom.z)/2.0f / cell_volume); // stress_xz
-            atomicAdd(&data->stress[1*3+0], -1.0f * (atom_1.y - neighbor_a_atom.y) * dE_drai * (atom_1.x - neighbor_a_atom.x)/2.0f / cell_volume); // stress_yx
-            atomicAdd(&data->stress[1*3+1], -1.0f * (atom_1.y - neighbor_a_atom.y) * dE_drai * (atom_1.y - neighbor_a_atom.y)/2.0f / cell_volume); // stress_yy
-            atomicAdd(&data->stress[1*3+2], -1.0f * (atom_1.y - neighbor_a_atom.y) * dE_drai * (atom_1.z - neighbor_a_atom.z)/2.0f / cell_volume); // stress_yz
-            atomicAdd(&data->stress[2*3+0], -1.0f * (atom_1.z - neighbor_a_atom.z) * dE_drai * (atom_1.x - neighbor_a_atom.x)/2.0f / cell_volume); // stress_zx
-            atomicAdd(&data->stress[2*3+1], -1.0f * (atom_1.z - neighbor_a_atom.z) * dE_drai * (atom_1.y - neighbor_a_atom.y)/2.0f / cell_volume); // stress_zy
-            atomicAdd(&data->stress[2*3+2], -1.0f * (atom_1.z - neighbor_a_atom.z) * dE_drai * (atom_1.z - neighbor_a_atom.z)/2.0f / cell_volume); // stress_zz
+            local_stress[0*3+0] += -1.0f * (atom_1.x - neighbor_a_atom.x) * dE_drai * (atom_1.x - neighbor_a_atom.x)/2.0f / cell_volume; // stress_xx
+            local_stress[0*3+1] += -1.0f * (atom_1.x - neighbor_a_atom.x) * dE_drai * (atom_1.y - neighbor_a_atom.y)/2.0f / cell_volume; // stress_xy
+            local_stress[0*3+2] += -1.0f * (atom_1.x - neighbor_a_atom.x) * dE_drai * (atom_1.z - neighbor_a_atom.z)/2.0f / cell_volume; // stress_xz
+            local_stress[1*3+0] += -1.0f * (atom_1.y - neighbor_a_atom.y) * dE_drai * (atom_1.x - neighbor_a_atom.x)/2.0f / cell_volume; // stress_yx
+            local_stress[1*3+1] += -1.0f * (atom_1.y - neighbor_a_atom.y) * dE_drai * (atom_1.y - neighbor_a_atom.y)/2.0f / cell_volume; // stress_yy
+            local_stress[1*3+2] += -1.0f * (atom_1.y - neighbor_a_atom.y) * dE_drai * (atom_1.z - neighbor_a_atom.z)/2.0f / cell_volume; // stress_yz
+            local_stress[2*3+0] += -1.0f * (atom_1.z - neighbor_a_atom.z) * dE_drai * (atom_1.x - neighbor_a_atom.x)/2.0f / cell_volume; // stress_zx
+            local_stress[2*3+1] += -1.0f * (atom_1.z - neighbor_a_atom.z) * dE_drai * (atom_1.y - neighbor_a_atom.y)/2.0f / cell_volume; // stress_zy
+            local_stress[2*3+2] += -1.0f * (atom_1.z - neighbor_a_atom.z) * dE_drai * (atom_1.z - neighbor_a_atom.z)/2.0f / cell_volume; // stress_zz
         }
         /* increment contribution of dC6a/dri where i is the neighbor of b to force of b and i */
         for (uint64_t neighbor_b = 0; neighbor_b < data->num_CN_neighbors[atom_2_index]; ++neighbor_b) {
@@ -752,15 +755,22 @@ __global__ void two_body_kernel(device_data_t *data){
             atomicAdd(&data->forces[atom_2_index*3+1], -dE_drbi * (neighbor_b_atom.y - atom_2.y)/2.0f);
             atomicAdd(&data->forces[atom_2_index*3+2], -dE_drbi * (neighbor_b_atom.z - atom_2.z)/2.0f);
             /* accumulate stress */
-            atomicAdd(&data->stress[0*3+0], -1.0f * (atom_2.x - neighbor_b_atom.x) * dE_drbi * (atom_2.x - neighbor_b_atom.x)/2.0f / cell_volume); // stress_xx
-            atomicAdd(&data->stress[0*3+1], -1.0f * (atom_2.x - neighbor_b_atom.x) * dE_drbi * (atom_2.y - neighbor_b_atom.y)/2.0f / cell_volume); // stress_xy
-            atomicAdd(&data->stress[0*3+2], -1.0f * (atom_2.x - neighbor_b_atom.x) * dE_drbi * (atom_2.z - neighbor_b_atom.z)/2.0f / cell_volume); // stress_xz
-            atomicAdd(&data->stress[1*3+0], -1.0f * (atom_2.y - neighbor_b_atom.y) * dE_drbi * (atom_2.x - neighbor_b_atom.x)/2.0f / cell_volume); // stress_yx
-            atomicAdd(&data->stress[1*3+1], -1.0f * (atom_2.y - neighbor_b_atom.y) * dE_drbi * (atom_2.y - neighbor_b_atom.y)/2.0f / cell_volume); // stress_yy
-            atomicAdd(&data->stress[1*3+2], -1.0f * (atom_2.y - neighbor_b_atom.y) * dE_drbi * (atom_2.z - neighbor_b_atom.z)/2.0f / cell_volume); // stress_yz
-            atomicAdd(&data->stress[2*3+0], -1.0f * (atom_2.z - neighbor_b_atom.z) * dE_drbi * (atom_2.x - neighbor_b_atom.x)/2.0f / cell_volume); // stress_zx
-            atomicAdd(&data->stress[2*3+1], -1.0f * (atom_2.z - neighbor_b_atom.z) * dE_drbi * (atom_2.y - neighbor_b_atom.y)/2.0f / cell_volume); // stress_zy
-            atomicAdd(&data->stress[2*3+2], -1.0f * (atom_2.z - neighbor_b_atom.z) * dE_drbi * (atom_2.z - neighbor_b_atom.z)/2.0f / cell_volume); // stress_zz
+            local_stress[0*3+0] += -1.0f * (atom_2.x - neighbor_b_atom.x) * dE_drbi * (atom_2.x - neighbor_b_atom.x)/2.0f / cell_volume; // stress_xx
+            local_stress[0*3+1] += -1.0f * (atom_2.x - neighbor_b_atom.x) * dE_drbi * (atom_2.y - neighbor_b_atom.y)/2.0f / cell_volume; // stress_xy
+            local_stress[0*3+2] += -1.0f * (atom_2.x - neighbor_b_atom.x) * dE_drbi * (atom_2.z - neighbor_b_atom.z)/2.0f / cell_volume; // stress_xz
+            local_stress[1*3+0] += -1.0f * (atom_2.y - neighbor_b_atom.y) * dE_drbi * (atom_2.x - neighbor_b_atom.x)/2.0f / cell_volume; // stress_yx
+            local_stress[1*3+1] += -1.0f * (atom_2.y - neighbor_b_atom.y) * dE_drbi * (atom_2.y - neighbor_b_atom.y)/2.0f / cell_volume; // stress_yy
+            local_stress[1*3+2] += -1.0f * (atom_2.y - neighbor_b_atom.y) * dE_drbi * (atom_2.z - neighbor_b_atom.z)/2.0f / cell_volume; // stress_yz
+            local_stress[2*3+0] += -1.0f * (atom_2.z - neighbor_b_atom.z) * dE_drbi * (atom_2.x - neighbor_b_atom.x)/2.0f / cell_volume; // stress_zx
+            local_stress[2*3+1] += -1.0f * (atom_2.z - neighbor_b_atom.z) * dE_drbi * (atom_2.y - neighbor_b_atom.y)/2.0f / cell_volume; // stress_zy
+            local_stress[2*3+2] += -1.0f * (atom_2.z - neighbor_b_atom.z) * dE_drbi * (atom_2.z - neighbor_b_atom.z)/2.0f / cell_volume; // stress_zz
+        }
+
+        /* accumulate local stress to global stress */
+        for (uint64_t i = 0; i < 3; ++i) {
+            for (uint64_t j = 0; j < 3; ++j) {
+                atomicAdd(&data->stress[i*3+j], local_stress[i*3+j]);
+            }
         }
 
     }
@@ -797,7 +807,7 @@ __host__ void compute_dispersion_energy(
     adjust_coordination_number_kernel<<<1, length>>>(buffer.get()); // launch the kernel to adjust the coordination numbers
     CHECK_CUDA(cudaDeviceSynchronize()); // synchronize the device to ensure all threads are finished
     printf("launching two_body_kernel, size: %zu, %zu\n", length, (uint64_t)512);
-    two_body_kernel<<<length, 512>>>(buffer.get());
+    two_body_kernel<<<length, 1024>>>(buffer.get());
     CHECK_CUDA(cudaDeviceSynchronize()); // synchronize the device to ensure all threads are finished
 
     cudaMemcpy(force, buffer.data.forces, length * 3 * sizeof(real_t), cudaMemcpyDeviceToHost); // copy the forces back to host memory

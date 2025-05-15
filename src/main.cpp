@@ -45,7 +45,7 @@ int main(int argc, char* argv[])
             // initialize parameters
             init_params();
             // compute dispersion energy
-            float cutoff_radius = 94.8683f; // cutoff radius in bohr
+            float cutoff_radius = 40.0f; // cutoff radius in bohr
             float CN_cutoff_radius = 40.0f; // cutoff radius in bohr
             float energy;
             float *force = (float *)malloc(sizeof(float) * num_atoms * 3); // allocate memory for force
