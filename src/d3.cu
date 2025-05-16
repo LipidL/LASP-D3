@@ -33,6 +33,7 @@
 #define GRID_SIZE 65536 // number of blocks per grid
 #define MAX_ELEMENTS 118
 #define MAX_NEIGHBORS 3500 // the maximum number of neighbors, dependent on the cutoff choice
+#define MAX_LOCAL_NEIGHBORS 100 // the maximum neighbor of one thread, equal to max_supercell_size * (num_atoms / num_threads)
 
 /* 
 constants used in the simulation
@@ -456,8 +457,8 @@ __global__ void coordination_number_kernel(device_data_t *data) {
     }
     __syncthreads(); // synchronize threads in the block
     /* loop over three dimentions to find neighbor of atom 1 */
-    neighbor_t neighbors[MAX_NEIGHBORS]; // array of neighbors for the central atom
-    neighbor_t CN_neighbors[MAX_NEIGHBORS]; // array of neighbors for the CN calculation
+    neighbor_t neighbors[MAX_LOCAL_NEIGHBORS]; // array of neighbors for the central atom
+    neighbor_t CN_neighbors[MAX_LOCAL_NEIGHBORS]; // array of neighbors for the CN calculation
     uint64_t neighbors_index = 0; // index of the neighbor in the neighbors array
     uint64_t CN_neighbors_index = 0; // index of the neighbor in the CN neighbors array
     for(uint64_t atom_2_index = thread_index; atom_2_index < data->num_atoms; atom_2_index += num_threads) {
@@ -477,33 +478,31 @@ __global__ void coordination_number_kernel(device_data_t *data) {
             real_t distance = sqrtf(powf(atom_1.x - atom_2.x, 2) + powf(atom_1.y - atom_2.y, 2) + powf(atom_1.z - atom_2.z, 2));
             /* if the distance is within cutoff range, update neighbor_flags */
             if (distance <= data->coordination_number_cutoff && distance > 0.0f) {
-                if (CN_neighbors_index < MAX_NEIGHBORS) {
+                if (CN_neighbors_index < MAX_LOCAL_NEIGHBORS) {
                     CN_neighbor_flags[thread_index] += 1; // mark the atom as a neighbor
                     CN_neighbors[CN_neighbors_index].index = atom_2_index; // set the index of the neighbor atom
                     CN_neighbors[CN_neighbors_index].distance = distance; // set the distance to the neighbor atom
                     CN_neighbors[CN_neighbors_index].atom = atom_2; // set the atom data of the neighbor atom
                     CN_neighbors_index++; // increment the index of the neighbor
                 } else {
-                    printf("Warning: too many CN neighbors for atom %llu\n", atom_1_index); // too many neighbors, skip this one
+                    printf("Warning: too many CN neighbors for atom %llu and atom %llu\n", atom_1_index, atom_2_index); // too many neighbors, skip this one
                 }
             }
             if (distance <= data->cutoff && distance > 0.0f) {
-                if (neighbors_index < MAX_NEIGHBORS) {
+                if (neighbors_index < MAX_LOCAL_NEIGHBORS) {
                     neighbor_flags[thread_index] += 1; // mark the atom as a neighbor for CN calculation
                     neighbors[neighbors_index].index = atom_2_index; // set the index of the neighbor atom
                     neighbors[neighbors_index].distance = distance; // set the distance to the neighbor atom
                     neighbors[neighbors_index].atom = atom_2; // set the atom data of the neighbor atom
                     neighbors_index++; // increment the index of the neighbor
                 } else {
-                    printf("Warning: too many neighbors for atom %llu\n", atom_1_index); // too many neighbors, skip this one
+                    printf("Warning: too many neighbors for atom %llu and atom %llu\n", atom_1_index, atom_2_index); // too many neighbors, skip this one
                 }
             }
         }
     }
     __syncthreads();
-    /* now we need to convert entries in neighbor_flags to indicies in neighbors.
-     algorithm: calculate prefix sum of each entry */
-    // Perform exclusive prefix sum on neighbor_flags
+    /* now we need to convert entries in neighbor_flags to indicies in neighbors. */
     if (thread_index == 0) {
         uint64_t sum = 0;
         uint64_t CN_sum = 0;
@@ -569,20 +568,6 @@ __global__ void coordination_number_kernel(device_data_t *data) {
     return; // return from the kernel
 }
 
-
-/**
- * @brief this kernel is used to adjust the coordination number of each atom in the system.
- * @note this kernel should be launched with a 1D grid of blocks, each block containing a 1D array of threads.
- * @note the number of blocks equals the number of atoms in the system.
- * 
- * ugly little kernel, but it's the only way for cross-block synchronization :(
- */
-__global__ void adjust_coordination_number_kernel(device_data_t *data) {
-    for (uint64_t atom_index = 0; atom_index < data->num_atoms; ++atom_index) {
-        // printf("coordination number of atom %llu: %.13f\n", atom_index, data->coordination_numbers[atom_index]);
-    }   
-}
-
 /**
  * @brief this kernel is used to compute the two-body interactions between atoms in the system.
  * @brief i.e the energy and two-atom part of force
@@ -624,9 +609,7 @@ __global__ void two_body_kernel(device_data_t *data){
         real_t W = 0.0f;
         real_t c_ref_L_ij = 0.0f;
         real_t c_ref_dL_ij_1 = 0.0f;
-        real_t c_ref_dL_ij_2 = 0.0f;
         real_t dL_ij_1 = 0.0f;
-        real_t dL_ij_2 = 0.0f;
         for (uint64_t i = 0; i < NUM_REF_C6; ++i) {
             for (uint64_t j = 0; j < NUM_REF_C6; ++j) {
                 /* find the C6ref */
@@ -642,7 +625,6 @@ __global__ void two_body_kernel(device_data_t *data){
                 /* because they could be invalid, L_ij cannot be used directly */
                 real_t L_ij_candidate = expf(-K3 * (powf(coordination_number_1 - coordination_number_ref_1, 2) + powf(coordination_number_2 - coordination_number_ref_2, 2)));
                 real_t dL_ij_candidate_1 = -2.0f * K3 * (coordination_number_1 - coordination_number_ref_1) * L_ij_candidate; // dL_ij/dCN_1
-                real_t dL_ij_candidate_2 = -2.0f * K3 * (coordination_number_2 - coordination_number_ref_2) * L_ij_candidate; // dL_ij/dCN_2
                 /* since we need the value $\frac{\sum_{i,j}C_{6,ref}^{A,B}L_{i,j}}{\sum_{i,j}L_{i,j}}$
                     we can set invalid L_ij to 0.0f and perform the summation in the same loop
                     invalid entry: have -1.0f in c6_ref, coordination_number_ref_1 and coordination_number_ref_2
@@ -653,22 +635,18 @@ __global__ void two_body_kernel(device_data_t *data){
                     /* accumulate the value of c_ref_L_ij, dL_ij_1 and dL_ij_2 */
                     c_ref_L_ij += c6_ref * L_ij_candidate;
                     c_ref_dL_ij_1 += c6_ref * dL_ij_candidate_1;
-                    c_ref_dL_ij_2 += c6_ref * dL_ij_candidate_2;
                     dL_ij_1 += dL_ij_candidate_1;
-                    dL_ij_2 += dL_ij_candidate_2; // accumulate the value of dL_ij
                 }
             }
         }
         real_t L_ij = W;
         real_t dC6ab_dCN_1 = (L_ij > 0.0f) ? (c_ref_dL_ij_1*L_ij - c_ref_L_ij * dL_ij_1) / powf(L_ij,2.0f) : 0.0f; // avoid division by zero
-        real_t dC6ab_dCN_2 = (L_ij > 0.0f) ? (c_ref_dL_ij_2*L_ij - c_ref_L_ij * dL_ij_2) / powf(L_ij,2.0f) : 0.0f; // avoid division by zero
         real_t c6_ab = (W > 0.0f) ? Z / W : 0.0f; // avoid division by zero
         /* calculate c8_ab by $C_8^{AB} = 3C_6^{AB}\sqrt{Q^AQ^B}$*/
         real_t r2r4_1 = data->r2r4[atom_1_type];
         real_t r2r4_2 = data->r2r4[atom_2_type];
         real_t c8_ab = 3.0f * c6_ab * r2r4_1 * r2r4_2; // the value in r2r4 is already squared
         real_t dC8ab_dCN_1 = 3.0f * dC6ab_dCN_1 * r2r4_1 * r2r4_2; // dC8ab/dCN_1
-        real_t dC8ab_dCN_2 = 3.0f * dC6ab_dCN_2 * r2r4_1 * r2r4_2; // dC8ab/dCN_2
         /* acquire the cutoff radius between the two atoms */
         real_t cutoff_radius = data->r0ab[atom_1_type*data->num_elements + atom_2_type];
         /* calculate the dampling function as Grimme et al. 2010, eq4 */
@@ -693,17 +671,12 @@ __global__ void two_body_kernel(device_data_t *data){
          $F_a = S_n C_n^{ab} r_{ab}^{-n} -f_{d,n}^2 * (6*(-\alpha_n)*(r_{ab}/{S_{r,n}R_0^{AB}})^(-\alpha_n - 1) * 1/(S_{r,n}R_0^{AB}})) / r_ab \uparrow{r_{ab}}$*/
         force += S6 * c6_ab * powf(distance, -6.0f) * (-f_dn_6 * f_dn_6) * (6.0f * (-ALPHA_N(6.0f))* powf(distance/(SR_6*cutoff_radius), -ALPHA_N(6.0f) - 1.0f) / (SR_6*cutoff_radius)) / distance; // dE_6/dr * 1/r
         force += S8 * c8_ab * powf(distance, -8.0f) * (-f_dn_8 * f_dn_8) * (6.0f * (-ALPHA_N(8.0f))* powf(distance/(SR_8*cutoff_radius), -ALPHA_N(8.0f) - 1.0f) / (SR_8*cutoff_radius)) / distance; // dE_8/dr * 1/r
-        /* accumulate force */
-        /* force for central atom */
+        /* accumulate force for the central atom */
         local_force_central[0] += force * (atom_1.x - atom_2.x); // x component of the force
         local_force_central[1] += force * (atom_1.y - atom_2.y); // y component of the force
         local_force_central[2] += force * (atom_1.z - atom_2.z); // z component of the force
-        /* force for neighbor atom */
-        // local_force_neighbor[0] += -force * (atom_1.x - atom_2.x)/2.0f; // x component of the force
-        // local_force_neighbor[1] += -force * (atom_1.y - atom_2.y)/2.0f; // y component of the force
-        // local_force_neighbor[2] += -force * (atom_1.z - atom_2.z)/2.0f; // z component of the force
 
-        /* accumulate stress to local matrix instead of directly using atomicAdd */
+        /* accumulate stress to local matrix instead of directly using atomicAdd, divide by 2 becuase the same entry will be calculated twice (when atom_2 is the central atom) */
         local_stress[0*3+0] += -1.0f * (atom_1.x - atom_2.x) * force * (atom_1.x - atom_2.x)/2.0f / cell_volume; // stress_xx
         local_stress[0*3+1] += -1.0f * (atom_1.x - atom_2.x) * force * (atom_1.y - atom_2.y)/2.0f / cell_volume; // stress_xy
         local_stress[0*3+2] += -1.0f * (atom_1.x - atom_2.x) * force * (atom_1.z - atom_2.z)/2.0f / cell_volume; // stress_xz
@@ -741,36 +714,6 @@ __global__ void two_body_kernel(device_data_t *data){
             local_stress[2*3+1] += -1.0f * (atom_1.z - neighbor_a_atom.z) * dE_drai * (atom_1.y - neighbor_a_atom.y) / cell_volume; // stress_zy
             local_stress[2*3+2] += -1.0f * (atom_1.z - neighbor_a_atom.z) * dE_drai * (atom_1.z - neighbor_a_atom.z) / cell_volume; // stress_zz
         }
-        /* increment contribution of dC6a/dri where i is the neighbor of b to force of b and i */
-        // for (uint64_t neighbor_b = 0; neighbor_b < data->num_CN_neighbors[atom_2_index]; ++neighbor_b) {
-        //     uint64_t neighbor_b_index = data->CN_neighbors[atom_2_index * MAX_NEIGHBORS + neighbor_b].index; // index of the neighbor atom
-        //     atom_t neighbor_b_atom = data->CN_neighbors[atom_2_index * MAX_NEIGHBORS + neighbor_b].atom; // atom data of the neighbor atom
-        //     real_t dC6ab_drbi = dC6ab_dCN_2 * data->CN_neighbors[atom_2_index * MAX_NEIGHBORS + neighbor_b].dCN_dr; // dC6ab/dr_i * 1/r_i
-        //     real_t dC8ab_drbi = dC8ab_dCN_2 * data->CN_neighbors[atom_2_index * MAX_NEIGHBORS + neighbor_b].dCN_dr; // dC8ab/dr_i * 1/r_i
-        //     real_t dE_drbi = 0.0f;
-        //     dE_drbi += S6 * f_dn_6 * powf(distance, -6.0f) * dC6ab_drbi; // dE_6/dr * 1/r
-        //     dE_drbi += S8 * f_dn_8 * powf(distance, -8.0f) * dC8ab_drbi; // dE_8/dr * 1/r
-        //     atomicAdd(&data->forces[neighbor_b_index*3+0], dE_drbi * (neighbor_b_atom.x - atom_2.x)/2.0f);
-        //     atomicAdd(&data->forces[neighbor_b_index*3+1], dE_drbi * (neighbor_b_atom.y - atom_2.y)/2.0f);
-        //     atomicAdd(&data->forces[neighbor_b_index*3+2], dE_drbi * (neighbor_b_atom.z - atom_2.z)/2.0f);
-        //     local_force_neighbor[0] += -dE_drbi * (neighbor_b_atom.x - atom_2.x)/2.0f;
-        //     local_force_neighbor[1] += -dE_drbi * (neighbor_b_atom.y - atom_2.y)/2.0f;
-        //     local_force_neighbor[2] += -dE_drbi * (neighbor_b_atom.z - atom_2.z)/2.0f;
-        //     /* accumulate stress */
-        //     local_stress[0*3+0] += -1.0f * (atom_2.x - neighbor_b_atom.x) * dE_drbi * (atom_2.x - neighbor_b_atom.x)/2.0f / cell_volume; // stress_xx
-        //     local_stress[0*3+1] += -1.0f * (atom_2.x - neighbor_b_atom.x) * dE_drbi * (atom_2.y - neighbor_b_atom.y)/2.0f / cell_volume; // stress_xy
-        //     local_stress[0*3+2] += -1.0f * (atom_2.x - neighbor_b_atom.x) * dE_drbi * (atom_2.z - neighbor_b_atom.z)/2.0f / cell_volume; // stress_xz
-        //     local_stress[1*3+0] += -1.0f * (atom_2.y - neighbor_b_atom.y) * dE_drbi * (atom_2.x - neighbor_b_atom.x)/2.0f / cell_volume; // stress_yx
-        //     local_stress[1*3+1] += -1.0f * (atom_2.y - neighbor_b_atom.y) * dE_drbi * (atom_2.y - neighbor_b_atom.y)/2.0f / cell_volume; // stress_yy
-        //     local_stress[1*3+2] += -1.0f * (atom_2.y - neighbor_b_atom.y) * dE_drbi * (atom_2.z - neighbor_b_atom.z)/2.0f / cell_volume; // stress_yz
-        //     local_stress[2*3+0] += -1.0f * (atom_2.z - neighbor_b_atom.z) * dE_drbi * (atom_2.x - neighbor_b_atom.x)/2.0f / cell_volume; // stress_zx
-        //     local_stress[2*3+1] += -1.0f * (atom_2.z - neighbor_b_atom.z) * dE_drbi * (atom_2.y - neighbor_b_atom.y)/2.0f / cell_volume; // stress_zy
-        //     local_stress[2*3+2] += -1.0f * (atom_2.z - neighbor_b_atom.z) * dE_drbi * (atom_2.z - neighbor_b_atom.z)/2.0f / cell_volume; // stress_zz
-        // }
-        /* accumulate force for the neighboring atom */
-        // atomicAdd(&data->forces[atom_2_index*3+0], local_force_neighbor[0]);
-        // atomicAdd(&data->forces[atom_2_index*3+1], local_force_neighbor[1]);
-        // atomicAdd(&data->forces[atom_2_index*3+2], local_force_neighbor[2]);
     }
     /* accumulate energy */
     atomicAdd(data->energy, local_energy); // accumulate the energy for the central atom
@@ -814,9 +757,6 @@ __host__ void compute_dispersion_energy(
     // launch the kernel
     printf("launching coordination_number_kernel, size: %zu, %zu\n", length, length);
     coordination_number_kernel<<<length, length>>>(buffer.get()); // launch the kernel to compute the coordination numbers
-    CHECK_CUDA(cudaDeviceSynchronize()); // synchronize the device to ensure all threads are finished
-    printf("launching adjust_coordination_number_kernel, size: %zu\n", length);
-    adjust_coordination_number_kernel<<<1, 1>>>(buffer.get()); // launch the kernel to adjust the coordination numbers
     CHECK_CUDA(cudaDeviceSynchronize()); // synchronize the device to ensure all threads are finished
     printf("launching two_body_kernel, size: %zu, %zu\n", length, (uint64_t)512);
     two_body_kernel<<<length, 512>>>(buffer.get());
