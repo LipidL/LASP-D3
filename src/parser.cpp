@@ -152,7 +152,7 @@ namespace parser
                 tokens.push_back(token);
             }
             /* check the size of tokens */
-            if (tokens.size() != 4 && token.size() != 5) {  // header line should have 4 or 5 entries
+            if (tokens.size() != 4 && tokens.size() != 5) {  // header line should have 4 or 5 entries
                 return std::nullopt;
             }
             try {

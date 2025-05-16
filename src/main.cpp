@@ -1,4 +1,6 @@
 #include <iostream>
+#include <chrono>
+#include <ctime>
 #include "parser.cpp"
 #include "d3.h"
 
@@ -38,7 +40,8 @@ int main(int argc, char* argv[])
             }
             for (size_t i = 0; i < 3; ++i) {
                 for (size_t j = 0; j < 3; ++j) {
-                    structure.cell.cell[i][j] *= angstron_to_bohr; // convert to bohr
+                    structure.cell.cell[i][j] *= angstron_to_bohr; // convert to bohr   
+                    std::cout << "Cell[" << i << "][" << j << "]: " << structure.cell.cell[i][j] << std::endl;
                 }
             }
             std::cout << "Computing dispersion energy for " << num_atoms << " atoms..." << std::endl;
@@ -50,7 +53,12 @@ int main(int argc, char* argv[])
             float energy;
             float *force = (float *)malloc(sizeof(float) * num_atoms * 3); // allocate memory for force
             float *stress = (float *)malloc(sizeof(float) * 9); // allocate memory for stress
+            // Start measuring execution time
+            auto start_time = std::chrono::high_resolution_clock::now();
             compute_dispersion_energy((float (*)[3])atoms, elements, num_atoms, structure.cell.cell, cutoff_radius, CN_cutoff_radius, &energy, force, stress);
+            auto end_time = std::chrono::high_resolution_clock::now();
+            std::chrono::duration<double> elapsed_time = end_time - start_time;
+            std::cout << "Elapsed time: " << elapsed_time.count() << " seconds" << std::endl;
             std::cout << "Energy: " << energy << " eV" << std::endl; // convert to eV
             float force_sum[3] = {0.0f, 0.0f, 0.0f};
             for (size_t i = 0; i < num_atoms; ++i) {

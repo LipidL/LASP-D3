@@ -60,6 +60,17 @@
         "d3.h": "c",
         "cstdarg": "cpp",
         "fstream": "cpp",
-        "sstream": "cpp"
+        "sstream": "cpp",
+        "charconv": "cpp",
+        "chrono": "cpp",
+        "forward_list": "cpp",
+        "map": "cpp",
+        "format": "cpp",
+        "iomanip": "cpp",
+        "mutex": "cpp",
+        "ratio": "cpp",
+        "stop_token": "cpp",
+        "thread": "cpp",
+        "xtree": "cpp"
     }
 }

@@ -17,7 +17,7 @@ add_executable(d3 ${SOURCES} ${HEADERS})
 
 # Set CUDA compilation options
 target_compile_options(d3 PRIVATE $<$<COMPILE_LANGUAGE:CUDA>:
-    -Xptxas -O2
+    -Xptxas -O3
     -lineinfo
 >)
 
