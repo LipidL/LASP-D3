@@ -429,6 +429,54 @@ public:
     __host__ device_data_t get_host_data() {
         return this->host_data_; // return the host data
     } // get host data
+
+    __host__ void set_atoms(uint16_t *elements, real_t coords[][3], uint64_t length) {
+        /* check that then length doesn't exceed current length */
+        if (length > this->host_data_.num_atoms) {
+            fprintf(stderr, "Error: length %llu exceeds the current length %llu\n", length, this->host_data_.num_atoms);
+            exit(EXIT_FAILURE);
+        }
+        /* update to host and device data*/
+        this->host_data_.num_atoms = length; // set the number of atoms in the system in host_data
+        printf("device_data_: %p, host_data_: %p\n", this->device_data_, &this->host_data_);
+        CHECK_CUDA(cudaMemcpy(this->device_data_, &this->host_data_, sizeof(device_data_t), cudaMemcpyHostToDevice)); // copy the host data to device
+        /* check that all elements are within scope */
+        Unique_Elements unique_elements(elements, length); // create the unique elements object
+        for (uint64_t i = 0; i < length; ++i) {
+            if (elements[i] >= MAX_ELEMENTS) {
+                /* check that no element number exceed MAX_LEMENTS */
+                fprintf(stderr, "Error: element %d is out of range\n", elements[i]);
+                exit(EXIT_FAILURE);
+            }
+            unique_elements.find(elements[i]); // check that the element is in the unique elements array. if not found, it will crash.
+        }
+        /* set the atoms in the device data */
+        atom_t *h_atoms = (atom_t *)malloc(length * sizeof(atom_t));
+        if (h_atoms == NULL) {
+            fprintf(stderr, "Error: failed to allocate memory for atoms on host");
+            exit(EXIT_FAILURE);
+        }
+        for (uint64_t i = 0; i < length; ++i) {
+            h_atoms[i].element = elements[i];
+            h_atoms[i].x = coords[i][0];
+            h_atoms[i].y = coords[i][1];
+            h_atoms[i].z = coords[i][2];
+        }
+        CHECK_CUDA(cudaMemcpy(this->host_data_.atoms, h_atoms, length * sizeof(atom_t), cudaMemcpyHostToDevice));
+        free(h_atoms); // free the host atoms array
+    } // set atoms
+
+    __host__ void set_cell(real_t cell[3][3]) {
+        /* set the cell in the device data */
+        for (uint16_t i = 0; i < 3; ++i) {
+            for (uint16_t j = 0; j < 3; ++j) {
+                this->host_data_.cell[i][j] = cell[i][j];
+            }
+        }
+        /* the cell size is changed, so the max_cell_bias will also change */
+        calculate_cell_repeats(cell, this->host_data_.cutoff, this->host_data_.max_cell_bias); // calculate the new max_cell_bias
+        CHECK_CUDA(cudaMemcpy(this->device_data_, &this->host_data_, sizeof(device_data_t), cudaMemcpyHostToDevice)); // copy the host data to device
+    } // set cell
 private:
     device_data_t *device_data_; // pointer to the device data
     device_data_t host_data_;
@@ -739,6 +787,88 @@ __global__ void two_body_kernel(device_data_t *data){
     __syncthreads(); // make sure all threads see the updated force cache
     for (uint64_t i = threadIdx.x; i < data->num_atoms * 3; i += blockDim.x) {
         atomicAdd(&data->forces[i], force_cache[i]); // accumulate the forces for the central atom
+    }
+}
+
+/**
+ * @brief this function is used to init a handle for d3 energy/force/stress calculation.
+ * 
+ * @note if you need to call calculate d3 for multiple times where the structures are similar in element composition, you would better use this handle.
+ * @note this function initializes the handle in heap area, so you need to free it after use.
+ * @note if the number of atoms will vary during your simulation, you need to assign the largest possible number of atoms as the `length` parameter.
+ * @note if the elements will vary during your simulation, you need to include all possible elements in the `elements` parameter.
+ */
+D3Handle_t *init_d3_handle( 
+    uint16_t *elements,
+    uint64_t max_length, 
+    real_t cutoff_radius,
+    real_t coordination_number_cutoff
+) {
+    real_t *coords = (real_t *)malloc(max_length * 3 * sizeof(real_t)); // allocate memory for coordinates
+    real_t cell[3][3] = {0}; // initialize the cell matrix
+    Device_Buffer *buffer = new Device_Buffer((real_t (*)[3])coords, elements, cell, max_length, cutoff_radius, coordination_number_cutoff); // create a buffer to hold the data
+    return (D3Handle_t *)buffer; // return the handle
+}
+
+void set_atoms(D3Handle_t *handle, real_t *coords, uint16_t *elements, uint64_t length) {
+    Device_Buffer *buffer = (Device_Buffer *)handle; // cast the handle to Device_Buffer
+    buffer->set_atoms(elements, (real_t (*)[3])coords, length); // set the atoms in the buffer
+}
+
+void set_cell(D3Handle_t *handle, real_t cell[3][3]) {
+    Device_Buffer *buffer = (Device_Buffer *)handle; // cast the handle to Device_Buffer
+    buffer->set_cell(cell); // set the cell in the buffer
+}
+
+void free_d3_handle(D3Handle_t *handle) {
+    Device_Buffer *buffer = (Device_Buffer *)handle; // cast the handle to Device_Buffer
+    delete buffer; // free the buffer
+}
+
+void clear_d3_handle(D3Handle_t *handle) {
+    Device_Buffer *buffer = (Device_Buffer *)handle; // cast the handle to Device_Buffer
+    cudaMemset(buffer->get_host_data().neighbors, 0, buffer->get_host_data().num_atoms * MAX_NEIGHBORS * sizeof(neighbor_t)); // clear the neighbors
+    cudaMemset(buffer->get_host_data().CN_neighbors, 0, buffer->get_host_data().num_atoms * MAX_NEIGHBORS * sizeof(neighbor_t)); // clear the CN neighbors
+    cudaMemset(buffer->get_host_data().coordination_numbers, 0, buffer->get_host_data().num_atoms * sizeof(real_t)); // clear the coordination numbers
+    cudaMemset(buffer->get_host_data().num_neighbors, 0, buffer->get_host_data().num_atoms * sizeof(uint64_t)); // clear the number of neighbors
+    cudaMemset(buffer->get_host_data().num_CN_neighbors, 0, buffer->get_host_data().num_atoms * sizeof(uint64_t)); // clear the number of CN neighbors
+    cudaMemset(buffer->get_host_data().forces, 0, buffer->get_host_data().num_atoms * 3 * sizeof(real_t)); // clear the forces
+    cudaMemset(buffer->get_host_data().energy, 0, sizeof(real_t)); // clear the energy
+    cudaMemset(buffer->get_host_data().stress, 0, 9 * sizeof(real_t)); // clear the stress
+}
+
+void compute_dispersion_energy_from_handle(
+    D3Handle_t *handle,
+    real_t *energy,
+    real_t *force,
+    real_t *stress
+) {
+    Device_Buffer *buffer = (Device_Buffer *)handle; // cast the handle to Device_Buffer
+    // launch the kernel
+    uint64_t length = buffer->get_host_data().num_atoms; // get the number of atoms in the system
+    printf("launching coordination_number_kernel, size: %zu, %zu\n", length, length);
+    coordination_number_kernel<<<length, length>>>(buffer->get_device_data()); // launch the kernel to compute the coordination numbers
+    CHECK_CUDA(cudaDeviceSynchronize()); // synchronize the device to ensure all threads are finished
+    printf("launching two_body_kernel, size: %zu, %zu\n", length, (uint64_t)512);
+    two_body_kernel<<<length, 512, length * 3 * sizeof(real_t)>>>(buffer->get_device_data());
+    CHECK_CUDA(cudaDeviceSynchronize()); // synchronize the device to ensure all threads are finished
+
+    cudaMemcpy(force, buffer->get_host_data().forces, length * 3 * sizeof(real_t), cudaMemcpyDeviceToHost); // copy the forces back to host memory
+    cudaMemcpy(energy, buffer->get_host_data().energy, sizeof(real_t), cudaMemcpyDeviceToHost); // copy the energy back to host memory
+    cudaMemcpy(stress, buffer->get_host_data().stress, 9 * sizeof(real_t), cudaMemcpyDeviceToHost); // copy the stress back to host memory
+    real_t angstron_to_bohr = 1/0.52917726f; // angstron to bohr conversion factor
+    real_t hartree_to_eV = 27.211396641308f; // hartree to eV conversion factor
+    *energy *= hartree_to_eV; // convert energy to eV
+    for (uint64_t i = 0; i < length; ++i) {
+        /* convert force from hartree/bohr to eV/angstron */
+        force[i * 3 + 0] *= hartree_to_eV * angstron_to_bohr;
+        force[i * 3 + 1] *= hartree_to_eV * angstron_to_bohr;
+        force[i * 3 + 2] *= hartree_to_eV * angstron_to_bohr;
+    }
+    for (uint64_t i = 0; i < 3; ++i) {
+        for (uint64_t j = 0; j < 3; ++j) {
+            stress[i * 3 + j] *= hartree_to_eV * powf(angstron_to_bohr,3); // convert stress to from hartree/bohr^3 to eV/angstron^3
+        }
     }
 }
 

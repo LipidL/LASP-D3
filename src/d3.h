@@ -29,6 +29,28 @@ void compute_dispersion_energy(
     real_t *stress // pointer to store the computed stress    
 );
 
+D3Handle_t *init_d3_handle( 
+    uint16_t *elements,
+    uint64_t max_length, 
+    real_t cutoff_radius,
+    real_t coordination_number_cutoff
+);
+
+void set_atoms(D3Handle_t *handle, real_t *coords, uint16_t *elements, uint64_t length);
+
+void set_cell(D3Handle_t *handle, real_t cell[3][3]);
+
+void free_d3_handle(D3Handle_t *handle);
+
+void clear_d3_handle(D3Handle_t *handle);
+
+void compute_dispersion_energy_from_handle(
+    D3Handle_t *handle,
+    real_t *energy,
+    real_t *force,
+    real_t *stress
+);
+
 #ifdef __cplusplus
 }
 #endif
