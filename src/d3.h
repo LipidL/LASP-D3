@@ -7,6 +7,9 @@
 typedef float real_t;
 #endif
 
+/* define type for d3 handle */
+typedef void D3Handle_t;
+
 #ifdef __cplusplus
 extern "C" {
 #endif

@@ -112,7 +112,7 @@ void calculate_cell_repeats(const real_t cell[3][3], real_t cutoff, uint64_t rep
     
     // Multiply by cutoff and round up to nearest integer
     for (int i = 0; i < 3; i++) {
-        repeats[i] = ((int)(cutoff * norms[i]) + 2) * 2 + 1; // the number of repeats need to be timed by 2 due to two directions, and add 1 due to the central unit (no translation at all)
+        repeats[i] = ((int)(cutoff * norms[i]) + 2) + 1; // the number of repeats need to be timed by 2 due to two directions, and add 1 due to the central unit (no translation at all)
     }
 }
 
@@ -219,13 +219,12 @@ private:
  */
 class Device_Buffer {
 public:
-    device_data_t data; // device data structure on host
     __host__ Device_Buffer(real_t coords[][3], uint16_t *elements, real_t cell[3][3], uint64_t length, real_t cutoff, real_t CN_cutoff){
         Unique_Elements unique_elements(elements, length); // create the unique elements object
         {
             /* construct elements */
-            this->data.num_atoms = length; // number of atoms in the system
-            this->data.num_elements = unique_elements.num_elements; // number of unique elements in the system
+            this->host_data_.num_atoms = length; // number of atoms in the system
+            this->host_data_.num_elements = unique_elements.num_elements; // number of unique elements in the system
 
    
             uint64_t *h_atom_types = (uint64_t *)malloc(sizeof(uint64_t) * length);
@@ -237,13 +236,13 @@ public:
             CHECK_CUDA(cudaMalloc((void**)&d_atom_types, sizeof(uint64_t) * length));
             CHECK_CUDA(cudaMemcpy(d_atom_types, h_atom_types, sizeof(uint64_t)*length, cudaMemcpyHostToDevice));
             free(h_atom_types);
-            this->data.atom_types = d_atom_types;
+            this->host_data_.atom_types = d_atom_types;
         }
         {
             /* construct cell */
             for (uint16_t i = 0; i < 3; ++i) {
                 for (uint16_t j = 0; j < 3; ++j) {
-                    this->data.cell[i][j] = cell[i][j];
+                    this->host_data_.cell[i][j] = cell[i][j];
                 }
             }
         }
@@ -263,7 +262,7 @@ public:
             atom_t *d_atoms;
             CHECK_CUDA(cudaMalloc((void**)&d_atoms, length * sizeof(atom_t)));
             CHECK_CUDA(cudaMemcpy(d_atoms, h_atoms, length * sizeof(atom_t), cudaMemcpyHostToDevice));
-            this->data.atoms = d_atoms; // set the atoms pointer in device data
+            this->host_data_.atoms = d_atoms; // set the atoms pointer in device data
             free(h_atoms); // free the host atoms array
         }
 
@@ -271,10 +270,10 @@ public:
         uint16_t num_elements = unique_elements.num_elements;
         {
             /* c6ab_ref array */
-            this->data.c6_stride_1 = num_elements*NUM_REF_C6*NUM_REF_C6*NUM_C6AB_ENTRIES;
-            this->data.c6_stride_2 = NUM_REF_C6*NUM_REF_C6*NUM_C6AB_ENTRIES;
-            this->data.c6_stride_3 = NUM_REF_C6*NUM_C6AB_ENTRIES;
-            this->data.c6_stride_4 = NUM_C6AB_ENTRIES;
+            this->host_data_.c6_stride_1 = num_elements*NUM_REF_C6*NUM_REF_C6*NUM_C6AB_ENTRIES;
+            this->host_data_.c6_stride_2 = NUM_REF_C6*NUM_REF_C6*NUM_C6AB_ENTRIES;
+            this->host_data_.c6_stride_3 = NUM_REF_C6*NUM_C6AB_ENTRIES;
+            this->host_data_.c6_stride_4 = NUM_C6AB_ENTRIES;
             real_t *h_c6ab_ref = (real_t *)malloc(num_elements*num_elements*NUM_REF_C6*NUM_REF_C6*NUM_C6AB_ENTRIES*sizeof(real_t));
             for (uint16_t i = 0; i < num_elements; ++i) {
                 for(uint16_t j = 0; j < num_elements; ++j) {
@@ -282,7 +281,7 @@ public:
                     uint16_t element_j = unique_elements[j];
                     for(uint16_t k = 0; k < NUM_REF_C6; ++k) {
                         for (uint16_t l = 0; l < NUM_REF_C6; ++l) {
-                            uint64_t index = this->data.c6_stride_1 * i + this->data.c6_stride_2 * j + this->data.c6_stride_3 * k + this->data.c6_stride_4 * l;
+                            uint64_t index = this->host_data_.c6_stride_1 * i + this->host_data_.c6_stride_2 * j + this->host_data_.c6_stride_3 * k + this->host_data_.c6_stride_4 * l;
                             for(uint16_t m = 0; m < NUM_C6AB_ENTRIES; ++m) {
                                 h_c6ab_ref[index+m] = c6ab_ref[element_i][element_j][k][l][m];
                             }
@@ -293,7 +292,7 @@ public:
             real_t *d_c6ab_ref;
             CHECK_CUDA(cudaMalloc((void**)&d_c6ab_ref, num_elements*num_elements*NUM_REF_C6*NUM_REF_C6*NUM_C6AB_ENTRIES*sizeof(real_t)));
             CHECK_CUDA(cudaMemcpy(d_c6ab_ref, h_c6ab_ref, num_elements*num_elements*NUM_REF_C6*NUM_REF_C6*NUM_C6AB_ENTRIES*sizeof(real_t), cudaMemcpyHostToDevice));
-            this->data.c6_ab_ref = d_c6ab_ref;
+            this->host_data_.c6_ab_ref = d_c6ab_ref;
             free(h_c6ab_ref);
         } // c6ab_ref array
         {
@@ -309,7 +308,7 @@ public:
             real_t *d_r0ab;
             CHECK_CUDA(cudaMalloc((void**)&d_r0ab, num_elements*num_elements*sizeof(real_t)));
             CHECK_CUDA(cudaMemcpy(d_r0ab, h_r0ab, num_elements*num_elements*sizeof(real_t), cudaMemcpyHostToDevice));
-            this->data.r0ab = d_r0ab;
+            this->host_data_.r0ab = d_r0ab;
             free(h_r0ab);
         } // r0ab array
         {
@@ -321,7 +320,7 @@ public:
             real_t *d_rcov;
             CHECK_CUDA(cudaMalloc((void**)&d_rcov, num_elements*sizeof(real_t)));
             CHECK_CUDA(cudaMemcpy(d_rcov, h_rcov, num_elements*sizeof(real_t), cudaMemcpyHostToDevice));
-            this->data.rcov = d_rcov;
+            this->host_data_.rcov = d_rcov;
             free(h_rcov);
         } // rcov array
         {
@@ -333,75 +332,75 @@ public:
             real_t *d_r2r4;
             CHECK_CUDA(cudaMalloc((void**)&d_r2r4, num_elements*sizeof(real_t)));
             CHECK_CUDA(cudaMemcpy(d_r2r4, h_r2r4, num_elements*sizeof(real_t), cudaMemcpyHostToDevice));
-            this->data.r2r4 = d_r2r4;
+            this->host_data_.r2r4 = d_r2r4;
             free(h_r2r4);
         } // r2r4 array
         {
             /* construct supercell information */
-            this->data.coordination_number_cutoff = CN_cutoff;
-            this->data.cutoff = cutoff;
+            this->host_data_.coordination_number_cutoff = CN_cutoff;
+            this->host_data_.cutoff = cutoff;
             real_t larger_cutoff = CN_cutoff > cutoff ? CN_cutoff : cutoff;
-            calculate_cell_repeats(cell, larger_cutoff, this->data.max_cell_bias); 
-            printf("max_cell_bias: %zu %zu %zu\n", this->data.max_cell_bias[0], this->data.max_cell_bias[1], this->data.max_cell_bias[2]);
+            calculate_cell_repeats(cell, larger_cutoff, this->host_data_.max_cell_bias); 
+            printf("max_cell_bias: %zu %zu %zu\n", this->host_data_.max_cell_bias[0], this->host_data_.max_cell_bias[1], this->host_data_.max_cell_bias[2]);
         } // cupercell information
         {
             /* construct other fields */
             neighbor_t *neighbors;
             cudaMalloc((void**)&neighbors, length * MAX_NEIGHBORS * sizeof(neighbor_t));
             cudaMemset(neighbors, 0, length * MAX_NEIGHBORS * sizeof(neighbor_t));
-            this->data.neighbors = neighbors;
+            this->host_data_.neighbors = neighbors;
             neighbor_t *CN_neighbors;
             cudaMalloc((void**)&CN_neighbors, length * MAX_NEIGHBORS * sizeof(neighbor_t));
             cudaMemset(CN_neighbors, 0, length * MAX_NEIGHBORS * sizeof(neighbor_t));
-            this->data.CN_neighbors = CN_neighbors;
+            this->host_data_.CN_neighbors = CN_neighbors;
             real_t *coordination_numbers;
             cudaMalloc((void**)&coordination_numbers, length * sizeof(real_t));
             cudaMemset(coordination_numbers, 0, length * sizeof(real_t));
-            this->data.coordination_numbers = coordination_numbers;
+            this->host_data_.coordination_numbers = coordination_numbers;
             uint64_t *num_neighbors;
             cudaMalloc((void**)&num_neighbors, length * sizeof(uint64_t));
             cudaMemset(num_neighbors, 0, length * sizeof(uint64_t));
-            this->data.num_neighbors = num_neighbors;
+            this->host_data_.num_neighbors = num_neighbors;
             uint64_t *num_CN_neighbors;
             cudaMalloc((void**)&num_CN_neighbors, length * sizeof(uint64_t));
             cudaMemset(num_CN_neighbors, 0, length * sizeof(uint64_t));
-            this->data.num_CN_neighbors = num_CN_neighbors;
-            this->data.max_num_CN_neighbor = 0; // initialize the maximum number of CN neighbors to 0
+            this->host_data_.num_CN_neighbors = num_CN_neighbors;
+            this->host_data_.max_num_CN_neighbor = 0; // initialize the maximum number of CN neighbors to 0
             real_t *energy;
             cudaMalloc((void**)&energy, sizeof(real_t));
             cudaMemset(energy, 0, sizeof(real_t));
-            this->data.energy = energy;
+            this->host_data_.energy = energy;
             real_t *forces;
             cudaMalloc((void**)&forces, length * 3 * sizeof(real_t));
             cudaMemset(forces, 0, length * 3 * sizeof(real_t));
-            this->data.forces = forces;
+            this->host_data_.forces = forces;
             real_t *stress;
             cudaMalloc((void**)&stress, 9 * sizeof(real_t));
             cudaMemset(stress, 0, 9 * sizeof(real_t));
-            this->data.stress = stress;
+            this->host_data_.stress = stress;
         }
         /* copy the data to device */
         device_data_t *d_data;
         CHECK_CUDA(cudaMalloc((void**)&d_data, sizeof(device_data_t)));
-        CHECK_CUDA(cudaMemcpy(d_data, &this->data, sizeof(device_data_t), cudaMemcpyHostToDevice));
-        this->data_ = d_data; // set the data pointer in the class
+        CHECK_CUDA(cudaMemcpy(d_data, &this->host_data_, sizeof(device_data_t), cudaMemcpyHostToDevice));
+        this->device_data_ = d_data; // set the data pointer in the class
     } // Device_Buffer constructor
     __host__ ~Device_Buffer() {
-        if (this->data_ != NULL) {
-            CHECK_CUDA(cudaFree(this->data.atom_types)); // free the atom types array
-            CHECK_CUDA(cudaFree(this->data.atoms)); // free the atoms array
-            CHECK_CUDA(cudaFree(this->data.c6_ab_ref)); // free the c6ab_ref array
-            CHECK_CUDA(cudaFree(this->data.r0ab)); // free the r0ab array
-            CHECK_CUDA(cudaFree(this->data.rcov)); // free the rcov array
-            CHECK_CUDA(cudaFree(this->data.r2r4)); // free the r2r4 array
-            CHECK_CUDA(cudaFree(this->data.neighbors)); // free the neighbors array
-            CHECK_CUDA(cudaFree(this->data.CN_neighbors)); // free the CN neighbors array
-            CHECK_CUDA(cudaFree(this->data.coordination_numbers)); // free the coordination numbers array
-            CHECK_CUDA(cudaFree(this->data.num_neighbors)); // free the number of neighbors array
-            CHECK_CUDA(cudaFree(this->data.num_CN_neighbors)); // free the number of CN neighbors array
-            CHECK_CUDA(cudaFree(this->data.energy)); // free the energy array
-            CHECK_CUDA(cudaFree(this->data.forces)); // free the forces array
-            CHECK_CUDA(cudaFree(this->data.stress)); // free the stress array
+        if (this->device_data_ != NULL) {
+            CHECK_CUDA(cudaFree(this->host_data_.atom_types)); // free the atom types array
+            CHECK_CUDA(cudaFree(this->host_data_.atoms)); // free the atoms array
+            CHECK_CUDA(cudaFree(this->host_data_.c6_ab_ref)); // free the c6ab_ref array
+            CHECK_CUDA(cudaFree(this->host_data_.r0ab)); // free the r0ab array
+            CHECK_CUDA(cudaFree(this->host_data_.rcov)); // free the rcov array
+            CHECK_CUDA(cudaFree(this->host_data_.r2r4)); // free the r2r4 array
+            CHECK_CUDA(cudaFree(this->host_data_.neighbors)); // free the neighbors array
+            CHECK_CUDA(cudaFree(this->host_data_.CN_neighbors)); // free the CN neighbors array
+            CHECK_CUDA(cudaFree(this->host_data_.coordination_numbers)); // free the coordination numbers array
+            CHECK_CUDA(cudaFree(this->host_data_.num_neighbors)); // free the number of neighbors array
+            CHECK_CUDA(cudaFree(this->host_data_.num_CN_neighbors)); // free the number of CN neighbors array
+            CHECK_CUDA(cudaFree(this->host_data_.energy)); // free the energy array
+            CHECK_CUDA(cudaFree(this->host_data_.forces)); // free the forces array
+            CHECK_CUDA(cudaFree(this->host_data_.stress)); // free the stress array
         }
     } // Device_Buffer destructor
 
@@ -410,25 +409,29 @@ public:
     Device_Buffer& operator=(const Device_Buffer&) = delete; // disable copy assignment operator
 
     /* enable moving */
-    __host__ Device_Buffer(Device_Buffer&& other) noexcept : data_(other.data_) {
-        other.data_ = nullptr; // transfer ownership of the data pointer
+    __host__ Device_Buffer(Device_Buffer&& other) noexcept : device_data_(other.device_data_) {
+        other.device_data_ = nullptr; // transfer ownership of the data pointer
     } // move constructor
     __host__ Device_Buffer& operator=(Device_Buffer&& other) noexcept {
         if (this != &other) {
-            if (this->data_ != nullptr){
-                CHECK_CUDA(cudaFree(this->data_)); // free the current data
+            if (this->device_data_ != nullptr){
+                CHECK_CUDA(cudaFree(this->device_data_)); // free the current data
             }
-            this->data_ = other.data_; // transfer ownership of the data pointer
-            other.data_ = nullptr; // set the other data pointer to null
+            this->device_data_ = other.device_data_; // transfer ownership of the data pointer
+            other.device_data_ = nullptr; // set the other data pointer to null
         }
         return *this;
     } // move assignment operator
 
-    __host__ device_data_t* get() {
-        return this->data_; // return the device data pointer
+    __host__ device_data_t* get_device_data() {
+        return this->device_data_; // return the device data pointer
     } // get device data pointer
+    __host__ device_data_t get_host_data() {
+        return this->host_data_; // return the host data
+    } // get host data
 private:
-    device_data_t *data_; // pointer to the device data
+    device_data_t *device_data_; // pointer to the device data
+    device_data_t host_data_;
 }; // Device_Buffer
 
 /**
@@ -737,7 +740,6 @@ __global__ void two_body_kernel(device_data_t *data){
     for (uint64_t i = threadIdx.x; i < data->num_atoms * 3; i += blockDim.x) {
         atomicAdd(&data->forces[i], force_cache[i]); // accumulate the forces for the central atom
     }
-
 }
 
 /**
@@ -763,15 +765,15 @@ __host__ void compute_dispersion_energy(
     Device_Buffer buffer(coords, elements, cell, length, cutoff_radius, coordination_number_cutoff); // create a buffer to hold the data
     // launch the kernel
     printf("launching coordination_number_kernel, size: %zu, %zu\n", length, length);
-    coordination_number_kernel<<<length, length>>>(buffer.get()); // launch the kernel to compute the coordination numbers
+    coordination_number_kernel<<<length, length>>>(buffer.get_device_data()); // launch the kernel to compute the coordination numbers
     CHECK_CUDA(cudaDeviceSynchronize()); // synchronize the device to ensure all threads are finished
     printf("launching two_body_kernel, size: %zu, %zu\n", length, (uint64_t)512);
-    two_body_kernel<<<length, 512, length * 3 * sizeof(real_t)>>>(buffer.get());
+    two_body_kernel<<<length, 512, length * 3 * sizeof(real_t)>>>(buffer.get_device_data());
     CHECK_CUDA(cudaDeviceSynchronize()); // synchronize the device to ensure all threads are finished
 
-    cudaMemcpy(force, buffer.data.forces, length * 3 * sizeof(real_t), cudaMemcpyDeviceToHost); // copy the forces back to host memory
-    cudaMemcpy(energy, buffer.data.energy, sizeof(real_t), cudaMemcpyDeviceToHost); // copy the energy back to host memory
-    cudaMemcpy(stress, buffer.data.stress, 9 * sizeof(real_t), cudaMemcpyDeviceToHost); // copy the stress back to host memory
+    cudaMemcpy(force, buffer.get_host_data().forces, length * 3 * sizeof(real_t), cudaMemcpyDeviceToHost); // copy the forces back to host memory
+    cudaMemcpy(energy, buffer.get_host_data().energy, sizeof(real_t), cudaMemcpyDeviceToHost); // copy the energy back to host memory
+    cudaMemcpy(stress, buffer.get_host_data().stress, 9 * sizeof(real_t), cudaMemcpyDeviceToHost); // copy the stress back to host memory
     real_t angstron_to_bohr = 1/0.52917726f; // angstron to bohr conversion factor
     real_t hartree_to_eV = 27.211396641308f; // hartree to eV conversion factor
     *energy *= hartree_to_eV; // convert energy to eV
