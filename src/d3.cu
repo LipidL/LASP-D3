@@ -770,14 +770,14 @@ __host__ void compute_dispersion_energy(
     CHECK_CUDA(cudaDeviceSynchronize()); // synchronize the device to ensure all threads are finished
     auto end_time_1 = std::chrono::high_resolution_clock::now();
     auto duration_1 = std::chrono::duration_cast<std::chrono::milliseconds>(end_time_1 - start_time_1);
-    printf("coordination_number_kernel took %lld miliseconds\n", duration_1.count());
+    printf("coordination_number_kernel took %ld miliseconds\n", duration_1.count());
     printf("launching two_body_kernel, size: %zu, %zu\n", length, (uint64_t)512);
     auto start_time_2 = std::chrono::high_resolution_clock::now();
     two_body_kernel<<<length, 512, length * 3 * sizeof(real_t)>>>(buffer.get());
     CHECK_CUDA(cudaDeviceSynchronize()); // synchronize the device to ensure all threads are finished
     auto end_time_2 = std::chrono::high_resolution_clock::now();
     auto duration_2 = std::chrono::duration_cast<std::chrono::milliseconds>(end_time_2 - start_time_2);
-    printf("two_body_kernel took %lld miliseconds\n", duration_2.count());
+    printf("two_body_kernel took %ld miliseconds\n", duration_2.count());
 
     cudaMemcpy(force, buffer.data.forces, length * 3 * sizeof(real_t), cudaMemcpyDeviceToHost); // copy the forces back to host memory
     cudaMemcpy(energy, buffer.data.energy, sizeof(real_t), cudaMemcpyDeviceToHost); // copy the energy back to host memory
