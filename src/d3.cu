@@ -32,8 +32,9 @@
 #define MAX_BLOCK_SIZE 512 // number of threads per block
 #define GRID_SIZE 65536 // number of blocks per grid
 #define MAX_ELEMENTS 118
-#define MAX_NEIGHBORS 3500 // the maximum number of neighbors, dependent on the cutoff choice
-#define MAX_LOCAL_NEIGHBORS 100 // the maximum neighbor of one thread, equal to max_supercell_size * (num_atoms / num_threads)
+#define MAX_NEIGHBORS 10000 // the maximum number of neighbors, dependent on the cutoff choice
+#define MAX_LOCAL_NEIGHBORS 800 // the maximum neighbor of one thread, equal to max_supercell_size * (num_atoms / num_threads)
+#define MAX_ATOMS 1000
 
 /* 
 constants used in the simulation
@@ -576,6 +577,7 @@ __global__ void coordination_number_kernel(device_data_t *data) {
  * @note the number of threads in each block can be any value, but it's better to set a value smaller than the number of neighbors.
  */
 __global__ void two_body_kernel(device_data_t *data){
+    extern __shared__ real_t force_cache[]; // shared memory for forces, size: 3 * data->num_atoms
     uint64_t atom_1_index = blockIdx.x; // each block is responsible for one central atom
     atom_t atom_1 = data->atoms[atom_1_index]; // central atom
     /* local variables to reduce calls to `atomicAdd` */
@@ -697,9 +699,9 @@ __global__ void two_body_kernel(device_data_t *data){
             dE_drai += S6 * f_dn_6 * powf(distance, -6.0f) * dC6ab_drai; // dE_6/dr * 1/r
             dE_drai += S8 * f_dn_8 * powf(distance, -8.0f) * dC8ab_drai; // dE_8/dr * 1/r
             /* accumulate force */
-            atomicAdd(&data->forces[neighbor_a_index*3+0], dE_drai * (neighbor_a_atom.x - atom_1.x));
-            atomicAdd(&data->forces[neighbor_a_index*3+1], dE_drai * (neighbor_a_atom.y - atom_1.y));
-            atomicAdd(&data->forces[neighbor_a_index*3+2], dE_drai * (neighbor_a_atom.z - atom_1.z));
+            atomicAdd(&force_cache[neighbor_a_index*3+0], dE_drai * (neighbor_a_atom.x - atom_1.x));
+            atomicAdd(&force_cache[neighbor_a_index*3+1], dE_drai * (neighbor_a_atom.y - atom_1.y));
+            atomicAdd(&force_cache[neighbor_a_index*3+2], dE_drai * (neighbor_a_atom.z - atom_1.z));
             local_force_central[0] += -dE_drai * (neighbor_a_atom.x - atom_1.x);
             local_force_central[1] += -dE_drai * (neighbor_a_atom.y - atom_1.y);
             local_force_central[2] += -dE_drai * (neighbor_a_atom.z - atom_1.z);
@@ -730,6 +732,12 @@ __global__ void two_body_kernel(device_data_t *data){
         }
     }
 
+    /* accumulate force cache to global memory */
+    __syncthreads(); // make sure all threads see the updated force cache
+    for (uint64_t i = threadIdx.x; i < data->num_atoms * 3; i += blockDim.x) {
+        atomicAdd(&data->forces[i], force_cache[i]); // accumulate the forces for the central atom
+    }
+
 }
 
 /**
@@ -753,13 +761,12 @@ __host__ void compute_dispersion_energy(
     // allocate memory for device_data_t
     debug("starting compute_dispersion_energy...\n");
     Device_Buffer buffer(coords, elements, cell, length, cutoff_radius, coordination_number_cutoff); // create a buffer to hold the data
-
     // launch the kernel
     printf("launching coordination_number_kernel, size: %zu, %zu\n", length, length);
     coordination_number_kernel<<<length, length>>>(buffer.get()); // launch the kernel to compute the coordination numbers
     CHECK_CUDA(cudaDeviceSynchronize()); // synchronize the device to ensure all threads are finished
     printf("launching two_body_kernel, size: %zu, %zu\n", length, (uint64_t)512);
-    two_body_kernel<<<length, 512>>>(buffer.get());
+    two_body_kernel<<<length, 512, length * 3 * sizeof(real_t)>>>(buffer.get());
     CHECK_CUDA(cudaDeviceSynchronize()); // synchronize the device to ensure all threads are finished
 
     cudaMemcpy(force, buffer.data.forces, length * 3 * sizeof(real_t), cudaMemcpyDeviceToHost); // copy the forces back to host memory
