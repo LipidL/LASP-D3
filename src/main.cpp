@@ -53,29 +53,32 @@ int main(int argc, char* argv[])
             float energy;
             float *force = (float *)malloc(sizeof(float) * num_atoms * 3); // allocate memory for force
             float *stress = (float *)malloc(sizeof(float) * 9); // allocate memory for stress
-            // Start measuring execution time
-            auto start_time = std::chrono::high_resolution_clock::now();
-            compute_dispersion_energy((float (*)[3])atoms, elements, num_atoms, structure.cell.cell, cutoff_radius, CN_cutoff_radius, &energy, force, stress);
-            auto end_time = std::chrono::high_resolution_clock::now();
-            std::chrono::duration<double> elapsed_time = end_time - start_time;
-            std::cout << "Elapsed time: " << elapsed_time.count() << " seconds" << std::endl;
-            std::cout << "Energy: " << energy << " eV" << std::endl; // convert to eV
-            float force_sum[3] = {0.0f, 0.0f, 0.0f};
-            for (size_t i = 0; i < num_atoms; ++i) {
-                float force_x = force[0 + i * 3];
-                float force_y = force[1 + i * 3];
-                float force_z = force[2 + i * 3];
-                force_sum[0] += force_x;
-                force_sum[1] += force_y;
-                force_sum[2] += force_z;
-                std::cout << "Force[" << i << "]: " << force_x << " " << force_y << " " << force_z << std::endl;
+            for (size_t i = 0; i < 10; ++i) {
+                // Start measuring execution time
+                auto start_time = std::chrono::high_resolution_clock::now();
+                compute_dispersion_energy((float (*)[3])atoms, elements, num_atoms, structure.cell.cell, cutoff_radius, CN_cutoff_radius, &energy, force, stress);
+                auto end_time = std::chrono::high_resolution_clock::now();
+                std::chrono::duration<double> elapsed_time = end_time - start_time;
+                std::cout << "Elapsed time: " << elapsed_time.count() << " seconds" << std::endl;
+                // std::cout << "Energy: " << energy << " eV" << std::endl; // convert to eV
+                // float force_sum[3] = {0.0f, 0.0f, 0.0f};
+                // for (size_t i = 0; i < num_atoms; ++i) {
+                //     float force_x = force[0 + i * 3];
+                //     float force_y = force[1 + i * 3];
+                //     float force_z = force[2 + i * 3];
+                //     force_sum[0] += force_x;
+                //     force_sum[1] += force_y;
+                //     force_sum[2] += force_z;
+                //     std::cout << "Force[" << i << "]: " << force_x << " " << force_y << " " << force_z << std::endl;
+                // }
+                // std::cout << "Force sum: " << force_sum[0] << " " << force_sum[1] << " " << force_sum[2] << std::endl;
+                // for (int i = 0; i < 3; ++i) {
+                //     for (int j = 0; j < 3; ++j) {
+                //         std::cout << "Stress[" << i << "][" << j << "]: " << stress[i * 3 + j] << std::endl;
+                //     }
+                // }
             }
-            std::cout << "Force sum: " << force_sum[0] << " " << force_sum[1] << " " << force_sum[2] << std::endl;
-            for (int i = 0; i < 3; ++i) {
-                for (int j = 0; j < 3; ++j) {
-                    std::cout << "Stress[" << i << "][" << j << "]: " << stress[i * 3 + j] << std::endl;
-                }
-            }
+
 
 
         }

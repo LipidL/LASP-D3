@@ -2,6 +2,8 @@
 #include <stdlib.h>
 #include <stdio.h>
 #include <stdint.h>
+#include <chrono>
+#include <ctime>
 
 #include "d3.h"
 
@@ -763,11 +765,19 @@ __host__ void compute_dispersion_energy(
     Device_Buffer buffer(coords, elements, cell, length, cutoff_radius, coordination_number_cutoff); // create a buffer to hold the data
     // launch the kernel
     printf("launching coordination_number_kernel, size: %zu, %zu\n", length, length);
+    auto start_time_1 = std::chrono::high_resolution_clock::now();
     coordination_number_kernel<<<length, length>>>(buffer.get()); // launch the kernel to compute the coordination numbers
     CHECK_CUDA(cudaDeviceSynchronize()); // synchronize the device to ensure all threads are finished
+    auto end_time_1 = std::chrono::high_resolution_clock::now();
+    auto duration_1 = std::chrono::duration_cast<std::chrono::milliseconds>(end_time_1 - start_time_1);
+    printf("coordination_number_kernel took %lld miliseconds\n", duration_1.count());
     printf("launching two_body_kernel, size: %zu, %zu\n", length, (uint64_t)512);
+    auto start_time_2 = std::chrono::high_resolution_clock::now();
     two_body_kernel<<<length, 512, length * 3 * sizeof(real_t)>>>(buffer.get());
     CHECK_CUDA(cudaDeviceSynchronize()); // synchronize the device to ensure all threads are finished
+    auto end_time_2 = std::chrono::high_resolution_clock::now();
+    auto duration_2 = std::chrono::duration_cast<std::chrono::milliseconds>(end_time_2 - start_time_2);
+    printf("two_body_kernel took %lld miliseconds\n", duration_2.count());
 
     cudaMemcpy(force, buffer.data.forces, length * 3 * sizeof(real_t), cudaMemcpyDeviceToHost); // copy the forces back to host memory
     cudaMemcpy(energy, buffer.data.energy, sizeof(real_t), cudaMemcpyDeviceToHost); // copy the energy back to host memory
