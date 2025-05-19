@@ -49,11 +49,11 @@ int main(int argc, char* argv[])
             init_params();
             // compute dispersion energy
             float cutoff_radius = 40.0f; // cutoff radius in bohr
-            float CN_cutoff_radius = 40.0f; // cutoff radius in bohr
+            float CN_cutoff_radius = 94.0f; // cutoff radius in bohr
             float energy;
             float *force = (float *)malloc(sizeof(float) * num_atoms * 3); // allocate memory for force
             float *stress = (float *)malloc(sizeof(float) * 9); // allocate memory for stress
-            for (size_t i = 0; i < 10; ++i) {
+            for (size_t i = 0; i < 100; ++i) {
                 // Start measuring execution time
                 auto start_time = std::chrono::high_resolution_clock::now();
                 compute_dispersion_energy((float (*)[3])atoms, elements, num_atoms, structure.cell.cell, cutoff_radius, CN_cutoff_radius, &energy, force, stress);

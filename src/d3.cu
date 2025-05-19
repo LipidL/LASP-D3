@@ -34,7 +34,7 @@
 #define MAX_BLOCK_SIZE 512 // number of threads per block
 #define GRID_SIZE 65536 // number of blocks per grid
 #define MAX_ELEMENTS 118
-#define MAX_NEIGHBORS 10000 // the maximum number of neighbors, dependent on the cutoff choice
+#define MAX_NEIGHBORS 100000 // the maximum number of neighbors, dependent on the cutoff choice
 #define MAX_LOCAL_NEIGHBORS 800 // the maximum neighbor of one thread, equal to max_supercell_size * (num_atoms / num_threads)
 #define MAX_ATOMS 1000
 
@@ -692,32 +692,32 @@ __global__ void two_body_kernel(device_data_t *data){
         local_stress[2*3+2] += -1.0f * (atom_1.z - atom_2.z) * force * (atom_1.z - atom_2.z)/2.0f / cell_volume; // stress_zz
 
         /* increment contribution of dC6ab/drai where i is neighbor of a to force of a and i */
-        for (uint64_t neighbor_a = 0; neighbor_a < data->num_CN_neighbors[atom_1_index]; ++neighbor_a) {
-            uint64_t neighbor_a_index = data->CN_neighbors[atom_1_index * MAX_NEIGHBORS + neighbor_a].index; // index of the neighbor atom
-            atom_t neighbor_a_atom = data->CN_neighbors[atom_1_index * MAX_NEIGHBORS + neighbor_a].atom; // atom data of the neighbor atom
-            real_t dC6ab_drai = dC6ab_dCN_1 * data->CN_neighbors[atom_1_index * MAX_NEIGHBORS + neighbor_a].dCN_dr; // dC6ab/dr_i * 1/r_i
-            real_t dC8ab_drai = dC8ab_dCN_1 * data->CN_neighbors[atom_1_index * MAX_NEIGHBORS + neighbor_a].dCN_dr; // dC8ab/dr_i * 1/r_i
-            real_t dE_drai = 0.0f;
-            dE_drai += S6 * f_dn_6 * powf(distance, -6.0f) * dC6ab_drai; // dE_6/dr * 1/r
-            dE_drai += S8 * f_dn_8 * powf(distance, -8.0f) * dC8ab_drai; // dE_8/dr * 1/r
-            /* accumulate force */
-            atomicAdd(&force_cache[neighbor_a_index*3+0], dE_drai * (neighbor_a_atom.x - atom_1.x));
-            atomicAdd(&force_cache[neighbor_a_index*3+1], dE_drai * (neighbor_a_atom.y - atom_1.y));
-            atomicAdd(&force_cache[neighbor_a_index*3+2], dE_drai * (neighbor_a_atom.z - atom_1.z));
-            local_force_central[0] += -dE_drai * (neighbor_a_atom.x - atom_1.x);
-            local_force_central[1] += -dE_drai * (neighbor_a_atom.y - atom_1.y);
-            local_force_central[2] += -dE_drai * (neighbor_a_atom.z - atom_1.z);
-            /* accumulate stress */
-            local_stress[0*3+0] += -1.0f * (atom_1.x - neighbor_a_atom.x) * dE_drai * (atom_1.x - neighbor_a_atom.x) / cell_volume; // stress_xx
-            local_stress[0*3+1] += -1.0f * (atom_1.x - neighbor_a_atom.x) * dE_drai * (atom_1.y - neighbor_a_atom.y) / cell_volume; // stress_xy
-            local_stress[0*3+2] += -1.0f * (atom_1.x - neighbor_a_atom.x) * dE_drai * (atom_1.z - neighbor_a_atom.z) / cell_volume; // stress_xz
-            local_stress[1*3+0] += -1.0f * (atom_1.y - neighbor_a_atom.y) * dE_drai * (atom_1.x - neighbor_a_atom.x) / cell_volume; // stress_yx
-            local_stress[1*3+1] += -1.0f * (atom_1.y - neighbor_a_atom.y) * dE_drai * (atom_1.y - neighbor_a_atom.y) / cell_volume; // stress_yy
-            local_stress[1*3+2] += -1.0f * (atom_1.y - neighbor_a_atom.y) * dE_drai * (atom_1.z - neighbor_a_atom.z) / cell_volume; // stress_yz
-            local_stress[2*3+0] += -1.0f * (atom_1.z - neighbor_a_atom.z) * dE_drai * (atom_1.x - neighbor_a_atom.x) / cell_volume; // stress_zx
-            local_stress[2*3+1] += -1.0f * (atom_1.z - neighbor_a_atom.z) * dE_drai * (atom_1.y - neighbor_a_atom.y) / cell_volume; // stress_zy
-            local_stress[2*3+2] += -1.0f * (atom_1.z - neighbor_a_atom.z) * dE_drai * (atom_1.z - neighbor_a_atom.z) / cell_volume; // stress_zz
-        }
+        // for (uint64_t neighbor_a = 0; neighbor_a < data->num_CN_neighbors[atom_1_index]; ++neighbor_a) {
+        //     uint64_t neighbor_a_index = data->CN_neighbors[atom_1_index * MAX_NEIGHBORS + neighbor_a].index; // index of the neighbor atom
+        //     atom_t neighbor_a_atom = data->CN_neighbors[atom_1_index * MAX_NEIGHBORS + neighbor_a].atom; // atom data of the neighbor atom
+        //     real_t dC6ab_drai = dC6ab_dCN_1 * data->CN_neighbors[atom_1_index * MAX_NEIGHBORS + neighbor_a].dCN_dr; // dC6ab/dr_i * 1/r_i
+        //     real_t dC8ab_drai = dC8ab_dCN_1 * data->CN_neighbors[atom_1_index * MAX_NEIGHBORS + neighbor_a].dCN_dr; // dC8ab/dr_i * 1/r_i
+        //     real_t dE_drai = 0.0f;
+        //     dE_drai += S6 * f_dn_6 * powf(distance, -6.0f) * dC6ab_drai; // dE_6/dr * 1/r
+        //     dE_drai += S8 * f_dn_8 * powf(distance, -8.0f) * dC8ab_drai; // dE_8/dr * 1/r
+        //     /* accumulate force */
+        //     atomicAdd(&force_cache[neighbor_a_index*3+0], dE_drai * (neighbor_a_atom.x - atom_1.x));
+        //     atomicAdd(&force_cache[neighbor_a_index*3+1], dE_drai * (neighbor_a_atom.y - atom_1.y));
+        //     atomicAdd(&force_cache[neighbor_a_index*3+2], dE_drai * (neighbor_a_atom.z - atom_1.z));
+        //     local_force_central[0] += -dE_drai * (neighbor_a_atom.x - atom_1.x);
+        //     local_force_central[1] += -dE_drai * (neighbor_a_atom.y - atom_1.y);
+        //     local_force_central[2] += -dE_drai * (neighbor_a_atom.z - atom_1.z);
+        //     /* accumulate stress */
+        //     local_stress[0*3+0] += -1.0f * (atom_1.x - neighbor_a_atom.x) * dE_drai * (atom_1.x - neighbor_a_atom.x) / cell_volume; // stress_xx
+        //     local_stress[0*3+1] += -1.0f * (atom_1.x - neighbor_a_atom.x) * dE_drai * (atom_1.y - neighbor_a_atom.y) / cell_volume; // stress_xy
+        //     local_stress[0*3+2] += -1.0f * (atom_1.x - neighbor_a_atom.x) * dE_drai * (atom_1.z - neighbor_a_atom.z) / cell_volume; // stress_xz
+        //     local_stress[1*3+0] += -1.0f * (atom_1.y - neighbor_a_atom.y) * dE_drai * (atom_1.x - neighbor_a_atom.x) / cell_volume; // stress_yx
+        //     local_stress[1*3+1] += -1.0f * (atom_1.y - neighbor_a_atom.y) * dE_drai * (atom_1.y - neighbor_a_atom.y) / cell_volume; // stress_yy
+        //     local_stress[1*3+2] += -1.0f * (atom_1.y - neighbor_a_atom.y) * dE_drai * (atom_1.z - neighbor_a_atom.z) / cell_volume; // stress_yz
+        //     local_stress[2*3+0] += -1.0f * (atom_1.z - neighbor_a_atom.z) * dE_drai * (atom_1.x - neighbor_a_atom.x) / cell_volume; // stress_zx
+        //     local_stress[2*3+1] += -1.0f * (atom_1.z - neighbor_a_atom.z) * dE_drai * (atom_1.y - neighbor_a_atom.y) / cell_volume; // stress_zy
+        //     local_stress[2*3+2] += -1.0f * (atom_1.z - neighbor_a_atom.z) * dE_drai * (atom_1.z - neighbor_a_atom.z) / cell_volume; // stress_zz
+        // }
     }
     /* accumulate energy */
     atomicAdd(data->energy, local_energy); // accumulate the energy for the central atom
