@@ -595,9 +595,10 @@ __global__ void two_body_kernel(device_data_t *data){
         if (neighbor_index >= data->num_neighbors[atom_1_index]) {
             break; // exit the loop if the index is out of bounds
         }
-        uint64_t atom_2_index = data->neighbors[atom_1_index * MAX_NEIGHBORS + neighbor_index].index; // index of the second atom in the pair
-        atom_t atom_2 = data->neighbors[atom_1_index * MAX_NEIGHBORS + neighbor_index].atom; // surrounding atom
-        real_t distance = data->neighbors[atom_1_index * MAX_NEIGHBORS + neighbor_index].distance; // distance to the neighbor atom
+        neighbor_t neighbor = data->neighbors[atom_1_index * MAX_NEIGHBORS + neighbor_index]; // neighbor atom
+        uint64_t atom_2_index = neighbor.index; // index of the second atom in the pair
+        atom_t atom_2 = neighbor.atom; // surrounding atom
+        real_t distance = neighbor.distance; // distance to the neighbor atom
         real_t coordination_number_1 = data->coordination_numbers[atom_1_index];
         real_t coordination_number_2 = data->coordination_numbers[atom_2_index];
         uint64_t atom_1_type = data->atom_types[atom_1_index];
@@ -701,6 +702,7 @@ __global__ void two_body_kernel(device_data_t *data){
         /* increment contribution of dC6ab/drai where i is neighbor of a to force of a and i */
         for (uint64_t neighbor_a = 0; neighbor_a < data->num_CN_neighbors[atom_1_index]; ++neighbor_a) {
             uint64_t neighbor_a_index = data->CN_neighbors[atom_1_index * MAX_NEIGHBORS + neighbor_a].index; // index of the neighbor atom
+            real_t dCN_dr = data->CN_neighbors[atom_1_index * MAX_NEIGHBORS + neighbor_a].dCN_dr; // dCN/dr for the neighbor atom
             if (neighbor_a_index != current_neighbor_a_index) {
                 /* if the index is different, we need to accumulate force of current neighbor to cache */
                 atomicAdd(&force_cache[current_neighbor_a_index*3+0], force_neighbor_a[0]); // accumulate the force for the neighbor atom
@@ -713,8 +715,8 @@ __global__ void two_body_kernel(device_data_t *data){
                 force_neighbor_a[2] = 0.0f; // reset the force cache
             }
             atom_t neighbor_a_atom = data->CN_neighbors[atom_1_index * MAX_NEIGHBORS + neighbor_a].atom; // atom data of the neighbor atom
-            real_t dC6ab_drai = dC6ab_dCN_1 * data->CN_neighbors[atom_1_index * MAX_NEIGHBORS + neighbor_a].dCN_dr; // dC6ab/dr_i * 1/r_i
-            real_t dC8ab_drai = dC8ab_dCN_1 * data->CN_neighbors[atom_1_index * MAX_NEIGHBORS + neighbor_a].dCN_dr; // dC8ab/dr_i * 1/r_i
+            real_t dC6ab_drai = dC6ab_dCN_1 * dCN_dr; // dC6ab/dr_i * 1/r_i
+            real_t dC8ab_drai = dC8ab_dCN_1 * dCN_dr; // dC8ab/dr_i * 1/r_i
             real_t dE_drai = 0.0f;
             dE_drai += S6 * f_dn_6 * powf(distance, -6.0f) * dC6ab_drai; // dE_6/dr * 1/r
             dE_drai += S8 * f_dn_8 * powf(distance, -8.0f) * dC8ab_drai; // dE_8/dr * 1/r
