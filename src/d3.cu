@@ -114,7 +114,7 @@ void calculate_cell_repeats(const real_t cell[3][3], real_t cutoff, uint64_t rep
     
     // Multiply by cutoff and round up to nearest integer
     for (int i = 0; i < 3; i++) {
-        repeats[i] = ((int)(cutoff * norms[i]) + 2) * 2 + 1; // the number of repeats need to be timed by 2 due to two directions, and add 1 due to the central unit (no translation at all)
+        repeats[i] = ((int)(cutoff * norms[i]) + 2) + 1; // the number of repeats need to be timed by 2 due to two directions, and add 1 due to the central unit (no translation at all)
     }
 }
 
@@ -590,8 +590,11 @@ __global__ void two_body_kernel(device_data_t *data){
     if (atom_1_index != data->num_atoms - 1) {
         assert(data->neighbors[atom_1_index * MAX_NEIGHBORS + data->num_neighbors[atom_1_index]].index == 0); // make sure the last entry is empty
     }
-    for (uint64_t neighbor_index = threadIdx.x; neighbor_index < data->num_neighbors[atom_1_index]; neighbor_index += blockDim.x) {
-        /* each thread is responsible for one atom pair, so the number of threads should be equal to num_atoms * total_cell_bias */
+    uint64_t num_neighbors = data->num_neighbors[atom_1_index]; // number of neighbors for the central atom
+    uint64_t workload_per_thread = (num_neighbors + blockDim.x - 1) / blockDim.x; // number of neighbors per thread
+    uint64_t start_index = threadIdx.x * workload_per_thread; // start index for the thread
+    uint64_t end_index = (threadIdx.x + 1) * workload_per_thread; // end index for the thread
+    for (uint64_t neighbor_index = start_index; neighbor_index < end_index; ++neighbor_index) {
         if (neighbor_index >= data->num_neighbors[atom_1_index]) {
             break; // exit the loop if the index is out of bounds
         }
@@ -701,8 +704,10 @@ __global__ void two_body_kernel(device_data_t *data){
         uint64_t current_neighbor_a_index = data->CN_neighbors[atom_1_index * MAX_NEIGHBORS + 0].index; // index of the first neighbor atom
         /* increment contribution of dC6ab/drai where i is neighbor of a to force of a and i */
         for (uint64_t neighbor_a = 0; neighbor_a < data->num_CN_neighbors[atom_1_index]; ++neighbor_a) {
-            uint64_t neighbor_a_index = data->CN_neighbors[atom_1_index * MAX_NEIGHBORS + neighbor_a].index; // index of the neighbor atom
-            real_t dCN_dr = data->CN_neighbors[atom_1_index * MAX_NEIGHBORS + neighbor_a].dCN_dr; // dCN/dr for the neighbor atom
+            neighbor_t neighbor_a_data = data->CN_neighbors[atom_1_index * MAX_NEIGHBORS + neighbor_a]; // neighbor atom
+            uint64_t neighbor_a_index = neighbor_a_data.index; // index of the neighbor atom
+            real_t dCN_dr = neighbor_a_data.dCN_dr; // dCN/dr for the neighbor atom
+            atom_t neighbor_a_atom = neighbor_a_data.atom; // surrounding atom
             if (neighbor_a_index != current_neighbor_a_index) {
                 /* if the index is different, we need to accumulate force of current neighbor to cache */
                 atomicAdd(&force_cache[current_neighbor_a_index*3+0], force_neighbor_a[0]); // accumulate the force for the neighbor atom
@@ -714,7 +719,6 @@ __global__ void two_body_kernel(device_data_t *data){
                 force_neighbor_a[1] = 0.0f; // reset the force cache
                 force_neighbor_a[2] = 0.0f; // reset the force cache
             }
-            atom_t neighbor_a_atom = data->CN_neighbors[atom_1_index * MAX_NEIGHBORS + neighbor_a].atom; // atom data of the neighbor atom
             real_t dC6ab_drai = dC6ab_dCN_1 * dCN_dr; // dC6ab/dr_i * 1/r_i
             real_t dC8ab_drai = dC8ab_dCN_1 * dCN_dr; // dC8ab/dr_i * 1/r_i
             real_t dE_drai = 0.0f;
