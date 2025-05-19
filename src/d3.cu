@@ -114,7 +114,7 @@ void calculate_cell_repeats(const real_t cell[3][3], real_t cutoff, uint64_t rep
     
     // Multiply by cutoff and round up to nearest integer
     for (int i = 0; i < 3; i++) {
-        repeats[i] = ((int)(cutoff * norms[i]) + 2) + 1; // the number of repeats need to be timed by 2 due to two directions, and add 1 due to the central unit (no translation at all)
+        repeats[i] = ((int)(cutoff * norms[i])) * 2 + 1; // the number of repeats need to be timed by 2 due to two directions, and add 1 due to the central unit (no translation at all)
     }
 }
 
