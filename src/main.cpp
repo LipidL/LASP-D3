@@ -53,7 +53,7 @@ int main(int argc, char* argv[])
             float energy;
             float *force = (float *)malloc(sizeof(float) * num_atoms * 3); // allocate memory for force
             float *stress = (float *)malloc(sizeof(float) * 9); // allocate memory for stress
-            for (size_t i = 0; i < 10; ++i) {
+            for (size_t i = 0; i < 1; ++i) {
                 // Start measuring execution time
                 atoms[0*3+0] += 0.1f; // perturb the first atom
                 auto start_time = std::chrono::high_resolution_clock::now();

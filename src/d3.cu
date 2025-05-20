@@ -141,7 +141,11 @@ typedef struct device_data {
     uint64_t max_cell_bias[3]; // the maximum bias of the cell in each direction, this must be an odd number (because of symmetry)
     // uint64_t *num_neighbors; // array of number of neighbors for each atom, length: num_atoms.
     neighbor_t *neighbors; // array of neighbors, size: num_atoms * MAX_NEIGHBORS.
-    neighbor_t *CN_neighbors; //array of neighbors within CN cutoff, size: num_atoms * MAX_NEIGHBORS
+    // neighbor_t *CN_neighbors; //array of neighbors within CN cutoff, size: num_atoms * MAX_NEIGHBORS
+    real_t *CN_neighbors_distance; // array of distances to the neighbors within CN cutoff, size: num_atoms * MAX_NEIGHBORS
+    real_t *CN_neighbors_dCN_dr; // array of dCN_ab/dr_ab * 1/r for the neighbors within CN cutoff, size: num_atoms * MAX_NEIGHBORS
+    uint64_t *CN_neighbors_index; // array of indices for the neighbors within CN cutoff, size: num_atoms * MAX_NEIGHBORS
+    real_t *CN_neighbors_coordination; // array of coordination for the neighbors within CN cutoff, size: num_atoms * MAX_NEIGHBORS * 3
     real_t coordination_number_cutoff; // the cutof radius for CN computation
     real_t cutoff; // the cutoff radius for the dispersion energy calculation
     /* some intermediate variables, not initialized but used during computation*/
@@ -149,6 +153,9 @@ typedef struct device_data {
     uint64_t *num_neighbors; // array of maximum number of neighbors for each atom, length: num_atoms.
     uint64_t *num_CN_neighbors;
     uint64_t max_num_CN_neighbor;
+    /* texture object for loading neighbors */
+    // cudaTextureObject_t neighbors_texture; // texture object for loading neighbors
+    /* result of calculation */
     real_t *energy; // energy of the system, length: 1
     real_t *forces; // forces on each atom, length: 3*num_atoms.
     real_t *stress; // stress tensor, length: 9
@@ -352,10 +359,27 @@ public:
             cudaMalloc((void**)&neighbors, length * MAX_NEIGHBORS * sizeof(neighbor_t));
             cudaMemset(neighbors, 0, length * MAX_NEIGHBORS * sizeof(neighbor_t));
             this->data.neighbors = neighbors;
-            neighbor_t *CN_neighbors;
-            cudaMalloc((void**)&CN_neighbors, length * MAX_NEIGHBORS * sizeof(neighbor_t));
-            cudaMemset(CN_neighbors, 0, length * MAX_NEIGHBORS * sizeof(neighbor_t));
-            this->data.CN_neighbors = CN_neighbors;
+            // neighbor_t *CN_neighbors;
+            // cudaMalloc((void**)&CN_neighbors, length * MAX_NEIGHBORS * sizeof(neighbor_t));
+            // cudaMemset(CN_neighbors, 0, length * MAX_NEIGHBORS * sizeof(neighbor_t));
+            // this->data.CN_neighbors = CN_neighbors;
+            real_t *CN_neighbors_distance;
+            cudaMalloc((void**)&CN_neighbors_distance, length * MAX_NEIGHBORS * sizeof(real_t));
+            cudaMemset(CN_neighbors_distance, 0, length * MAX_NEIGHBORS * sizeof(real_t));
+            this->data.CN_neighbors_distance = CN_neighbors_distance;
+            real_t *CN_neighbors_dCN_dr;
+            cudaMalloc((void**)&CN_neighbors_dCN_dr, length * MAX_NEIGHBORS * sizeof(real_t));
+            cudaMemset(CN_neighbors_dCN_dr, 0, length * MAX_NEIGHBORS * sizeof(real_t));
+            this->data.CN_neighbors_dCN_dr = CN_neighbors_dCN_dr;
+            uint64_t *CN_neighbors_index;
+            cudaMalloc((void**)&CN_neighbors_index, length * MAX_NEIGHBORS * sizeof(uint64_t));
+            cudaMemset(CN_neighbors_index, 0, length * MAX_NEIGHBORS * sizeof(uint64_t));
+            this->data.CN_neighbors_index = CN_neighbors_index;
+            real_t *CN_neighbors_coordination;
+            cudaMalloc((void**)&CN_neighbors_coordination, length * MAX_NEIGHBORS * 3 * sizeof(real_t));
+            cudaMemset(CN_neighbors_coordination, 0, length * MAX_NEIGHBORS * 3 * sizeof(real_t));
+            this->data.CN_neighbors_coordination = CN_neighbors_coordination;
+            
             real_t *coordination_numbers;
             cudaMalloc((void**)&coordination_numbers, length * sizeof(real_t));
             cudaMemset(coordination_numbers, 0, length * sizeof(real_t));
@@ -382,6 +406,28 @@ public:
             cudaMemset(stress, 0, 9 * sizeof(real_t));
             this->data.stress = stress;
         }
+        
+        {
+            // /* create texture onject for CN_neighbors_distance */
+            // cudaResourceDesc resDesc;
+            // memset(&resDesc, 0, sizeof(resDesc));
+            // resDesc.resType = cudaResourceTypeLinear;
+            // resDesc.res.linear.devPtr = this->data.CN_neighbors_distance; // pointer to the device data
+            // resDesc.res.linear.sizeInBytes = this->data.num_atoms * MAX_NEIGHBORS * sizeof(real_t); // size of the data
+            // resDesc.res.linear.desc = cudaCreateChannelDesc<real_t>(); // channel descriptor for the data
+
+            // /* create texture descriptor */
+            // cudaTextureDesc texDesc;
+            // memset(&texDesc, 0, sizeof(texDesc));
+            // texDesc.readMode = cudaReadModeElementType; // read mode for the texture
+            // texDesc.normalizedCoords = 0; // use raw indicies
+            // texDesc.filterMode = cudaFilterModePoint; // no interpolation
+            // texDesc.addressMode[0] = cudaAddressModeClamp; // clamp the address mode
+
+            // /* create the texture object */
+            // CHECK_CUDA(cudaCreateTextureObject(&this->data.CN_neighbors_distance_texture, &resDesc, &texDesc, nullptr)); // create the texture object
+        }
+
         /* copy the data to device */
         device_data_t *d_data;
         CHECK_CUDA(cudaMalloc((void**)&d_data, sizeof(device_data_t)));
@@ -397,7 +443,11 @@ public:
             CHECK_CUDA(cudaFree(this->data.rcov)); // free the rcov array
             CHECK_CUDA(cudaFree(this->data.r2r4)); // free the r2r4 array
             CHECK_CUDA(cudaFree(this->data.neighbors)); // free the neighbors array
-            CHECK_CUDA(cudaFree(this->data.CN_neighbors)); // free the CN neighbors array
+            // CHECK_CUDA(cudaFree(this->data.CN_neighbors)); // free the CN neighbors array
+            CHECK_CUDA(cudaFree(this->data.CN_neighbors_distance)); // free the CN neighbors distance array
+            CHECK_CUDA(cudaFree(this->data.CN_neighbors_dCN_dr)); // free the CN neighbors dCN/dr array
+            CHECK_CUDA(cudaFree(this->data.CN_neighbors_index)); // free the CN neighbors index array
+            CHECK_CUDA(cudaFree(this->data.CN_neighbors_coordination)); // free the CN neighbors coordination array
             CHECK_CUDA(cudaFree(this->data.coordination_numbers)); // free the coordination numbers array
             CHECK_CUDA(cudaFree(this->data.num_neighbors)); // free the number of neighbors array
             CHECK_CUDA(cudaFree(this->data.num_CN_neighbors)); // free the number of CN neighbors array
@@ -432,6 +482,19 @@ public:
 private:
     device_data_t *data_; // pointer to the device data
 }; // Device_Buffer
+
+__device__ __forceinline__ neighbor_t load_neighbor(const neighbor_t* ptr) {
+    // Force load through read-only cache
+    const int2* p2 = reinterpret_cast<const int2*>(ptr);
+    int2 v2[sizeof(neighbor_t)/sizeof(int2)];
+    
+    #pragma unroll
+    for (int i = 0; i < sizeof(neighbor_t)/sizeof(int2); i++) {
+        v2[i] = __ldg(p2 + i);
+    }
+    
+    return *reinterpret_cast<neighbor_t*>(v2);
+}
 
 /**
  * @brief this kernel is used to compute the coordination number of each atom in the system.
@@ -530,13 +593,15 @@ __global__ void coordination_number_kernel(device_data_t *data) {
         uint64_t neighbor_index = CN_neighbor_flags[thread_index]; // index of the neighbor in the neighbors array
         uint64_t atom_2_index = CN_neighbors[i].index; // index of the second atom in the pair
         uint64_t atom_2_type = data->atom_types[atom_2_index]; // type of the surrounding atom
-        neighbor_t *data_neighbors = &data->CN_neighbors[atom_1_index * MAX_NEIGHBORS]; // pointer to the neighbors array for the central atom
+        // neighbor_t *data_neighbors = &data->CN_neighbors[atom_1_index * MAX_NEIGHBORS]; // pointer to the neighbors array for the central atom
         assert(neighbor_index + i < MAX_NEIGHBORS); // make sure the index is in bounds
-        assert(data_neighbors[neighbor_index+i].index == 0); // make sure the index is not already set
-        assert(data_neighbors[neighbor_index+i].distance == 0); // make sure the distance is not already set
-        data_neighbors[neighbor_index+i].index = CN_neighbors[i].index;
-        data_neighbors[neighbor_index+i].distance = distance;
-        data_neighbors[neighbor_index+i].atom = CN_neighbors[i].atom;
+        assert(data->CN_neighbors_index[atom_1_index * MAX_NEIGHBORS + neighbor_index + i] == 0); // make sure the index is not already set
+        assert(data->CN_neighbors_distance[atom_1_index * MAX_NEIGHBORS + neighbor_index + i] == 0); // make sure the distance is not already set
+        data->CN_neighbors_index[atom_1_index * MAX_NEIGHBORS + neighbor_index + i] = CN_neighbors[i].index;
+        data->CN_neighbors_distance[atom_1_index * MAX_NEIGHBORS + neighbor_index + i] = distance;
+        data->CN_neighbors_coordination[(atom_1_index * MAX_NEIGHBORS + neighbor_index + i) * 3 + 0] = CN_neighbors[i].atom.x;
+        data->CN_neighbors_coordination[(atom_1_index * MAX_NEIGHBORS + neighbor_index + i) * 3 + 1] = CN_neighbors[i].atom.y;
+        data->CN_neighbors_coordination[(atom_1_index * MAX_NEIGHBORS + neighbor_index + i) * 3 + 2] = CN_neighbors[i].atom.z;
         /* compute the coordination number and add to the CN of atom 1 and atom 2 */
         real_t covalent_radii_1 = data->rcov[atom_1_type];
         real_t covalent_radii_2 = data->rcov[atom_2_type];
@@ -548,7 +613,7 @@ __global__ void coordination_number_kernel(device_data_t *data) {
         real_t d_smooth_cutoff_dr = 0; // 3.0f * powf(tanh_value, 2) * (1.0f - powf(tanh_value,2)) * (-1.0f); // derivative of the smooth cutoff function with respect to distance       
         real_t coordination_number = 1.0f/(1.0f+exp) * smooth_cutoff; // the covalent radii in input table have already taken K2 coefficient into onsideration
         real_t dCN_datom = powf(1.0f+exp,-2.0f)*(-K1)*exp*(covalent_radii_1 + covalent_radii_2)*powf(distance, -3.0f) * smooth_cutoff + d_smooth_cutoff_dr * 1.0f/(1.0f+exp) / distance; // dCN_ij/dr_ij * 1/r_ij
-        data_neighbors[neighbor_index+i].dCN_dr = dCN_datom; // set the dCN/dr for the neighbor atom
+        data->CN_neighbors_dCN_dr[atom_1_index * MAX_NEIGHBORS + neighbor_index + i] = dCN_datom; // store the derivative of the coordination number with respect to distance
         // increment the data.coordination_number array for both atoms
         // atomicAdd(&data->coordination_numbers[atom_1_index], coordination_number); // add the coordination number to the central atom
         local_coordination_number += coordination_number; // add the coordination number to the local coordination number
@@ -599,6 +664,7 @@ __global__ void two_body_kernel(device_data_t *data){
             break; // exit the loop if the index is out of bounds
         }
         neighbor_t neighbor = data->neighbors[atom_1_index * MAX_NEIGHBORS + neighbor_index]; // neighbor atom
+        // data->neighbors_texture;
         uint64_t atom_2_index = neighbor.index; // index of the second atom in the pair
         atom_t atom_2 = neighbor.atom; // surrounding atom
         real_t distance = neighbor.distance; // distance to the neighbor atom
@@ -708,13 +774,23 @@ __global__ void two_body_kernel(device_data_t *data){
         A typical layout is: neighbors[a]: {1,1,1,1,1,2,2,2,2,2,3,3,3,3,3,...} where 1,2,3 represent atom index and different entries have different coordination due to supercell
         Therefore, we can cache the force and only use `atomicAdd` after accumulating all forces */
         real_t force_neighbor_a[3] = {0.0f, 0.0f, 0.0f}; // force cache for the neighbor atom during the following loop
-        uint64_t current_neighbor_a_index = data->CN_neighbors[atom_1_index * MAX_NEIGHBORS + 0].index; // index of the first neighbor atom
+        uint64_t current_neighbor_a_index = data->CN_neighbors_index[atom_1_index * MAX_NEIGHBORS + 0]; // index of the first neighbor atom
         /* increment contribution of dC6ab/drai where i is neighbor of a to force of a and i */
         for (uint64_t neighbor_a = 0; neighbor_a < data->num_CN_neighbors[atom_1_index]; ++neighbor_a) {
-            neighbor_t neighbor_a_data = data->CN_neighbors[atom_1_index * MAX_NEIGHBORS + neighbor_a]; // neighbor atom
-            uint64_t neighbor_a_index = neighbor_a_data.index; // index of the neighbor atom
-            real_t dCN_dr = neighbor_a_data.dCN_dr; // dCN/dr for the neighbor atom
-            atom_t neighbor_a_atom = neighbor_a_data.atom; // surrounding atom
+            // neighbor_t neighbor_a_data = data->CN_neighbors[atom_1_index * MAX_NEIGHBORS + neighbor_a]; // neighbor atom
+            // char temp_data[sizeof(neighbor_t)]; // temporary data to store the neighbor atom
+            // for (uint64_t byte_idx = 0; byte_idx < sizeof(neighbor_t); ++byte_idx) {
+            //     uint64_t byte_offset = (atom_1_index * MAX_NEIGHBORS + neighbor_a) * sizeof(neighbor_t) + byte_idx;
+            //     temp_data[byte_idx] = tex1Dfetch<char>(data->neighbors_texture, byte_offset); // fetch the data from the texture memory
+            // }
+            // neighbor_t neighbor_a_data;
+            // neighbor_t neighbor_a_data = load_neighbor(&data->CN_neighbors[atom_1_index * MAX_NEIGHBORS + neighbor_a]); // load the neighbor atom from texture memory
+            uint64_t neighbor_a_index = __ldg(&data->CN_neighbors_index[atom_1_index + MAX_NEIGHBORS + neighbor_a]); // index of the neighbor atom
+            real_t dCN_dr = __ldg(&data->CN_neighbors_dCN_dr[atom_1_index + MAX_NEIGHBORS + neighbor_a]); // dCN/dr for the neighbor atom
+            real_t neighbor_a_x = __ldg(&data->CN_neighbors_coordination[(atom_1_index * MAX_NEIGHBORS + neighbor_a) * 3 + 0]); // x coordinate of the neighbor atom
+            real_t neighbor_a_y = __ldg(&data->CN_neighbors_coordination[(atom_1_index * MAX_NEIGHBORS + neighbor_a) * 3 + 1]); // y coordinate of the neighbor atom
+            real_t neighbor_a_z = __ldg(&data->CN_neighbors_coordination[(atom_1_index * MAX_NEIGHBORS + neighbor_a) * 3 + 2]); // z coordinate of the neighbor atom
+            // atom_t neighbor_a_atom = neighbor_a_data.atom; // surrounding atom
             if (neighbor_a_index != current_neighbor_a_index) {
                 /* if the index is different, we need to accumulate force of current neighbor to cache */
                 atomicAdd(&force_cache[current_neighbor_a_index*3+0], force_neighbor_a[0]); // accumulate the force for the neighbor atom
@@ -731,22 +807,22 @@ __global__ void two_body_kernel(device_data_t *data){
             dE_drai += S8 * f_dn_8 / distance_8 * dC8ab_dCN_1; // dE_8/dCN1
             dE_drai *= dCN_dr; // dE/dr_i * 1/r_i
             /* accumulate force */
-            force_neighbor_a[0] += dE_drai * (neighbor_a_atom.x - atom_1.x);
-            force_neighbor_a[1] += dE_drai * (neighbor_a_atom.y - atom_1.y);
-            force_neighbor_a[2] += dE_drai * (neighbor_a_atom.z - atom_1.z);
-            local_force_central[0] += -dE_drai * (neighbor_a_atom.x - atom_1.x);
-            local_force_central[1] += -dE_drai * (neighbor_a_atom.y - atom_1.y);
-            local_force_central[2] += -dE_drai * (neighbor_a_atom.z - atom_1.z);
+            force_neighbor_a[0] += dE_drai * (neighbor_a_x - atom_1.x);
+            force_neighbor_a[1] += dE_drai * (neighbor_a_y - atom_1.y);
+            force_neighbor_a[2] += dE_drai * (neighbor_a_z - atom_1.z);
+            local_force_central[0] += -dE_drai * (neighbor_a_x - atom_1.x);
+            local_force_central[1] += -dE_drai * (neighbor_a_y - atom_1.y);
+            local_force_central[2] += -dE_drai * (neighbor_a_z - atom_1.z);
             /* accumulate stress */
-            local_stress[0*3+0] += -1.0f * (atom_1.x - neighbor_a_atom.x) * dE_drai * (atom_1.x - neighbor_a_atom.x) / cell_volume; // stress_xx
-            local_stress[0*3+1] += -1.0f * (atom_1.x - neighbor_a_atom.x) * dE_drai * (atom_1.y - neighbor_a_atom.y) / cell_volume; // stress_xy
-            local_stress[0*3+2] += -1.0f * (atom_1.x - neighbor_a_atom.x) * dE_drai * (atom_1.z - neighbor_a_atom.z) / cell_volume; // stress_xz
-            local_stress[1*3+0] += -1.0f * (atom_1.y - neighbor_a_atom.y) * dE_drai * (atom_1.x - neighbor_a_atom.x) / cell_volume; // stress_yx
-            local_stress[1*3+1] += -1.0f * (atom_1.y - neighbor_a_atom.y) * dE_drai * (atom_1.y - neighbor_a_atom.y) / cell_volume; // stress_yy
-            local_stress[1*3+2] += -1.0f * (atom_1.y - neighbor_a_atom.y) * dE_drai * (atom_1.z - neighbor_a_atom.z) / cell_volume; // stress_yz
-            local_stress[2*3+0] += -1.0f * (atom_1.z - neighbor_a_atom.z) * dE_drai * (atom_1.x - neighbor_a_atom.x) / cell_volume; // stress_zx
-            local_stress[2*3+1] += -1.0f * (atom_1.z - neighbor_a_atom.z) * dE_drai * (atom_1.y - neighbor_a_atom.y) / cell_volume; // stress_zy
-            local_stress[2*3+2] += -1.0f * (atom_1.z - neighbor_a_atom.z) * dE_drai * (atom_1.z - neighbor_a_atom.z) / cell_volume; // stress_zz
+            local_stress[0*3+0] += -1.0f * (atom_1.x - neighbor_a_x) * dE_drai * (atom_1.x - neighbor_a_x) / cell_volume; // stress_xx
+            local_stress[0*3+1] += -1.0f * (atom_1.x - neighbor_a_x) * dE_drai * (atom_1.y - neighbor_a_y) / cell_volume; // stress_xy
+            local_stress[0*3+2] += -1.0f * (atom_1.x - neighbor_a_x) * dE_drai * (atom_1.z - neighbor_a_z) / cell_volume; // stress_xz
+            local_stress[1*3+0] += -1.0f * (atom_1.y - neighbor_a_y) * dE_drai * (atom_1.x - neighbor_a_x) / cell_volume; // stress_yx
+            local_stress[1*3+1] += -1.0f * (atom_1.y - neighbor_a_y) * dE_drai * (atom_1.y - neighbor_a_y) / cell_volume; // stress_yy
+            local_stress[1*3+2] += -1.0f * (atom_1.y - neighbor_a_y) * dE_drai * (atom_1.z - neighbor_a_z) / cell_volume; // stress_yz
+            local_stress[2*3+0] += -1.0f * (atom_1.z - neighbor_a_z) * dE_drai * (atom_1.x - neighbor_a_x) / cell_volume; // stress_zx
+            local_stress[2*3+1] += -1.0f * (atom_1.z - neighbor_a_z) * dE_drai * (atom_1.y - neighbor_a_y) / cell_volume; // stress_zy
+            local_stress[2*3+2] += -1.0f * (atom_1.z - neighbor_a_z) * dE_drai * (atom_1.z - neighbor_a_z) / cell_volume; // stress_zz
         }
         /* after the loop, update the last force_neighbor_a */
         atomicAdd(&force_cache[current_neighbor_a_index*3+0], force_neighbor_a[0]); // accumulate the force for the neighbor atom
