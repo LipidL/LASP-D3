@@ -657,12 +657,19 @@ __global__ void two_body_kernel(device_data_t *data){
         real_t dC8ab_dCN_1 = 3.0f * dC6ab_dCN_1 * r2r4_1 * r2r4_2; // dC8ab/dCN_1
         /* acquire the cutoff radius between the two atoms */
         real_t cutoff_radius = data->r0ab[atom_1_type*data->num_elements + atom_2_type];
+        /* calculate distance^6 and distance^8 using fast power algorithm*/
+        real_t distance_2 = distance * distance; // distance^2
+        real_t distance_3 = distance_2 * distance; // distance^3
+        real_t distance_4 = distance_2 * distance_2; // distance^4
+        real_t distance_6 = distance_3 * distance_3; // distance^6
+        real_t distance_8 = distance_4 * distance_4; // distance^8
+        real_t distance_10 = distance_6 * distance_4; // distance^10
         /* calculate the dampling function as Grimme et al. 2010, eq4 */
         real_t f_dn_6 = 1/(1+6.0f*powf(distance/(SR_6*cutoff_radius), -ALPHA_N(6.0f)));
         real_t f_dn_8 = 1/(1+6.0f*powf(distance/(SR_8*cutoff_radius), -ALPHA_N(8.0f)));
         /* calculate the dispersion enegry as Grimme et al. 2010, eq3 */
-        real_t dispersion_energy_6 = S6*(c6_ab/powf(distance, 6.0f))*f_dn_6;
-        real_t dispersion_energy_8 = S8*(c8_ab/powf(distance, 8.0f))*f_dn_8;
+        real_t dispersion_energy_6 = S6*(c6_ab/distance_6)*f_dn_6;
+        real_t dispersion_energy_8 = S8*(c8_ab/distance_8)*f_dn_8;
         // printf("dispersion energy between atoms (%llu,%llu): %f\n",atom_1_index,atom_2_index,dispersion_energy_6 + dispersion_energy_8);
         real_t dispersion_energy = dispersion_energy_6 + dispersion_energy_8;
         /* add the energy back to results */
@@ -672,13 +679,13 @@ __global__ void two_body_kernel(device_data_t *data){
          $F_a = S_n C_n^{ab} f_{d,n}(r_{ab}) \frac{\partial}{\partial r_a} r_{ab}^{-n}$
          $F_a = S_n C_n^{ab} f_{d,n}(r_{ab}) * (-n)r_{ab}^{-n-2} * \uparrow{r_{ab}}$ */
         real_t force = 0.0f; // dE/dr * 1/r
-        force += S6 * c6_ab * f_dn_6 * (-6.0f) * powf(distance, -8.0f); // dE_6/dr * 1/r
-        force += S8 * c8_ab * f_dn_8 * (-8.0f) * powf(distance, -10.0f); // dE_8/dr * 1/r
+        force += S6 * c6_ab * f_dn_6 * (-6.0f) / distance_8; // dE_6/dr * 1/r
+        force += S8 * c8_ab * f_dn_8 * (-8.0f) / distance_10; // dE_8/dr * 1/r
         /* the second entry of two-body force 
          $F_a = S_n C_n^{ab} r_{ab}^{-n} \frac{\partial}{\partial r_a} f_{d,n}(r_{ab})$
          $F_a = S_n C_n^{ab} r_{ab}^{-n} -f_{d,n}^2 * (6*(-\alpha_n)*(r_{ab}/{S_{r,n}R_0^{AB}})^(-\alpha_n - 1) * 1/(S_{r,n}R_0^{AB}})) / r_ab \uparrow{r_{ab}}$*/
-        force += S6 * c6_ab * powf(distance, -6.0f) * (-f_dn_6 * f_dn_6) * (6.0f * (-ALPHA_N(6.0f))* powf(distance/(SR_6*cutoff_radius), -ALPHA_N(6.0f) - 1.0f) / (SR_6*cutoff_radius)) / distance; // dE_6/dr * 1/r
-        force += S8 * c8_ab * powf(distance, -8.0f) * (-f_dn_8 * f_dn_8) * (6.0f * (-ALPHA_N(8.0f))* powf(distance/(SR_8*cutoff_radius), -ALPHA_N(8.0f) - 1.0f) / (SR_8*cutoff_radius)) / distance; // dE_8/dr * 1/r
+        force += S6 * c6_ab / distance_6 * (-f_dn_6 * f_dn_6) * (6.0f * (-ALPHA_N(6.0f))* powf(distance/(SR_6*cutoff_radius), -ALPHA_N(6.0f) - 1.0f) / (SR_6*cutoff_radius)) / distance; // dE_6/dr * 1/r
+        force += S8 * c8_ab / distance_8 * (-f_dn_8 * f_dn_8) * (6.0f * (-ALPHA_N(8.0f))* powf(distance/(SR_8*cutoff_radius), -ALPHA_N(8.0f) - 1.0f) / (SR_8*cutoff_radius)) / distance; // dE_8/dr * 1/r
         /* accumulate force for the central atom */
         local_force_central[0] += force * (atom_1.x - atom_2.x); // x component of the force
         local_force_central[1] += force * (atom_1.y - atom_2.y); // y component of the force
@@ -719,11 +726,10 @@ __global__ void two_body_kernel(device_data_t *data){
                 force_neighbor_a[1] = 0.0f; // reset the force cache
                 force_neighbor_a[2] = 0.0f; // reset the force cache
             }
-            real_t dC6ab_drai = dC6ab_dCN_1 * dCN_dr; // dC6ab/dr_i * 1/r_i
-            real_t dC8ab_drai = dC8ab_dCN_1 * dCN_dr; // dC8ab/dr_i * 1/r_i
             real_t dE_drai = 0.0f;
-            dE_drai += S6 * f_dn_6 * powf(distance, -6.0f) * dC6ab_drai; // dE_6/dr * 1/r
-            dE_drai += S8 * f_dn_8 * powf(distance, -8.0f) * dC8ab_drai; // dE_8/dr * 1/r
+            dE_drai += S6 * f_dn_6 / distance_6 * dC6ab_dCN_1; // dE_6/dCN1
+            dE_drai += S8 * f_dn_8 / distance_8 * dC8ab_dCN_1; // dE_8/dCN1
+            dE_drai *= dCN_dr; // dE/dr_i * 1/r_i
             /* accumulate force */
             force_neighbor_a[0] += dE_drai * (neighbor_a_atom.x - atom_1.x);
             force_neighbor_a[1] += dE_drai * (neighbor_a_atom.y - atom_1.y);
