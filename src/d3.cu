@@ -900,6 +900,9 @@ __host__ void compute_dispersion_energy(
             stress[i * 3 + j] *= hartree_to_eV * powf(angstron_to_bohr,3); // convert stress to from hartree/bohr^3 to eV/angstron^3
         }
     }
+    auto end_time_3 = std::chrono::high_resolution_clock::now();
+    auto duration_3 = std::chrono::duration_cast<std::chrono::milliseconds>(end_time_3 - start_time_0);
+    printf("whole function took %ld miliseconds\n", duration_0.count());
 }
 
 #ifndef BUILD_LIBRARY
