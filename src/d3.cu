@@ -644,7 +644,6 @@ __global__ void coordination_number_kernel(device_data_t *data) {
  * @note the number of threads in each block can be any value, but it's better to set a value smaller than the number of neighbors.
  */
 __global__ void two_body_kernel(device_data_t *data){
-    extern __shared__ real_t force_cache[]; // shared memory for forces, size: 3 * data->num_atoms
     uint64_t atom_1_index = blockIdx.x; // each block is responsible for one central atom
     atom_t atom_1 = data->atoms[atom_1_index]; // central atom
     /* local variables to reduce calls to `atomicAdd` */
@@ -713,8 +712,7 @@ __global__ void two_body_kernel(device_data_t *data){
                 }
             }
         }
-        real_t L_ij = W;
-        real_t dC6ab_dCN_1 = (L_ij > 0.0f) ? (c_ref_dL_ij_1*L_ij - c_ref_L_ij * dL_ij_1) / powf(L_ij,2.0f) : 0.0f; // avoid division by zero
+        real_t dC6ab_dCN_1 = (W > 0.0f) ? (c_ref_dL_ij_1*W - c_ref_L_ij * dL_ij_1) / powf(W,2.0f) : 0.0f; // avoid division by zero
         real_t c6_ab = (W > 0.0f) ? Z / W : 0.0f; // avoid division by zero
         /* calculate c8_ab by $C_8^{AB} = 3C_6^{AB}\sqrt{Q^AQ^B}$*/
         real_t r2r4_1 = data->r2r4[atom_1_type];
@@ -777,14 +775,6 @@ __global__ void two_body_kernel(device_data_t *data){
         uint64_t current_neighbor_a_index = data->CN_neighbors_index[atom_1_index * MAX_NEIGHBORS + 0]; // index of the first neighbor atom
         /* increment contribution of dC6ab/drai where i is neighbor of a to force of a and i */
         for (uint64_t neighbor_a = 0; neighbor_a < data->num_CN_neighbors[atom_1_index]; ++neighbor_a) {
-            // neighbor_t neighbor_a_data = data->CN_neighbors[atom_1_index * MAX_NEIGHBORS + neighbor_a]; // neighbor atom
-            // char temp_data[sizeof(neighbor_t)]; // temporary data to store the neighbor atom
-            // for (uint64_t byte_idx = 0; byte_idx < sizeof(neighbor_t); ++byte_idx) {
-            //     uint64_t byte_offset = (atom_1_index * MAX_NEIGHBORS + neighbor_a) * sizeof(neighbor_t) + byte_idx;
-            //     temp_data[byte_idx] = tex1Dfetch<char>(data->neighbors_texture, byte_offset); // fetch the data from the texture memory
-            // }
-            // neighbor_t neighbor_a_data;
-            // neighbor_t neighbor_a_data = load_neighbor(&data->CN_neighbors[atom_1_index * MAX_NEIGHBORS + neighbor_a]); // load the neighbor atom from texture memory
             uint64_t neighbor_a_index = __ldg(&data->CN_neighbors_index[atom_1_index + MAX_NEIGHBORS + neighbor_a]); // index of the neighbor atom
             real_t dCN_dr = __ldg(&data->CN_neighbors_dCN_dr[atom_1_index + MAX_NEIGHBORS + neighbor_a]); // dCN/dr for the neighbor atom
             real_t neighbor_a_x = __ldg(&data->CN_neighbors_coordination[(atom_1_index * MAX_NEIGHBORS + neighbor_a) * 3 + 0]); // x coordinate of the neighbor atom
@@ -793,9 +783,9 @@ __global__ void two_body_kernel(device_data_t *data){
             // atom_t neighbor_a_atom = neighbor_a_data.atom; // surrounding atom
             if (neighbor_a_index != current_neighbor_a_index) {
                 /* if the index is different, we need to accumulate force of current neighbor to cache */
-                atomicAdd(&force_cache[current_neighbor_a_index*3+0], force_neighbor_a[0]); // accumulate the force for the neighbor atom
-                atomicAdd(&force_cache[current_neighbor_a_index*3+1], force_neighbor_a[1]); // accumulate the force for the neighbor atom
-                atomicAdd(&force_cache[current_neighbor_a_index*3+2], force_neighbor_a[2]); // accumulate the force for the neighbor atom
+                atomicAdd(&data->forces[current_neighbor_a_index*3+0], force_neighbor_a[0]); // accumulate the force for the neighbor atom
+                atomicAdd(&data->forces[current_neighbor_a_index*3+1], force_neighbor_a[1]); // accumulate the force for the neighbor atom
+                atomicAdd(&data->forces[current_neighbor_a_index*3+2], force_neighbor_a[2]); // accumulate the force for the neighbor atom
                 /* reset the force cache */
                 current_neighbor_a_index = neighbor_a_index; // update the index
                 force_neighbor_a[0] = 0.0f; // reset the force cache
@@ -825,9 +815,9 @@ __global__ void two_body_kernel(device_data_t *data){
             local_stress[2*3+2] += -1.0f * (atom_1.z - neighbor_a_z) * dE_drai * (atom_1.z - neighbor_a_z) / cell_volume; // stress_zz
         }
         /* after the loop, update the last force_neighbor_a */
-        atomicAdd(&force_cache[current_neighbor_a_index*3+0], force_neighbor_a[0]); // accumulate the force for the neighbor atom
-        atomicAdd(&force_cache[current_neighbor_a_index*3+1], force_neighbor_a[1]); // accumulate the force for the neighbor atom
-        atomicAdd(&force_cache[current_neighbor_a_index*3+2], force_neighbor_a[2]); // accumulate the force for the neighbor atom
+        atomicAdd(&data->forces[current_neighbor_a_index*3+0], force_neighbor_a[0]); // accumulate the force for the neighbor atom
+        atomicAdd(&data->forces[current_neighbor_a_index*3+1], force_neighbor_a[1]); // accumulate the force for the neighbor atom
+        atomicAdd(&data->forces[current_neighbor_a_index*3+2], force_neighbor_a[2]); // accumulate the force for the neighbor atom
     }
     /* accumulate energy */
     atomicAdd(data->energy, local_energy); // accumulate the energy for the central atom
@@ -844,11 +834,11 @@ __global__ void two_body_kernel(device_data_t *data){
         }
     }
 
-    /* accumulate force cache to global memory */
-    __syncthreads(); // make sure all threads see the updated force cache
-    for (uint64_t i = threadIdx.x; i < data->num_atoms * 3; i += blockDim.x) {
-        atomicAdd(&data->forces[i], force_cache[i]); // accumulate the forces for the central atom
-    }
+    // /* accumulate force cache to global memory */
+    // __syncthreads(); // make sure all threads see the updated force cache
+    // for (uint64_t i = threadIdx.x; i < data->num_atoms * 3; i += blockDim.x) {
+    //     atomicAdd(&data->forces[i], force_cache[i]); // accumulate the forces for the central atom
+    // }
 
 }
 
@@ -883,7 +873,7 @@ __host__ void compute_dispersion_energy(
     printf("coordination_number_kernel took %ld miliseconds\n", duration_1.count());
     printf("launching two_body_kernel, size: %zu, %zu\n", length, (uint64_t)512);
     auto start_time_2 = std::chrono::high_resolution_clock::now();
-    two_body_kernel<<<length, 512, length * 3 * sizeof(real_t)>>>(buffer.get());
+    two_body_kernel<<<length, 512>>>(buffer.get());
     CHECK_CUDA(cudaDeviceSynchronize()); // synchronize the device to ensure all threads are finished
     auto end_time_2 = std::chrono::high_resolution_clock::now();
     auto duration_2 = std::chrono::duration_cast<std::chrono::milliseconds>(end_time_2 - start_time_2);
