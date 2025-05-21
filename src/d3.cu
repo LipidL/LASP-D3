@@ -902,7 +902,7 @@ __host__ void compute_dispersion_energy(
     }
     auto end_time_3 = std::chrono::high_resolution_clock::now();
     auto duration_3 = std::chrono::duration_cast<std::chrono::milliseconds>(end_time_3 - start_time_0);
-    printf("whole function took %ld miliseconds\n", duration_0.count());
+    printf("whole function took %ld miliseconds\n", duration_3.count());
 }
 
 #ifndef BUILD_LIBRARY
