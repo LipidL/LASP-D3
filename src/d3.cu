@@ -862,8 +862,12 @@ __host__ void compute_dispersion_energy(
     ) {
     // allocate memory for device_data_t
     debug("starting compute_dispersion_energy...\n");
+    auto start_time_0 = std::chrono::high_resolution_clock::now();
     Device_Buffer buffer(coords, elements, cell, length, cutoff_radius, coordination_number_cutoff); // create a buffer to hold the data
     // launch the kernel
+    auto end_time_0 = std::chrono::high_resolution_clock::now();
+    auto duration_0 = std::chrono::duration_cast<std::chrono::milliseconds>(end_time_0 - start_time_0);
+    printf("Device_Buffer took %ld miliseconds\n", duration_0.count());
     printf("launching coordination_number_kernel, size: %zu, %zu\n", length, length);
     auto start_time_1 = std::chrono::high_resolution_clock::now();
     coordination_number_kernel<<<length, length>>>(buffer.get()); // launch the kernel to compute the coordination numbers
