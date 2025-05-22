@@ -345,7 +345,7 @@ public:
             this->data.cutoff = cutoff;
             real_t larger_cutoff = CN_cutoff > cutoff ? CN_cutoff : cutoff;
             calculate_cell_repeats(cell, larger_cutoff, this->data.max_cell_bias); 
-            printf("max_cell_bias: %zu %zu %zu\n", this->data.max_cell_bias[0], this->data.max_cell_bias[1], this->data.max_cell_bias[2]);
+            debug("max_cell_bias: %zu %zu %zu\n", this->data.max_cell_bias[0], this->data.max_cell_bias[1], this->data.max_cell_bias[2]);
         } // cupercell information
         {
             /* construct other fields */
@@ -453,42 +453,60 @@ __global__ void coordination_number_kernel(device_data_t *data) {
     uint64_t atom_1_type = data->atom_types[atom_1_index]; // type of the central atom
     atom_t atom_1 = data->atoms[atom_1_index]; // central atom
     uint64_t total_cell_bias = data->max_cell_bias[0] * data->max_cell_bias[1] * data->max_cell_bias[2]; // total number of cell bias
-    uint64_t num_threads = blockDim.x; // total number of threads in the block
-    uint64_t thread_index = threadIdx.x; // the linear index of thread in current block
     /* a chunk of shared memory block is used to store neighbor indicies 
      each thread can have 1 entry */
     __shared__ uint64_t neighbor_flags[MAX_BLOCK_SIZE]; // shared memory for neighbor indices
     __shared__ uint64_t CN_neighbor_flags[MAX_BLOCK_SIZE]; // shared memory for CN neighbor indices
     /* initiate this block, each thread is responsible for a few entries */
-    for (uint64_t i = thread_index; i < MAX_BLOCK_SIZE; i += num_threads) {
-        neighbor_flags[i] = 0; // initialize the neighbor flags to false
-        CN_neighbor_flags[i] = 0; // initialize the CN neighbor flags to false
+    {
+        const uint64_t thread_workload = (data->num_atoms + blockDim.x - 1) / blockDim.x; // number of atoms per thread
+        const uint64_t start_index = threadIdx.x * thread_workload; // start index for this thread
+        const uint64_t end_index = min(start_index + thread_workload, data->num_atoms); // end index for this thread
+        for (uint64_t i = start_index; i < end_index; ++i) {
+            neighbor_flags[i] = 0; // initialize the neighbor flags to false
+            CN_neighbor_flags[i] = 0; // initialize the CN neighbor flags to false
+        }
+        __syncthreads(); // synchronize threads in the block
     }
-    __syncthreads(); // synchronize threads in the block
-    /* loop over three dimentions to find neighbor of atom 1 */
+    /* local variables to reduce global memory access */
     neighbor_t neighbors[MAX_LOCAL_NEIGHBORS]; // array of neighbors for the central atom
     neighbor_t CN_neighbors[MAX_LOCAL_NEIGHBORS]; // array of neighbors for the CN calculation
     uint64_t neighbors_index = 0; // index of the neighbor in the neighbors array
     uint64_t CN_neighbors_index = 0; // index of the neighbor in the CN neighbors array
-    for(uint64_t atom_2_index = thread_index; atom_2_index < data->num_atoms; atom_2_index += num_threads) {
+    const uint64_t mcb0 = data->max_cell_bias[0]; // maximum cell bias in x direction
+    const uint64_t mcb1 = data->max_cell_bias[1]; // maximum cell bias in y direction
+    const uint64_t mcb2 = data->max_cell_bias[2]; // maximum cell bias in z direction
+    const real_t cell[3][3] = {
+        {data->cell[0][0], data->cell[0][1], data->cell[0][2]},
+        {data->cell[1][0], data->cell[1][1], data->cell[1][2]},
+        {data->cell[2][0], data->cell[2][1], data->cell[2][2]}
+    };
+    const uint64_t num_atoms = data->num_atoms; // number of atoms in the system
+    const real_t CN_cutoff = data->coordination_number_cutoff;
+    const real_t cutoff = data->cutoff;
+
+    /* distribute workload to threads */
+    const uint64_t workload_per_thread = (data->num_atoms + blockDim.x - 1) / blockDim.x; // number of atoms per thread
+    const uint64_t start_index = threadIdx.x * workload_per_thread; // start index for this thread
+    const uint64_t end_index = min(start_index + workload_per_thread, data->num_atoms); // end index for this thread
+    for(uint64_t atom_2_index = start_index; atom_2_index < end_index; ++atom_2_index) {
         for(uint64_t bias_index = 0; bias_index < total_cell_bias; ++bias_index) {
             /* each thread is responsible for one atom pair, so the number of threads should be equal to num_atoms * total_cell_bias */
-            int64_t x_bias = (bias_index % data->max_cell_bias[0]) - (data->max_cell_bias[0]/2); // x bias
-            int64_t y_bias = (bias_index / data->max_cell_bias[0] % data->max_cell_bias[1]) - (data->max_cell_bias[1]/2); // y bias
-            int64_t z_bias = (bias_index / (data->max_cell_bias[0] * data->max_cell_bias[1]) % data->max_cell_bias[2]) - (data->max_cell_bias[2]/2); // z bias
-            assert(atom_2_index < data->num_atoms); // make sure the index is in bounds
+            int64_t x_bias = (bias_index % mcb0) - (mcb0/2); // x bias
+            int64_t y_bias = ((bias_index / mcb0) % mcb1) - (mcb1/2); // y bias
+            int64_t z_bias = (bias_index / (mcb0 * mcb1) % mcb2) - (mcb2/2); // z bias
+            assert(atom_2_index < num_atoms); // make sure the index is in bounds
 
             atom_t atom_2 = data->atoms[atom_2_index]; // surrounding atom
             /* translate atom_2 due to periodic boundaries */
-            atom_2.x += x_bias * data->cell[0][0] + y_bias * data->cell[1][0] + z_bias * data->cell[2][0]; // translate in x direction
-            atom_2.y += x_bias * data->cell[0][1] + y_bias * data->cell[1][1] + z_bias * data->cell[2][1]; // translate in y direction
-            atom_2.z += x_bias * data->cell[0][2] + y_bias * data->cell[1][2] + z_bias * data->cell[2][2]; // translate in z direction
+            atom_2.x += x_bias * cell[0][0] + y_bias * cell[1][0] + z_bias * cell[2][0]; // translate in x direction
+            atom_2.y += x_bias * cell[0][1] + y_bias * cell[1][1] + z_bias * cell[2][1]; // translate in y direction
+            atom_2.z += x_bias * cell[0][2] + y_bias * cell[1][2] + z_bias * cell[2][2]; // translate in z direction
             /* calculate the distance between the two atoms */
             real_t distance = sqrtf(powf(atom_1.x - atom_2.x, 2) + powf(atom_1.y - atom_2.y, 2) + powf(atom_1.z - atom_2.z, 2));
             /* if the distance is within cutoff range, update neighbor_flags */
-            if (distance <= data->coordination_number_cutoff && distance > 0.0f) {
+            if (distance <= CN_cutoff && distance > 0.0f) {
                 if (CN_neighbors_index < MAX_LOCAL_NEIGHBORS) {
-                    CN_neighbor_flags[thread_index] += 1; // mark the atom as a neighbor
                     CN_neighbors[CN_neighbors_index].index = atom_2_index; // set the index of the neighbor atom
                     CN_neighbors[CN_neighbors_index].distance = distance; // set the distance to the neighbor atom
                     CN_neighbors[CN_neighbors_index].atom = atom_2; // set the atom data of the neighbor atom
@@ -497,9 +515,8 @@ __global__ void coordination_number_kernel(device_data_t *data) {
                     printf("Warning: too many CN neighbors for atom %llu and atom %llu\n", atom_1_index, atom_2_index); // too many neighbors, skip this one
                 }
             }
-            if (distance <= data->cutoff && distance > 0.0f) {
+            if (distance <= cutoff && distance > 0.0f) {
                 if (neighbors_index < MAX_LOCAL_NEIGHBORS) {
-                    neighbor_flags[thread_index] += 1; // mark the atom as a neighbor for CN calculation
                     neighbors[neighbors_index].index = atom_2_index; // set the index of the neighbor atom
                     neighbors[neighbors_index].distance = distance; // set the distance to the neighbor atom
                     neighbors[neighbors_index].atom = atom_2; // set the atom data of the neighbor atom
@@ -510,12 +527,14 @@ __global__ void coordination_number_kernel(device_data_t *data) {
             }
         }
     }
+    CN_neighbor_flags[threadIdx.x] = CN_neighbors_index; // mark the atom as a neighbor
+    neighbor_flags[threadIdx.x] = neighbors_index; // mark the atom as a neighbor
     __syncthreads();
     /* now we need to convert entries in neighbor_flags to indicies in neighbors. */
-    if (thread_index == 0) {
+    if (threadIdx.x == 0) {
         uint64_t sum = 0;
         uint64_t CN_sum = 0;
-        for (uint64_t i = 0; i < num_threads; i++) {
+        for (uint64_t i = 0; i < blockDim.x; i++) {
             uint64_t temp = neighbor_flags[i];
             neighbor_flags[i] = sum;
             sum += temp;
@@ -531,48 +550,42 @@ __global__ void coordination_number_kernel(device_data_t *data) {
     real_t local_coordination_number = 0.0f; // local coordination number for the central atom
     for(uint64_t i = 0; i < CN_neighbors_index; ++i) {
         real_t distance = CN_neighbors[i].distance; // distance to the neighbor atom
-        assert(distance <= data->coordination_number_cutoff); // make sure the distance is in bounds
+        assert(distance <= CN_cutoff); // make sure the distance is in bounds
         /* if the distance is within cutoff range, update neighbors */
-        uint64_t neighbor_index = CN_neighbor_flags[thread_index]; // index of the neighbor in the neighbors array
+        uint64_t neighbor_index = CN_neighbor_flags[threadIdx.x]; // index of the neighbor in the neighbors array
         uint64_t atom_2_index = CN_neighbors[i].index; // index of the second atom in the pair
         uint64_t atom_2_type = data->atom_types[atom_2_index]; // type of the surrounding atom
         neighbor_t *data_neighbors = &data->CN_neighbors[atom_1_index * MAX_NEIGHBORS]; // pointer to the neighbors array for the central atom
         assert(neighbor_index + i < MAX_NEIGHBORS); // make sure the index is in bounds
         assert(data_neighbors[neighbor_index+i].index == 0); // make sure the index is not already set
         assert(data_neighbors[neighbor_index+i].distance == 0); // make sure the distance is not already set
-        data_neighbors[neighbor_index+i].index = CN_neighbors[i].index;
-        data_neighbors[neighbor_index+i].distance = distance;
-        data_neighbors[neighbor_index+i].atom = CN_neighbors[i].atom;
+        data_neighbors[neighbor_index+i] = CN_neighbors[i];
         /* compute the coordination number and add to the CN of atom 1 and atom 2 */
         real_t covalent_radii_1 = data->rcov[atom_1_type];
         real_t covalent_radii_2 = data->rcov[atom_2_type];
         /* eq 15 in Grimme et al. 2010
         $CN^A = \sum_{B \neq A}^{N} \sqrt{1}{1+exp(-k_1(k_2(R_{A,cov}+R_{B,cov})/r_{AB}-1))}$ */
         real_t exp = expf(-K1*((covalent_radii_1 + covalent_radii_2)/distance - 1.0f)); // $\exp(-k_1*(\frac{R_A+R_b}{r_{ab}}-1))$
-        real_t tanh_value = tanhf(data->coordination_number_cutoff - distance); // $\tanh(CN_cutoff - r_{ab})$
-        real_t smooth_cutoff = 1; // powf(tanh_value, 3); // $\tanh^3(CN_cutoff- r_{ab})})$, this is a smooth cutoff function added in LASP code.
-        real_t d_smooth_cutoff_dr = 0; // 3.0f * powf(tanh_value, 2) * (1.0f - powf(tanh_value,2)) * (-1.0f); // derivative of the smooth cutoff function with respect to distance       
+        real_t tanh_value = tanhf(CN_cutoff - distance); // $\tanh(CN_cutoff - r_{ab})$
+        real_t smooth_cutoff = powf(tanh_value, 3); // $\tanh^3(CN_cutoff- r_{ab})})$, this is a smooth cutoff function added in LASP code.
+        real_t d_smooth_cutoff_dr = 3.0f * powf(tanh_value, 2) * (1.0f - powf(tanh_value,2)) * (-1.0f); // derivative of the smooth cutoff function with respect to distance       
         real_t coordination_number = 1.0f/(1.0f+exp) * smooth_cutoff; // the covalent radii in input table have already taken K2 coefficient into onsideration
         real_t dCN_datom = powf(1.0f+exp,-2.0f)*(-K1)*exp*(covalent_radii_1 + covalent_radii_2)*powf(distance, -3.0f) * smooth_cutoff + d_smooth_cutoff_dr * 1.0f/(1.0f+exp) / distance; // dCN_ij/dr_ij * 1/r_ij
         data_neighbors[neighbor_index+i].dCN_dr = dCN_datom; // set the dCN/dr for the neighbor atom
         // increment the data.coordination_number array for both atoms
-        // atomicAdd(&data->coordination_numbers[atom_1_index], coordination_number); // add the coordination number to the central atom
         local_coordination_number += coordination_number; // add the coordination number to the local coordination number
     }
     /* now the coordination number of the central atom is stored in local_coordination_number, add it back to global memory. */
     atomicAdd(&data->coordination_numbers[atom_1_index], local_coordination_number); // accumulate the coordination number for the central atom
     for (uint64_t i = 0; i < neighbors_index; ++i) {
         real_t distance = neighbors[i].distance; // distance to the neighbor atom
-        assert(distance <= data->cutoff);
+        assert(distance <= cutoff);
         /* if the distance is within cutoff range, update neighbors */
-        uint64_t neighbor_index = neighbor_flags[thread_index]; // index of the neighbor in the neighbors array
+        uint64_t neighbor_index = neighbor_flags[threadIdx.x]; // index of the neighbor in the neighbors array
         neighbor_t *data_neighbors = &data->neighbors[atom_1_index * MAX_NEIGHBORS]; // pointer to the neighbors array for the central atom
         assert(neighbor_index + i < MAX_NEIGHBORS); // make sure the index is in bounds
         assert(data_neighbors[neighbor_index+i].index == 0); // make sure the index is not already set
-        assert(distance <= data->cutoff); // make sure the distance is in bounds
-        data_neighbors[neighbor_index+i].index = neighbors[i].index;
-        data_neighbors[neighbor_index+i].distance = distance;
-        data_neighbors[neighbor_index+i].atom = neighbors[i].atom;
+        data_neighbors[neighbor_index+i] = neighbors[i];
     }
     return; // return from the kernel
 }
@@ -833,22 +846,34 @@ __host__ void compute_dispersion_energy(
     debug("starting compute_dispersion_energy...\n");
     Device_Buffer buffer(coords, elements, cell, length, cutoff_radius, coordination_number_cutoff); // create a buffer to hold the data
     // launch the kernel
-    printf("launching coordination_number_kernel, size: %zu, %zu\n", length, length);
-    auto start_time_1 = std::chrono::high_resolution_clock::now();
-    coordination_number_kernel<<<length, length>>>(buffer.get()); // launch the kernel to compute the coordination numbers
-    CHECK_CUDA(cudaDeviceSynchronize()); // synchronize the device to ensure all threads are finished
-    auto end_time_1 = std::chrono::high_resolution_clock::now();
-    auto duration_1 = std::chrono::duration_cast<std::chrono::milliseconds>(end_time_1 - start_time_1);
-    printf("coordination_number_kernel took %ld miliseconds\n", duration_1.count());
-    printf("launching two_body_kernel, size: %zu, %zu\n", length, (uint64_t)512);
-    auto start_time_2 = std::chrono::high_resolution_clock::now();
-    two_body_kernel<<<length, 512, length * 3 * sizeof(real_t)>>>(buffer.get());
-    CHECK_CUDA(cudaDeviceSynchronize()); // synchronize the device to ensure all threads are finished
-    auto end_time_2 = std::chrono::high_resolution_clock::now();
-    auto duration_2 = std::chrono::duration_cast<std::chrono::milliseconds>(end_time_2 - start_time_2);
-    printf("two_body_kernel took %ld miliseconds\n", duration_2.count());
-    three_body_kernel<<<length, 512>>>(buffer.get());
-    CHECK_CUDA(cudaDeviceSynchronize()); // synchronize the device to ensure all threads are finished
+    {
+        debug("launching coordination_number_kernel, size: %zu, %zu\n", length, length);
+        auto start_time = std::chrono::high_resolution_clock::now();
+        coordination_number_kernel<<<length, length>>>(buffer.get()); // launch the kernel to compute the coordination numbers
+        CHECK_CUDA(cudaDeviceSynchronize()); // synchronize the device to ensure all threads are finished
+        auto end_time = std::chrono::high_resolution_clock::now();
+        auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time);
+        debug("coordination_number_kernel took %ld miliseconds\n", duration.count());
+    }
+    {
+        debug("launching two_body_kernel, size: %zu, %zu\n", length, (uint64_t)512);
+        auto start_time = std::chrono::high_resolution_clock::now();
+        two_body_kernel<<<length, 512, length * 3 * sizeof(real_t)>>>(buffer.get());
+        CHECK_CUDA(cudaDeviceSynchronize()); // synchronize the device to ensure all threads are finished
+        auto end_time = std::chrono::high_resolution_clock::now();
+        auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time);
+        debug("two_body_kernel took %ld miliseconds\n", duration.count());
+    }
+    {
+        debug("launching three_body_kernel, size: %zu, %zu\n", length, (uint64_t)512);
+        auto start_time = std::chrono::high_resolution_clock::now();
+        three_body_kernel<<<length, 512>>>(buffer.get());
+        CHECK_CUDA(cudaDeviceSynchronize()); // synchronize the device to ensure all threads are finished
+        auto end_time = std::chrono::high_resolution_clock::now();
+        auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time);
+        debug("three_body_kernel took %ld miliseconds\n", duration.count());
+    }
+
 
     cudaMemcpy(force, buffer.data.forces, length * 3 * sizeof(real_t), cudaMemcpyDeviceToHost); // copy the forces back to host memory
     cudaMemcpy(energy, buffer.data.energy, sizeof(real_t), cudaMemcpyDeviceToHost); // copy the energy back to host memory
