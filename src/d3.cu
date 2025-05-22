@@ -32,11 +32,9 @@
 /* global parameters */
 /* cuda kernel launch parameters */ 
 #define MAX_BLOCK_SIZE 512 // number of threads per block
-#define GRID_SIZE 65536 // number of blocks per grid
 #define MAX_ELEMENTS 118
 #define MAX_NEIGHBORS 100000 // the maximum number of neighbors, dependent on the cutoff choice
 #define MAX_LOCAL_NEIGHBORS 800 // the maximum neighbor of one thread, equal to max_supercell_size * (num_atoms / num_threads)
-#define MAX_ATOMS 1000
 
 /* 
 constants used in the simulation
@@ -849,7 +847,13 @@ __host__ void compute_dispersion_energy(
     {
         debug("launching coordination_number_kernel, size: %zu, %zu\n", length, length);
         auto start_time = std::chrono::high_resolution_clock::now();
-        coordination_number_kernel<<<length, length>>>(buffer.get()); // launch the kernel to compute the coordination numbers
+        uint64_t block_size;
+        if (length > MAX_BLOCK_SIZE) {
+            block_size = MAX_BLOCK_SIZE;
+        } else {
+            block_size = length;
+        }
+        coordination_number_kernel<<<length, block_size>>>(buffer.get()); // launch the kernel to compute the coordination numbers
         CHECK_CUDA(cudaDeviceSynchronize()); // synchronize the device to ensure all threads are finished
         auto end_time = std::chrono::high_resolution_clock::now();
         auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time);
