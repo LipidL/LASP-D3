@@ -936,6 +936,7 @@ void compute_dispersion_energy_from_handle(
     CHECK_CUDA(cudaDeviceSynchronize()); // synchronize the device to ensure all threads are finished
     printf("launching three_body_kernel, size: %zu, %zu\n", length, (uint64_t)512);
     three_body_kernel<<<length, 512>>>(buffer->get_device_data());
+    CHECK_CUDA(cudaDeviceSynchronize()); // synchronize the device to ensure all threads are finished
 
     cudaMemcpy(force, buffer->get_host_data().forces, length * 3 * sizeof(real_t), cudaMemcpyDeviceToHost); // copy the forces back to host memory
     cudaMemcpy(energy, buffer->get_host_data().energy, sizeof(real_t), cudaMemcpyDeviceToHost); // copy the energy back to host memory
@@ -983,6 +984,9 @@ __host__ void compute_dispersion_energy(
     CHECK_CUDA(cudaDeviceSynchronize()); // synchronize the device to ensure all threads are finished
     printf("launching two_body_kernel, size: %zu, %zu\n", length, (uint64_t)512);
     two_body_kernel<<<length, 512, length * 3 * sizeof(real_t)>>>(buffer.get_device_data());
+    CHECK_CUDA(cudaDeviceSynchronize()); // synchronize the device to ensure all threads are finished
+    printf("launching three_body_kernel, size: %zu, %zu\n", length, (uint64_t)512);
+    three_body_kernel<<<length, 512>>>(buffer.get_device_data());
     CHECK_CUDA(cudaDeviceSynchronize()); // synchronize the device to ensure all threads are finished
 
     cudaMemcpy(force, buffer.get_host_data().forces, length * 3 * sizeof(real_t), cudaMemcpyDeviceToHost); // copy the forces back to host memory
