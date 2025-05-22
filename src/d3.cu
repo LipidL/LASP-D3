@@ -149,6 +149,7 @@ typedef struct device_data {
     uint64_t *num_neighbors; // array of maximum number of neighbors for each atom, length: num_atoms.
     uint64_t *num_CN_neighbors;
     uint64_t max_num_CN_neighbor;
+    real_t *dE_dCN; // dE/dCN for each atom, length: num_atoms.
     real_t *energy; // energy of the system, length: 1
     real_t *forces; // forces on each atom, length: 3*num_atoms.
     real_t *stress; // stress tensor, length: 9
@@ -369,6 +370,10 @@ public:
             cudaMemset(num_CN_neighbors, 0, length * sizeof(uint64_t));
             this->data.num_CN_neighbors = num_CN_neighbors;
             this->data.max_num_CN_neighbor = 0; // initialize the maximum number of CN neighbors to 0
+            real_t *dE_dCN;
+            cudaMalloc((void**)&dE_dCN, length * sizeof(real_t));
+            cudaMemset(dE_dCN, 0, length * sizeof(real_t));
+            this->data.dE_dCN = dE_dCN;
             real_t *energy;
             cudaMalloc((void**)&energy, sizeof(real_t));
             cudaMemset(energy, 0, sizeof(real_t));
@@ -401,6 +406,7 @@ public:
             CHECK_CUDA(cudaFree(this->data.coordination_numbers)); // free the coordination numbers array
             CHECK_CUDA(cudaFree(this->data.num_neighbors)); // free the number of neighbors array
             CHECK_CUDA(cudaFree(this->data.num_CN_neighbors)); // free the number of CN neighbors array
+            CHECK_CUDA(cudaFree(this->data.dE_dCN)); // free the dE/dCN array
             CHECK_CUDA(cudaFree(this->data.energy)); // free the energy array
             CHECK_CUDA(cudaFree(this->data.forces)); // free the forces array
             CHECK_CUDA(cudaFree(this->data.stress)); // free the stress array
@@ -579,7 +585,8 @@ __global__ void coordination_number_kernel(device_data_t *data) {
  * @note the number of threads in each block can be any value, but it's better to set a value smaller than the number of neighbors.
  */
 __global__ void two_body_kernel(device_data_t *data){
-    extern __shared__ real_t force_cache[]; // shared memory for forces, size: 3 * data->num_atoms
+    extern __shared__ real_t dE_dCN_cache[]; // shared memory for forces, size: 3 * data->num_atoms
+    real_t dE_dCN = 0.0f; // derivative of energy with respect to coordination number
     uint64_t atom_1_index = blockIdx.x; // each block is responsible for one central atom
     atom_t atom_1 = data->atoms[atom_1_index]; // central atom
     /* local variables to reduce calls to `atomicAdd` */
@@ -674,6 +681,9 @@ __global__ void two_body_kernel(device_data_t *data){
         real_t dispersion_energy = dispersion_energy_6 + dispersion_energy_8;
         /* add the energy back to results */
         local_energy += dispersion_energy / 2.0f; // add the energy to the local energy
+
+        /* accumulate dEij/dCNi to local variable */
+        dE_dCN += S6 * (f_dn_6 * distance_6) * dC6ab_dCN_1 + S8 * (f_dn_8 * distance_8) * dC8ab_dCN_1; // dE/dCN
        
         /* the first entry of two-body force
          $F_a = S_n C_n^{ab} f_{d,n}(r_{ab}) \frac{\partial}{\partial r_a} r_{ab}^{-n}$
@@ -701,58 +711,10 @@ __global__ void two_body_kernel(device_data_t *data){
         local_stress[2*3+0] += -1.0f * (atom_1.z - atom_2.z) * force * (atom_1.x - atom_2.x)/2.0f / cell_volume; // stress_zx
         local_stress[2*3+1] += -1.0f * (atom_1.z - atom_2.z) * force * (atom_1.y - atom_2.y)/2.0f / cell_volume; // stress_zy
         local_stress[2*3+2] += -1.0f * (atom_1.z - atom_2.z) * force * (atom_1.z - atom_2.z)/2.0f / cell_volume; // stress_zz
-
-        
-        /* when finding neighbors, each tread is responsible for a neighbor atom and they loop over supercell indicies.
-        Therefore, the neighbors list is organized in a atom_index priored way.
-        A typical layout is: neighbors[a]: {1,1,1,1,1,2,2,2,2,2,3,3,3,3,3,...} where 1,2,3 represent atom index and different entries have different coordination due to supercell
-        Therefore, we can cache the force and only use `atomicAdd` after accumulating all forces */
-        real_t force_neighbor_a[3] = {0.0f, 0.0f, 0.0f}; // force cache for the neighbor atom during the following loop
-        uint64_t current_neighbor_a_index = data->CN_neighbors[atom_1_index * MAX_NEIGHBORS + 0].index; // index of the first neighbor atom
-        /* increment contribution of dC6ab/drai where i is neighbor of a to force of a and i */
-        for (uint64_t neighbor_a = 0; neighbor_a < data->num_CN_neighbors[atom_1_index]; ++neighbor_a) {
-            neighbor_t neighbor_a_data = data->CN_neighbors[atom_1_index * MAX_NEIGHBORS + neighbor_a]; // neighbor atom
-            uint64_t neighbor_a_index = neighbor_a_data.index; // index of the neighbor atom
-            real_t dCN_dr = neighbor_a_data.dCN_dr; // dCN/dr for the neighbor atom
-            atom_t neighbor_a_atom = neighbor_a_data.atom; // surrounding atom
-            if (neighbor_a_index != current_neighbor_a_index) {
-                /* if the index is different, we need to accumulate force of current neighbor to cache */
-                atomicAdd(&force_cache[current_neighbor_a_index*3+0], force_neighbor_a[0]); // accumulate the force for the neighbor atom
-                atomicAdd(&force_cache[current_neighbor_a_index*3+1], force_neighbor_a[1]); // accumulate the force for the neighbor atom
-                atomicAdd(&force_cache[current_neighbor_a_index*3+2], force_neighbor_a[2]); // accumulate the force for the neighbor atom
-                /* reset the force cache */
-                current_neighbor_a_index = neighbor_a_index; // update the index
-                force_neighbor_a[0] = 0.0f; // reset the force cache
-                force_neighbor_a[1] = 0.0f; // reset the force cache
-                force_neighbor_a[2] = 0.0f; // reset the force cache
-            }
-            real_t dE_drai = 0.0f;
-            dE_drai += S6 * f_dn_6 / distance_6 * dC6ab_dCN_1; // dE_6/dCN1
-            dE_drai += S8 * f_dn_8 / distance_8 * dC8ab_dCN_1; // dE_8/dCN1
-            dE_drai *= dCN_dr; // dE/dr_i * 1/r_i
-            /* accumulate force */
-            force_neighbor_a[0] += dE_drai * (neighbor_a_atom.x - atom_1.x);
-            force_neighbor_a[1] += dE_drai * (neighbor_a_atom.y - atom_1.y);
-            force_neighbor_a[2] += dE_drai * (neighbor_a_atom.z - atom_1.z);
-            local_force_central[0] += -dE_drai * (neighbor_a_atom.x - atom_1.x);
-            local_force_central[1] += -dE_drai * (neighbor_a_atom.y - atom_1.y);
-            local_force_central[2] += -dE_drai * (neighbor_a_atom.z - atom_1.z);
-            /* accumulate stress */
-            local_stress[0*3+0] += -1.0f * (atom_1.x - neighbor_a_atom.x) * dE_drai * (atom_1.x - neighbor_a_atom.x) / cell_volume; // stress_xx
-            local_stress[0*3+1] += -1.0f * (atom_1.x - neighbor_a_atom.x) * dE_drai * (atom_1.y - neighbor_a_atom.y) / cell_volume; // stress_xy
-            local_stress[0*3+2] += -1.0f * (atom_1.x - neighbor_a_atom.x) * dE_drai * (atom_1.z - neighbor_a_atom.z) / cell_volume; // stress_xz
-            local_stress[1*3+0] += -1.0f * (atom_1.y - neighbor_a_atom.y) * dE_drai * (atom_1.x - neighbor_a_atom.x) / cell_volume; // stress_yx
-            local_stress[1*3+1] += -1.0f * (atom_1.y - neighbor_a_atom.y) * dE_drai * (atom_1.y - neighbor_a_atom.y) / cell_volume; // stress_yy
-            local_stress[1*3+2] += -1.0f * (atom_1.y - neighbor_a_atom.y) * dE_drai * (atom_1.z - neighbor_a_atom.z) / cell_volume; // stress_yz
-            local_stress[2*3+0] += -1.0f * (atom_1.z - neighbor_a_atom.z) * dE_drai * (atom_1.x - neighbor_a_atom.x) / cell_volume; // stress_zx
-            local_stress[2*3+1] += -1.0f * (atom_1.z - neighbor_a_atom.z) * dE_drai * (atom_1.y - neighbor_a_atom.y) / cell_volume; // stress_zy
-            local_stress[2*3+2] += -1.0f * (atom_1.z - neighbor_a_atom.z) * dE_drai * (atom_1.z - neighbor_a_atom.z) / cell_volume; // stress_zz
-        }
-        /* after the loop, update the last force_neighbor_a */
-        atomicAdd(&force_cache[current_neighbor_a_index*3+0], force_neighbor_a[0]); // accumulate the force for the neighbor atom
-        atomicAdd(&force_cache[current_neighbor_a_index*3+1], force_neighbor_a[1]); // accumulate the force for the neighbor atom
-        atomicAdd(&force_cache[current_neighbor_a_index*3+2], force_neighbor_a[2]); // accumulate the force for the neighbor atom
     }
+
+    dE_dCN_cache[threadIdx.x] = dE_dCN; // store the value in shared memory
+
     /* accumulate energy */
     atomicAdd(data->energy, local_energy); // accumulate the energy for the central atom
 
@@ -767,13 +729,86 @@ __global__ void two_body_kernel(device_data_t *data){
             atomicAdd(&data->stress[i*3+j], local_stress[i*3+j]);
         }
     }
-
-    /* accumulate force cache to global memory */
-    __syncthreads(); // make sure all threads see the updated force cache
-    for (uint64_t i = threadIdx.x; i < data->num_atoms * 3; i += blockDim.x) {
-        atomicAdd(&data->forces[i], force_cache[i]); // accumulate the forces for the central atom
+    __syncthreads(); // make sure all threads see the updated dE_dCN_cache
+    /* accumulate dE/dCN in shared memory */
+    if (threadIdx.x == 0) {
+        real_t dE_dCN_sum = 0.0f;
+        for (uint64_t i = 0; i < blockDim.x; ++i) {
+            dE_dCN_sum += dE_dCN_cache[i];
+        }
+        data->dE_dCN[atom_1_index] = dE_dCN_sum; // store the value in global memory
     }
+}
 
+
+__global__ void three_body_kernel(device_data_t *data){
+    real_t cell_volume = data->cell[0][0] * data->cell[1][1] * data->cell[2][2] - data->cell[0][1] * data->cell[1][0] * data->cell[2][2] - data->cell[0][2] * data->cell[1][1] * data->cell[2][0] + data->cell[0][1] * data->cell[1][2] * data->cell[2][0] + data->cell[0][2] * data->cell[1][0] * data->cell[2][1];
+    uint64_t atom_1_index = blockIdx.x; // each block is responsible for one central atom
+    atom_t atom_1 = data->atoms[atom_1_index]; // central atom
+    real_t dE_dCN = data->dE_dCN[atom_1_index]; // derivative of energy with respect to coordination number
+    uint64_t num_neighbors = data->num_neighbors[atom_1_index]; // number of neighbors for the central atom
+    uint64_t workload_per_thread = (num_neighbors + blockDim.x - 1) / blockDim.x; // number of neighbors per thread
+    uint64_t start_index = threadIdx.x * workload_per_thread; // start index for the thread
+    uint64_t end_index = (threadIdx.x + 1) * workload_per_thread; // end index for the thread
+    /* when finding neighbors, each tread is responsible for a neighbor atom and they loop over supercell indicies.
+    Therefore, the neighbors list is organized in a atom_index priored way.
+    A typical layout is: neighbors[a]: {1,1,1,1,1,2,2,2,2,2,3,3,3,3,3,...} where 1,2,3 represent atom index and different entries have different coordination due to supercell
+    Therefore, we can cache the force and only use `atomicAdd` after accumulating all forces */
+    real_t force_neighbor_a[3] = {0.0f, 0.0f, 0.0f}; // force cache for the neighbor atom during the following loop
+    real_t force_central[3] = {0.0f, 0.0f, 0.0f}; // force cache for the central atom during the following loop
+    real_t stress[9] = {0.0f}; // stress cache for the central atom during the following loop
+    uint64_t current_neighbor_a_index = data->CN_neighbors[atom_1_index * MAX_NEIGHBORS + 0].index; // index of the first neighbor atom
+    for (uint64_t neighbor_index = start_index; neighbor_index < end_index; ++neighbor_index) {
+        /* calculate dEi/drik = dEi/dCNi * dCNi/drik */
+        neighbor_t neighbor_data = data->neighbors[atom_1_index * MAX_NEIGHBORS + neighbor_index]; // neighbor atom
+        uint64_t atom_k_index = neighbor_data.index; // index of the neighbor atom
+        real_t dCN_dr = neighbor_data.dCN_dr; // dCN/dr for the neighbor atom
+        atom_t atom_k = neighbor_data.atom; // surrounding atom
+        if (atom_k_index != current_neighbor_a_index) {
+            /* if the index is different, we need to accumulate force of current neighbor to cache */
+            atomicAdd(&data->forces[current_neighbor_a_index * 3 + 0], force_neighbor_a[0]); // accumulate the force for the neighbor atom
+            atomicAdd(&data->forces[current_neighbor_a_index * 3 + 1], force_neighbor_a[1]); // accumulate the force for the neighbor atom
+            atomicAdd(&data->forces[current_neighbor_a_index * 3 + 2], force_neighbor_a[2]); // accumulate the force for the neighbor atom
+            /* reset the force cache */
+            current_neighbor_a_index = atom_k_index; // update the index
+            force_neighbor_a[0] = 0.0f; // reset the force cache
+            force_neighbor_a[1] = 0.0f; // reset the force cache
+            force_neighbor_a[2] = 0.0f; // reset the force cache
+        }
+        real_t dE_drik = dE_dCN * dCN_dr; // dE/drik * 1/rik
+        /* accumulate force for the central atom */
+        force_central[0] += dE_drik * (atom_1.x - atom_k.x);
+        force_central[1] += dE_drik * (atom_1.y - atom_k.y);
+        force_central[2] += dE_drik * (atom_1.z - atom_k.z);
+        /* accumulate force for the neighbor atom */
+        force_neighbor_a[0] += -dE_drik * (atom_1.x - atom_k.x);
+        force_neighbor_a[1] += -dE_drik * (atom_1.y - atom_k.y);
+        force_neighbor_a[2] += -dE_drik * (atom_1.z - atom_k.z);
+        /* accumulate stress */
+        stress[0 * 3 + 0] += -1.0f * (atom_1.x - atom_k.x) * dE_drik * (atom_1.x - atom_k.x); // stress_xx
+        stress[0 * 3 + 1] += -1.0f * (atom_1.x - atom_k.x) * dE_drik * (atom_1.y - atom_k.y); // stress_xy
+        stress[0 * 3 + 2] += -1.0f * (atom_1.x - atom_k.x) * dE_drik * (atom_1.z - atom_k.z); // stress_xz
+        stress[1 * 3 + 0] += -1.0f * (atom_1.y - atom_k.y) * dE_drik * (atom_1.x - atom_k.x); // stress_yx
+        stress[1 * 3 + 1] += -1.0f * (atom_1.y - atom_k.y) * dE_drik * (atom_1.y - atom_k.y); // stress_yy
+        stress[1 * 3 + 2] += -1.0f * (atom_1.y - atom_k.y) * dE_drik * (atom_1.z - atom_k.z); // stress_yz
+        stress[2 * 3 + 0] += -1.0f * (atom_1.z - atom_k.z) * dE_drik * (atom_1.x - atom_k.x); // stress_zx
+        stress[2 * 3 + 1] += -1.0f * (atom_1.z - atom_k.z) * dE_drik * (atom_1.y - atom_k.y); // stress_zy
+        stress[2 * 3 + 2] += -1.0f * (atom_1.z - atom_k.z) * dE_drik * (atom_1.z - atom_k.z); // stress_zz
+    }
+    /* accumulate force of last neighboring atom to local memory */
+    atomicAdd(&data->forces[current_neighbor_a_index * 3 + 0], force_neighbor_a[0]); // accumulate the force for the central atom
+    atomicAdd(&data->forces[current_neighbor_a_index * 3 + 1], force_neighbor_a[1]); // accumulate the force for the central atom
+    atomicAdd(&data->forces[current_neighbor_a_index * 3 + 2], force_neighbor_a[2]); // accumulate the force for the central atom
+    /* accumulate force of central atom */
+    atomicAdd(&data->forces[atom_1_index * 3 + 0], force_central[0]); // accumulate the force for the central atom
+    atomicAdd(&data->forces[atom_1_index * 3 + 1], force_central[1]); // accumulate the force for the central atom
+    atomicAdd(&data->forces[atom_1_index * 3 + 2], force_central[2]); // accumulate the force for the central atom
+    /* accumulate stress to local matrix instead of directly using atomicAdd */
+    for (uint64_t i = 0; i < 3; ++i) {
+        for (uint64_t j = 0; j < 3; ++j) {
+            atomicAdd(&data->stress[i * 3 + j], stress[i * 3 + j] / cell_volume); // accumulate the stress for the central atom
+        }
+    }
 }
 
 /**
@@ -812,6 +847,8 @@ __host__ void compute_dispersion_energy(
     auto end_time_2 = std::chrono::high_resolution_clock::now();
     auto duration_2 = std::chrono::duration_cast<std::chrono::milliseconds>(end_time_2 - start_time_2);
     printf("two_body_kernel took %ld miliseconds\n", duration_2.count());
+    three_body_kernel<<<length, 512>>>(buffer.get());
+    CHECK_CUDA(cudaDeviceSynchronize()); // synchronize the device to ensure all threads are finished
 
     cudaMemcpy(force, buffer.data.forces, length * 3 * sizeof(real_t), cudaMemcpyDeviceToHost); // copy the forces back to host memory
     cudaMemcpy(energy, buffer.data.energy, sizeof(real_t), cudaMemcpyDeviceToHost); // copy the energy back to host memory
