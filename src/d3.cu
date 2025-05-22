@@ -371,7 +371,7 @@ public:
             real_t *dE_dCN;
             cudaMalloc((void**)&dE_dCN, length * sizeof(real_t));
             cudaMemset(dE_dCN, 0, length * sizeof(real_t));
-            this->data.dE_dCN = dE_dCN;
+            this->host_data_.dE_dCN = dE_dCN;
             real_t *energy;
             cudaMalloc((void**)&energy, sizeof(real_t));
             cudaMemset(energy, 0, sizeof(real_t));
@@ -404,7 +404,7 @@ public:
             CHECK_CUDA(cudaFree(this->host_data_.coordination_numbers)); // free the coordination numbers array
             CHECK_CUDA(cudaFree(this->host_data_.num_neighbors)); // free the number of neighbors array
             CHECK_CUDA(cudaFree(this->host_data_.num_CN_neighbors)); // free the number of CN neighbors array
-            CHECK_CUDA(cudaFree(this->data.dE_dCN)); // free the dE/dCN array
+            CHECK_CUDA(cudaFree(this->host_data_.dE_dCN)); // free the dE/dCN array
             CHECK_CUDA(cudaFree(this->host_data_.energy)); // free the energy array
             CHECK_CUDA(cudaFree(this->host_data_.forces)); // free the forces array
             CHECK_CUDA(cudaFree(this->host_data_.stress)); // free the stress array
@@ -440,12 +440,11 @@ public:
     __host__ void set_atoms(uint16_t *elements, real_t coords[][3], uint64_t length) {
         /* check that then length doesn't exceed current length */
         if (length > this->host_data_.num_atoms) {
-            fprintf(stderr, "Error: length %llu exceeds the current length %llu\n", length, this->host_data_.num_atoms);
+            fprintf(stderr, "Error: length %zu exceeds the current length %zu\n", length, this->host_data_.num_atoms);
             exit(EXIT_FAILURE);
         }
         /* update to host and device data*/
         this->host_data_.num_atoms = length; // set the number of atoms in the system in host_data
-        printf("device_data_: %p, host_data_: %p\n", this->device_data_, &this->host_data_);
         CHECK_CUDA(cudaMemcpy(this->device_data_, &this->host_data_, sizeof(device_data_t), cudaMemcpyHostToDevice)); // copy the host data to device
         /* check that all elements are within scope */
         Unique_Elements unique_elements(elements, length); // create the unique elements object
@@ -935,6 +934,8 @@ void compute_dispersion_energy_from_handle(
     printf("launching two_body_kernel, size: %zu, %zu\n", length, (uint64_t)512);
     two_body_kernel<<<length, 512, length * 3 * sizeof(real_t)>>>(buffer->get_device_data());
     CHECK_CUDA(cudaDeviceSynchronize()); // synchronize the device to ensure all threads are finished
+    printf("launching three_body_kernel, size: %zu, %zu\n", length, (uint64_t)512);
+    three_body_kernel<<<length, 512>>>(buffer->get_device_data());
 
     cudaMemcpy(force, buffer->get_host_data().forces, length * 3 * sizeof(real_t), cudaMemcpyDeviceToHost); // copy the forces back to host memory
     cudaMemcpy(energy, buffer->get_host_data().energy, sizeof(real_t), cudaMemcpyDeviceToHost); // copy the energy back to host memory
