@@ -483,7 +483,19 @@ public:
         calculate_cell_repeats(cell, this->host_data_.cutoff, this->host_data_.max_cell_bias); // calculate the new max_cell_bias
         CHECK_CUDA(cudaMemcpy(this->device_data_, &this->host_data_, sizeof(device_data_t), cudaMemcpyHostToDevice)); // copy the host data to device
     } // set cell
-private:
+
+    __host__ void clear() {
+        CHECK_CUDA(cudaMemset(host_data_.coordination_numbers, 0, host_data_.num_atoms * sizeof(real_t))); // clear the coordination numbers
+        CHECK_CUDA(cudaMemset(host_data_.num_neighbors, 0, host_data_.num_atoms * sizeof(uint64_t))); // clear the number of neighbors
+        CHECK_CUDA(cudaMemset(host_data_.num_CN_neighbors, 0, host_data_.num_atoms * sizeof(uint64_t))); // clear the number of CN neighbors
+        CHECK_CUDA(cudaMemset(host_data_.dE_dCN, 0, host_data_.num_atoms * sizeof(real_t))); // clear the dE/dCN
+        CHECK_CUDA(cudaMemset(host_data_.energy, 0, sizeof(real_t))); // clear the energy
+        CHECK_CUDA(cudaMemset(host_data_.forces, 0, host_data_.num_atoms * 3 * sizeof(real_t))); // clear the forces
+        CHECK_CUDA(cudaMemset(host_data_.stress, 0, 9 * sizeof(real_t))); // clear the stress
+        CHECK_CUDA(cudaMemset(host_data_.neighbors, 0, host_data_.num_atoms * MAX_NEIGHBORS * sizeof(neighbor_t))); // clear the neighbors
+        CHECK_CUDA(cudaMemset(host_data_.CN_neighbors, 0, host_data_.num_atoms * MAX_NEIGHBORS * sizeof(neighbor_t))); // clear the CN neighbors
+    }
+    private:
     device_data_t *device_data_; // pointer to the device data
     device_data_t host_data_;
 }; // Device_Buffer
@@ -802,7 +814,14 @@ __global__ void two_body_kernel(device_data_t *data){
     }
 }
 
-
+/**
+ * @brief this kernel is used to compute the three-body interactions between atoms in the system.
+ * @brief i.e $\frac{\partial E_{ij}}{\partial r_{ik}}$ where $i$ is the central atom, $j$ is the first neighbor and $k$ is the second neighbor.
+ * 
+ * @note this kernel should be launched with a 1D grid of blocks, each block containining a 1D array of threads.
+ * @note the number of blocks should be equal to the number of atoms in the system.
+ * @note the number of threads in each block can be any value, 512 would be a good choice, but it could be smaller if your memory is limited.
+ */
 __global__ void three_body_kernel(device_data_t *data){
     real_t cell_volume = data->cell[0][0] * data->cell[1][1] * data->cell[2][2] - data->cell[0][1] * data->cell[1][0] * data->cell[2][2] - data->cell[0][2] * data->cell[1][1] * data->cell[2][0] + data->cell[0][1] * data->cell[1][2] * data->cell[2][0] + data->cell[0][2] * data->cell[1][0] * data->cell[2][1];
     uint64_t atom_1_index = blockIdx.x; // each block is responsible for one central atom
@@ -892,33 +911,45 @@ D3Handle_t *init_d3_handle(
     return (D3Handle_t *)buffer; // return the handle
 }
 
+/**
+ * @brief this function is used to set the coordinates and elements of the atoms in the system.
+ * @note the coordinates and elements should be in the same order as the atoms in the system.
+ * @note the number of atoms should not exceed the maximum number of atoms specified in the init_d3_handle function, or the system will crash.
+ */
 void set_atoms(D3Handle_t *handle, real_t *coords, uint16_t *elements, uint64_t length) {
     Device_Buffer *buffer = (Device_Buffer *)handle; // cast the handle to Device_Buffer
     buffer->set_atoms(elements, (real_t (*)[3])coords, length); // set the atoms in the buffer
 }
 
+/**
+ * @brief this function is used to set the cell matrix of the system.
+ */
 void set_cell(D3Handle_t *handle, real_t cell[3][3]) {
     Device_Buffer *buffer = (Device_Buffer *)handle; // cast the handle to Device_Buffer
     buffer->set_cell(cell); // set the cell in the buffer
 }
 
+/**
+ * @brief this function is used to clear the intermediate data in the handle.
+ * @note you need to call this function before using the handle again.
+ */
+void clear_d3_handle(D3Handle_t *handle) {
+    Device_Buffer *buffer = (Device_Buffer *)handle; // cast the handle to Device_Buffer
+    buffer->clear(); // clear the buffer
+    
+}
+
+/**
+ * @brief this function is used to free the handle after use.
+ */
 void free_d3_handle(D3Handle_t *handle) {
     Device_Buffer *buffer = (Device_Buffer *)handle; // cast the handle to Device_Buffer
     delete buffer; // free the buffer
 }
 
-void clear_d3_handle(D3Handle_t *handle) {
-    Device_Buffer *buffer = (Device_Buffer *)handle; // cast the handle to Device_Buffer
-    cudaMemset(buffer->get_host_data().neighbors, 0, buffer->get_host_data().num_atoms * MAX_NEIGHBORS * sizeof(neighbor_t)); // clear the neighbors
-    cudaMemset(buffer->get_host_data().CN_neighbors, 0, buffer->get_host_data().num_atoms * MAX_NEIGHBORS * sizeof(neighbor_t)); // clear the CN neighbors
-    cudaMemset(buffer->get_host_data().coordination_numbers, 0, buffer->get_host_data().num_atoms * sizeof(real_t)); // clear the coordination numbers
-    cudaMemset(buffer->get_host_data().num_neighbors, 0, buffer->get_host_data().num_atoms * sizeof(uint64_t)); // clear the number of neighbors
-    cudaMemset(buffer->get_host_data().num_CN_neighbors, 0, buffer->get_host_data().num_atoms * sizeof(uint64_t)); // clear the number of CN neighbors
-    cudaMemset(buffer->get_host_data().forces, 0, buffer->get_host_data().num_atoms * 3 * sizeof(real_t)); // clear the forces
-    cudaMemset(buffer->get_host_data().energy, 0, sizeof(real_t)); // clear the energy
-    cudaMemset(buffer->get_host_data().stress, 0, 9 * sizeof(real_t)); // clear the stress
-}
-
+/**
+ * @brief this function is used to compute the dispersion energy of the system using the D3 potential.
+ */
 void compute_dispersion_energy_from_handle(
     D3Handle_t *handle,
     real_t *energy,

@@ -26,6 +26,50 @@ program test_d3
             real(c_float), intent(out) :: force(*)
             real(c_float), intent(out) :: stress(9)
         end subroutine compute_dispersion_energy
+
+        function init_d3_handle(elements, max_length, cutoff_radius, &
+            coordination_number_cutoff) bind(c, name='init_d3_handle')
+            use, intrinsic :: iso_c_binding
+            implicit none
+            
+            integer(c_int16_t), intent(in) :: elements(*)
+            integer(c_int64_t), value :: max_length
+            real(c_float), value :: cutoff_radius
+            real(c_float), value :: coordination_number_cutoff
+            type(c_ptr) :: init_d3_handle
+        end function init_d3_handle
+
+        subroutine set_atoms(handle, coords, elements, length) bind(c, name='set_atoms')
+            use, intrinsic :: iso_c_binding
+            implicit none
+            
+            type(c_ptr), value :: handle
+            real(c_float), intent(in) :: coords(*)
+            integer(c_int16_t), intent(in) :: elements(*)
+            integer(c_int64_t), value :: length
+        end subroutine set_atoms
+
+        subroutine set_cell(handle, cell) bind(c, name='set_cell')
+            use, intrinsic :: iso_c_binding
+            implicit none
+            
+            type(c_ptr), value :: handle
+            real(c_float), intent(in) :: cell(3,3)
+        end subroutine set_cell
+
+        subroutine free_d3_handle(handle) bind(c, name='free_d3_handle')
+            use, intrinsic :: iso_c_binding
+            implicit none
+            
+            type(c_ptr), value :: handle
+        end subroutine free_d3_handle
+
+        subroutine clear_d3_handle(handle) bind(c, name='clear_d3_handle')
+            use, intrinsic :: iso_c_binding
+            implicit none
+            
+            type(c_ptr), value :: handle
+        end subroutine clear_d3_handle
     end interface
 
     ! Declarations
