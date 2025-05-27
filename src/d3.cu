@@ -519,16 +519,11 @@ __global__ void coordination_number_kernel(device_data_t *data) {
     __shared__ uint64_t neighbor_flags[MAX_BLOCK_SIZE]; // shared memory for neighbor indices
     __shared__ uint64_t CN_neighbor_flags[MAX_BLOCK_SIZE]; // shared memory for CN neighbor indices
     /* initiate this block, each thread is responsible for a few entries */
-    {
-        const uint64_t thread_workload = (data->num_atoms + blockDim.x - 1) / blockDim.x; // number of atoms per thread
-        const uint64_t start_index = threadIdx.x * thread_workload; // start index for this thread
-        const uint64_t end_index = min(start_index + thread_workload, data->num_atoms); // end index for this thread
-        for (uint64_t i = start_index; i < end_index; ++i) {
-            neighbor_flags[i] = 0; // initialize the neighbor flags to false
-            CN_neighbor_flags[i] = 0; // initialize the CN neighbor flags to false
-        }
-        __syncthreads(); // synchronize threads in the block
-    }
+    
+    neighbor_flags[threadIdx.x] = 0; // initialize the neighbor flags to false
+    CN_neighbor_flags[threadIdx.x] = 0; // initialize the CN neighbor flags to false
+     __syncthreads(); // synchronize threads in the block
+    
     /* local variables to reduce global memory access */
     neighbor_t neighbors[MAX_LOCAL_NEIGHBORS]; // array of neighbors for the central atom
     neighbor_t CN_neighbors[MAX_LOCAL_NEIGHBORS]; // array of neighbors for the CN calculation
@@ -959,8 +954,9 @@ void compute_dispersion_energy_from_handle(
     Device_Buffer *buffer = (Device_Buffer *)handle; // cast the handle to Device_Buffer
     // launch the kernel
     uint64_t length = buffer->get_host_data().num_atoms; // get the number of atoms in the system
-    printf("launching coordination_number_kernel, size: %zu, %zu\n", length, length);
-    coordination_number_kernel<<<length, length>>>(buffer->get_device_data()); // launch the kernel to compute the coordination numbers
+    uint64_t CN_kernel_block_size = (length < 512) ? length : 512; // use 256 threads per block for coordination number kernel if length is larger than 256
+    printf("launching coordination_number_kernel, size: %zu, %zu\n", length, CN_kernel_block_size);
+    coordination_number_kernel<<<length, CN_kernel_block_size>>>(buffer->get_device_data()); // launch the kernel to compute the coordination numbers
     CHECK_CUDA(cudaDeviceSynchronize()); // synchronize the device to ensure all threads are finished
     printf("launching two_body_kernel, size: %zu, %zu\n", length, (uint64_t)512);
     two_body_kernel<<<length, 512, length * 3 * sizeof(real_t)>>>(buffer->get_device_data());
@@ -1006,37 +1002,19 @@ __host__ void compute_dispersion_energy(
     real_t *force,
     real_t *stress
     ) {
-    // allocate memory for device_data_t
-    debug("starting compute_dispersion_energy...\n");
-    Device_Buffer buffer(coords, elements, cell, length, cutoff_radius, coordination_number_cutoff); // create a buffer to hold the data
-    // launch the kernel
-    printf("launching coordination_number_kernel, size: %zu, %zu\n", length, length);
-    coordination_number_kernel<<<length, length>>>(buffer.get_device_data()); // launch the kernel to compute the coordination numbers
-    CHECK_CUDA(cudaDeviceSynchronize()); // synchronize the device to ensure all threads are finished
-    printf("launching two_body_kernel, size: %zu, %zu\n", length, (uint64_t)512);
-    two_body_kernel<<<length, 512, length * 3 * sizeof(real_t)>>>(buffer.get_device_data());
-    CHECK_CUDA(cudaDeviceSynchronize()); // synchronize the device to ensure all threads are finished
-    printf("launching three_body_kernel, size: %zu, %zu\n", length, (uint64_t)512);
-    three_body_kernel<<<length, 512>>>(buffer.get_device_data());
-    CHECK_CUDA(cudaDeviceSynchronize()); // synchronize the device to ensure all threads are finished
-
-    cudaMemcpy(force, buffer.get_host_data().forces, length * 3 * sizeof(real_t), cudaMemcpyDeviceToHost); // copy the forces back to host memory
-    cudaMemcpy(energy, buffer.get_host_data().energy, sizeof(real_t), cudaMemcpyDeviceToHost); // copy the energy back to host memory
-    cudaMemcpy(stress, buffer.get_host_data().stress, 9 * sizeof(real_t), cudaMemcpyDeviceToHost); // copy the stress back to host memory
-    real_t angstron_to_bohr = 1/0.52917726f; // angstron to bohr conversion factor
-    real_t hartree_to_eV = 27.211396641308f; // hartree to eV conversion factor
-    *energy *= hartree_to_eV; // convert energy to eV
-    for (uint64_t i = 0; i < length; ++i) {
-        /* convert force from hartree/bohr to eV/angstron */
-        force[i * 3 + 0] *= hartree_to_eV * angstron_to_bohr;
-        force[i * 3 + 1] *= hartree_to_eV * angstron_to_bohr;
-        force[i * 3 + 2] *= hartree_to_eV * angstron_to_bohr;
-    }
-    for (uint64_t i = 0; i < 3; ++i) {
-        for (uint64_t j = 0; j < 3; ++j) {
-            stress[i * 3 + j] *= hartree_to_eV * powf(angstron_to_bohr,3); // convert stress to from hartree/bohr^3 to eV/angstron^3
-        }
-    }
+    // initialize parameters
+    init_params();
+    // compute dispersion energy
+    // Start measuring execution time
+    D3Handle_t *handle = init_d3_handle(elements, length, cutoff_radius, coordination_number_cutoff);
+    auto start_time = std::chrono::high_resolution_clock::now();
+    set_atoms(handle, (real_t *)coords, elements, length);
+    set_cell(handle, cell);
+    clear_d3_handle(handle);
+    compute_dispersion_energy_from_handle(handle, energy, force, stress);
+    auto end_time = std::chrono::high_resolution_clock::now();
+    std::chrono::duration<double> elapsed_time = end_time - start_time;
+    debug("Elapsed time: %.6f seconds\n", elapsed_time.count());
 }
 
 #ifndef BUILD_LIBRARY
