@@ -33,7 +33,7 @@
 /* cuda kernel launch parameters */ 
 #define MAX_BLOCK_SIZE 512 // number of threads per block
 #define MAX_ELEMENTS 118
-#define MAX_NEIGHBORS 100000 // the maximum number of neighbors, dependent on the cutoff choice
+#define MAX_NEIGHBORS 10000 // the maximum number of neighbors, dependent on the cutoff choice
 #define MAX_LOCAL_NEIGHBORS 800 // the maximum neighbor of one thread, equal to max_supercell_size * (num_atoms / num_threads)
 
 /* 
