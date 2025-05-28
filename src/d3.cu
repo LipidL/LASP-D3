@@ -690,6 +690,10 @@ __global__ void two_body_kernel(device_data_t *data){
     uint64_t workload_per_thread = (num_neighbors + blockDim.x - 1) / blockDim.x; // number of neighbors per thread
     uint64_t start_index = threadIdx.x * workload_per_thread; // start index for the thread
     uint64_t end_index = (threadIdx.x + 1) * workload_per_thread; // end index for the thread
+    real_t energy_conpensate = 0.0f; // energy compensation to improve numerical stability
+    real_t dE_dCN_conpensate = 0.0f; // derivative of energy with respect to coordination number compensation
+    real_t force_conpensate[3] = {0.0f, 0.0f, 0.0f}; // force compensation to improve numerical stability
+    real_t stress_conpensate[9] = {0.0f}; // stress compensation to improve numerical stability
     for (uint64_t neighbor_index = start_index; neighbor_index < end_index; ++neighbor_index) {
         if (neighbor_index >= data->num_neighbors[atom_1_index]) {
             break; // exit the loop if the index is out of bounds
@@ -768,11 +772,23 @@ __global__ void two_body_kernel(device_data_t *data){
         real_t dispersion_energy_8 = S8*(c8_ab/distance_8)*f_dn_8;
         // printf("dispersion energy between atoms (%llu,%llu): %f\n",atom_1_index,atom_2_index,dispersion_energy_6 + dispersion_energy_8);
         real_t dispersion_energy = dispersion_energy_6 + dispersion_energy_8;
-        /* add the energy back to results */
-        local_energy += dispersion_energy / 2.0f; // add the energy to the local energy
-
-        /* accumulate dEij/dCNi to local variable */
-        dE_dCN += S6 * (f_dn_6 * distance_6) * dC6ab_dCN_1 + S8 * (f_dn_8 * distance_8) * dC8ab_dCN_1; // dE/dCN
+        dispersion_energy /= 2.0f; // divide by 2 because each pair is counted twice (once for each atom)
+        /* add the energy back to results, use Kahan summation for higher accuracy */
+        {
+            real_t y = dispersion_energy - energy_conpensate; // calculate the difference
+            real_t t = local_energy + y; // add the difference to the local energy
+            energy_conpensate = (t - local_energy) - y; // calculate the compensation for the next iteration
+            local_energy = t; // update the local energy
+        }
+        
+        /* accumulate dEij/dCNi to local variable, use Kagan summation for better accuracy */
+        // dE_dCN += S6 * (f_dn_6 * distance_6) * dC6ab_dCN_1 + S8 * (f_dn_8 * distance_8) * dC8ab_dCN_1;
+        {
+            real_t y = S6 * (f_dn_6 * distance_6) * dC6ab_dCN_1 + S8 * (f_dn_8 * distance_8) * dC8ab_dCN_1 - dE_dCN_conpensate; // calculate the difference
+            real_t t = dE_dCN + y; // add the difference to the local dE/dCN
+            dE_dCN_conpensate = (t - dE_dCN) - y; // calculate the compensation for the next iteration
+            dE_dCN = t; // update the local dE/dCN
+        }
        
         /* the first entry of two-body force
          $F_a = S_n C_n^{ab} f_{d,n}(r_{ab}) \frac{\partial}{\partial r_a} r_{ab}^{-n}$
@@ -785,21 +801,83 @@ __global__ void two_body_kernel(device_data_t *data){
          $F_a = S_n C_n^{ab} r_{ab}^{-n} -f_{d,n}^2 * (6*(-\alpha_n)*(r_{ab}/{S_{r,n}R_0^{AB}})^(-\alpha_n - 1) * 1/(S_{r,n}R_0^{AB}})) / r_ab \uparrow{r_{ab}}$*/
         force += S6 * c6_ab / distance_6 * (-f_dn_6 * f_dn_6) * (6.0f * (-ALPHA_N(6.0f))* powf(distance/(SR_6*cutoff_radius), -ALPHA_N(6.0f) - 1.0f) / (SR_6*cutoff_radius)) / distance; // dE_6/dr * 1/r
         force += S8 * c8_ab / distance_8 * (-f_dn_8 * f_dn_8) * (6.0f * (-ALPHA_N(8.0f))* powf(distance/(SR_8*cutoff_radius), -ALPHA_N(8.0f) - 1.0f) / (SR_8*cutoff_radius)) / distance; // dE_8/dr * 1/r
-        /* accumulate force for the central atom */
-        local_force_central[0] += force * (atom_1.x - atom_2.x); // x component of the force
-        local_force_central[1] += force * (atom_1.y - atom_2.y); // y component of the force
-        local_force_central[2] += force * (atom_1.z - atom_2.z); // z component of the force
+        /* accumulate force for the central atom, use Kahan summation for better accuracy */
+        // local_force_central[0] += force * (atom_1.x - atom_2.x); // x component of the force
+        // local_force_central[1] += force * (atom_1.y - atom_2.y); // y component of the force
+        // local_force_central[2] += force * (atom_1.z - atom_2.z); // z component of the force
+        {
+            real_t y0 = force * (atom_1.x - atom_2.x) - force_conpensate[0]; // calculate the difference for x component
+            real_t t0 = local_force_central[0] + y0; // add the difference to the local force
+            force_conpensate[0] = (t0 - local_force_central[0]) - y0; // calculate the compensation for the next iteration
+            local_force_central[0] = t0; // update the local force for x component
 
-        /* accumulate stress to local matrix instead of directly using atomicAdd, divide by 2 becuase the same entry will be calculated twice (when atom_2 is the central atom) */
-        local_stress[0*3+0] += -1.0f * (atom_1.x - atom_2.x) * force * (atom_1.x - atom_2.x)/2.0f / cell_volume; // stress_xx
-        local_stress[0*3+1] += -1.0f * (atom_1.x - atom_2.x) * force * (atom_1.y - atom_2.y)/2.0f / cell_volume; // stress_xy
-        local_stress[0*3+2] += -1.0f * (atom_1.x - atom_2.x) * force * (atom_1.z - atom_2.z)/2.0f / cell_volume; // stress_xz
-        local_stress[1*3+0] += -1.0f * (atom_1.y - atom_2.y) * force * (atom_1.x - atom_2.x)/2.0f / cell_volume; // stress_yx
-        local_stress[1*3+1] += -1.0f * (atom_1.y - atom_2.y) * force * (atom_1.y - atom_2.y)/2.0f / cell_volume; // stress_yy
-        local_stress[1*3+2] += -1.0f * (atom_1.y - atom_2.y) * force * (atom_1.z - atom_2.z)/2.0f / cell_volume; // stress_yz
-        local_stress[2*3+0] += -1.0f * (atom_1.z - atom_2.z) * force * (atom_1.x - atom_2.x)/2.0f / cell_volume; // stress_zx
-        local_stress[2*3+1] += -1.0f * (atom_1.z - atom_2.z) * force * (atom_1.y - atom_2.y)/2.0f / cell_volume; // stress_zy
-        local_stress[2*3+2] += -1.0f * (atom_1.z - atom_2.z) * force * (atom_1.z - atom_2.z)/2.0f / cell_volume; // stress_zz
+            real_t y1 = force * (atom_1.y - atom_2.y) - force_conpensate[1]; // calculate the difference for y component
+            real_t t1 = local_force_central[1] + y1; // add the difference to the local force
+            force_conpensate[1] = (t1 - local_force_central[1]) - y1; // calculate the compensation for the next iteration
+            local_force_central[1] = t1; // update the local force for y component
+
+            real_t y2 = force * (atom_1.z - atom_2.z) - force_conpensate[2]; // calculate the difference for z component
+            real_t t2 = local_force_central[2] + y2; // add the difference to the local force
+            force_conpensate[2] = (t2 - local_force_central[2]) - y2; // calculate the compensation for the next iteration
+            local_force_central[2] = t2; // update the local force for z component
+        }
+
+        /* accumulate stress to local matrix instead of directly using atomicAdd, divide by 2 becuase the same entry will be calculated twice (when atom_2 is the central atom), use Kahan summation for better accuracy */
+        // local_stress[0*3+0] += -1.0f * (atom_1.x - atom_2.x) * force * (atom_1.x - atom_2.x)/2.0f / cell_volume; // stress_xx
+        // local_stress[0*3+1] += -1.0f * (atom_1.x - atom_2.x) * force * (atom_1.y - atom_2.y)/2.0f / cell_volume; // stress_xy
+        // local_stress[0*3+2] += -1.0f * (atom_1.x - atom_2.x) * force * (atom_1.z - atom_2.z)/2.0f / cell_volume; // stress_xz
+        // local_stress[1*3+0] += -1.0f * (atom_1.y - atom_2.y) * force * (atom_1.x - atom_2.x)/2.0f / cell_volume; // stress_yx
+        // local_stress[1*3+1] += -1.0f * (atom_1.y - atom_2.y) * force * (atom_1.y - atom_2.y)/2.0f / cell_volume; // stress_yy
+        // local_stress[1*3+2] += -1.0f * (atom_1.y - atom_2.y) * force * (atom_1.z - atom_2.z)/2.0f / cell_volume; // stress_yz
+        // local_stress[2*3+0] += -1.0f * (atom_1.z - atom_2.z) * force * (atom_1.x - atom_2.x)/2.0f / cell_volume; // stress_zx
+        // local_stress[2*3+1] += -1.0f * (atom_1.z - atom_2.z) * force * (atom_1.y - atom_2.y)/2.0f / cell_volume; // stress_zy
+        // local_stress[2*3+2] += -1.0f * (atom_1.z - atom_2.z) * force * (atom_1.z - atom_2.z)/2.0f / cell_volume; // stress_zz
+        {
+            real_t y0 = -1.0f * (atom_1.x - atom_2.x) * force * (atom_1.x - atom_2.x)/2.0f / cell_volume - stress_conpensate[0]; // calculate the difference for stress_xx
+            real_t t0 = local_stress[0*3+0] + y0; // add the difference to the local stress
+            stress_conpensate[0] = (t0 - local_stress[0*3+0]) - y0; // calculate the compensation for the next iteration
+            local_stress[0*3+0] = t0; // update the local stress for stress_xx
+
+            real_t y1 = -1.0f * (atom_1.x - atom_2.x) * force * (atom_1.y - atom_2.y)/2.0f / cell_volume - stress_conpensate[1]; // calculate the difference for stress_xy
+            real_t t1 = local_stress[0*3+1] + y1; // add the difference to the local stress
+            stress_conpensate[1] = (t1 - local_stress[0*3+1]) - y1; // calculate the compensation for the next iteration
+            local_stress[0*3+1] = t1; // update the local stress for stress_xy
+
+            real_t y2 = -1.0f * (atom_1.x - atom_2.x) * force * (atom_1.z - atom_2.z)/2.0f / cell_volume - stress_conpensate[2]; // calculate the difference for stress_xz
+            real_t t2 = local_stress[0*3+2] + y2; // add the difference to the local stress
+            stress_conpensate[2] = (t2 - local_stress[0*3+2]) - y2; // calculate the compensation for the next iteration
+            local_stress[0*3+2] = t2; // update the local stress for stress_xz
+
+            real_t y3 = -1.0f * (atom_1.y - atom_2.y) * force * (atom_1.x - atom_2.x)/2.0f / cell_volume - stress_conpensate[3]; // calculate the difference for stress_yx
+            real_t t3 = local_stress[1*3+0] + y3; // add the difference to the local stress
+            stress_conpensate[3] = (t3 - local_stress[1*3+0]) - y3; // calculate the compensation for the next iteration
+            local_stress[1*3+0] = t3; // update the local stress for stress_yx
+
+            real_t y4 = -1.0f * (atom_1.y - atom_2.y) * force * (atom_1.y - atom_2.y)/2.0f / cell_volume - stress_conpensate[4]; // calculate the difference for stress_yy
+            real_t t4 = local_stress[1*3+1] + y4; // add the difference to the local stress
+            stress_conpensate[4] = (t4 - local_stress[1*3+1]) - y4; // calculate the compensation for the next iteration
+            local_stress[1*3+1] = t4; // update the local stress for stress_yy
+
+            real_t y5 = -1.0f * (atom_1.y - atom_2.y) * force * (atom_1.z - atom_2.z)/2.0f / cell_volume - stress_conpensate[5]; // calculate the difference for stress_yz
+            real_t t5 = local_stress[1*3+2] + y5; // add the difference to the local stress
+            stress_conpensate[5] = (t5 - local_stress[1*3+2]) - y5; // calculate the compensation for the next iteration
+            local_stress[1*3+2] = t5; // update the local stress for stress_yz
+
+            real_t y6 = -1.0f * (atom_1.z - atom_2.z) * force * (atom_1.x - atom_2.x)/2.0f / cell_volume - stress_conpensate[6]; // calculate the difference for stress_zx
+            real_t t6 = local_stress[2*3+0] + y6; // add the difference to the local stress
+            stress_conpensate[6] = (t6 - local_stress[2*3+0]) - y6; // calculate the compensation for the next iteration
+            local_stress[2*3+0] = t6; // update the local stress for stress_zx
+
+            real_t y7 = -1.0f * (atom_1.z - atom_2.z) * force * (atom_1.y - atom_2.y)/2.0f / cell_volume - stress_conpensate[7]; // calculate the difference for stress_zy
+            real_t t7 = local_stress[2*3+1] + y7; // add the difference to the local stress
+            stress_conpensate[7] = (t7 - local_stress[2*3+1]) - y7; // calculate the compensation for the next iteration
+            local_stress[2*3+1] = t7; // update the local stress for stress_zy
+
+            real_t y8 = -1.0f * (atom_1.z - atom_2.z) * force * (atom_1.z - atom_2.z)/2.0f / cell_volume - stress_conpensate[8]; // calculate the difference for stress_zz
+            real_t t8 = local_stress[2*3+2] + y8; // add the difference to the local stress
+            stress_conpensate[8] = (t8 - local_stress[2*3+2]) - y8; // calculate the compensation for the next iteration
+            local_stress[2*3+2] = t8; // update the local stress for stress_zz
+        }
     }
 
     dE_dCN_cache[threadIdx.x] = dE_dCN; // store the value in shared memory

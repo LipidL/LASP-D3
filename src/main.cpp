@@ -58,8 +58,6 @@ int main(int argc, char* argv[])
             for (size_t i = 0; i < 100000; ++i){
                 auto start_time = std::chrono::high_resolution_clock::now();
                 // compute_dispersion_energy((float (*)[3])atoms, elements, num_atoms, structure.cell.cell, cutoff_radius, CN_cutoff_radius, &energy, force, stress);
-
-                atoms[0] += i * 0.01f; // modify atoms for testing
                 set_atoms(handle, atoms, elements, num_atoms);
                 set_cell(handle, structure.cell.cell);
                 clear_d3_handle(handle);
