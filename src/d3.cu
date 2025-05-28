@@ -424,6 +424,23 @@ public:
     } // move constructor
     __host__ Device_Buffer& operator=(Device_Buffer&& other) noexcept {
         if (this != &other) {
+            // Free existing resources of *this* object FIRST
+            CHECK_CUDA(cudaFree(this->host_data_.atom_types));
+            CHECK_CUDA(cudaFree(this->host_data_.atoms));
+            CHECK_CUDA(cudaFree(this->host_data_.c6_ab_ref));
+            CHECK_CUDA(cudaFree(this->host_data_.r0ab));
+            CHECK_CUDA(cudaFree(this->host_data_.rcov));
+            CHECK_CUDA(cudaFree(this->host_data_.r2r4));
+            CHECK_CUDA(cudaFree(this->host_data_.neighbors));
+            CHECK_CUDA(cudaFree(this->host_data_.CN_neighbors));
+            CHECK_CUDA(cudaFree(this->host_data_.coordination_numbers));
+            CHECK_CUDA(cudaFree(this->host_data_.num_neighbors));
+            CHECK_CUDA(cudaFree(this->host_data_.num_CN_neighbors));
+            CHECK_CUDA(cudaFree(this->host_data_.dE_dCN));
+            CHECK_CUDA(cudaFree(this->host_data_.energy));
+            CHECK_CUDA(cudaFree(this->host_data_.forces));
+            CHECK_CUDA(cudaFree(this->host_data_.stress));
+            CHECK_CUDA(cudaFree(this->device_data_));
             // Transfer ownership from other to this
             this->device_data_ = other.device_data_;
             this->host_data_ = other.host_data_;
@@ -727,7 +744,7 @@ __global__ void two_body_kernel(device_data_t *data){
             }
         }
         real_t L_ij = W;
-        real_t dC6ab_dCN_1 = (L_ij > 0.0f) ? (c_ref_dL_ij_1*L_ij - c_ref_L_ij * dL_ij_1) / powf(L_ij,2.0f) : 0.0f; // avoid division by zero
+        real_t dC6ab_dCN_1 = (L_ij * L_ij > 0.0f) ? (c_ref_dL_ij_1*L_ij - c_ref_L_ij * dL_ij_1) / powf(L_ij,2.0f) : 0.0f; // avoid division by zero
         real_t c6_ab = (W > 0.0f) ? Z / W : 0.0f; // avoid division by zero
         /* calculate c8_ab by $C_8^{AB} = 3C_6^{AB}\sqrt{Q^AQ^B}$*/
         real_t r2r4_1 = data->r2r4[atom_1_type];
