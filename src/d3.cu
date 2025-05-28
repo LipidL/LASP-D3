@@ -750,11 +750,13 @@ __global__ void two_body_kernel(device_data_t *data){
         real_t dC6ab_dCN_1 = (L_ij * L_ij > 0.0f) ? (c_ref_dL_ij_1*L_ij - c_ref_L_ij * dL_ij_1) / powf(L_ij,2.0f) : 0.0f; // avoid division by zero
         if (isnan(dC6ab_dCN_1) || isinf(dC6ab_dCN_1)) {
             printf("Error: dC6ab/dCN_1 is NaN or Inf for atom pair (%llu, %llu)\n", atom_1_index, atom_2_index);
+            printf("Z: %f, W: %f, c_ref_L_ij: %f, c_ref_dL_ij_1: %f, dL_ij_1: %f\n", Z, W, c_ref_L_ij, c_ref_dL_ij_1, dL_ij_1);
             dC6ab_dCN_1 = 0.0f; // reset to 0.0f if it's NaN or Inf
         }
         real_t c6_ab = (W > 0.0f) ? Z / W : 0.0f; // avoid division by zero
         if (isnan(c6_ab) || isinf(c6_ab)) {
             printf("Error: C6_ab is NaN or Inf for atom pair (%llu, %llu)\n", atom_1_index, atom_2_index);
+            printf("Z: %f, W: %f, c_ref_L_ij: %f, c_ref_dL_ij_1: %f, dL_ij_1: %f\n", Z, W, c_ref_L_ij, c_ref_dL_ij_1, dL_ij_1);
             c6_ab = 0.0f; // reset to 0.0f if it's NaN or Inf
         }
         /* calculate c8_ab by $C_8^{AB} = 3C_6^{AB}\sqrt{Q^AQ^B}$*/
@@ -789,7 +791,6 @@ __global__ void two_body_kernel(device_data_t *data){
         }
         
         /* accumulate dEij/dCNi to local variable, use Kagan summation for better accuracy */
-        // dE_dCN += S6 * (f_dn_6 * distance_6) * dC6ab_dCN_1 + S8 * (f_dn_8 * distance_8) * dC8ab_dCN_1;
         {
             real_t y = S6 * (f_dn_6 * distance_6) * dC6ab_dCN_1 + S8 * (f_dn_8 * distance_8) * dC8ab_dCN_1 - dE_dCN_conpensate; // calculate the difference
             real_t t = dE_dCN + y; // add the difference to the local dE/dCN
@@ -809,9 +810,6 @@ __global__ void two_body_kernel(device_data_t *data){
         force += S6 * c6_ab / distance_6 * (-f_dn_6 * f_dn_6) * (6.0f * (-ALPHA_N(6.0f))* powf(distance/(SR_6*cutoff_radius), -ALPHA_N(6.0f) - 1.0f) / (SR_6*cutoff_radius)) / distance; // dE_6/dr * 1/r
         force += S8 * c8_ab / distance_8 * (-f_dn_8 * f_dn_8) * (6.0f * (-ALPHA_N(8.0f))* powf(distance/(SR_8*cutoff_radius), -ALPHA_N(8.0f) - 1.0f) / (SR_8*cutoff_radius)) / distance; // dE_8/dr * 1/r
         /* accumulate force for the central atom, use Kahan summation for better accuracy */
-        // local_force_central[0] += force * (atom_1.x - atom_2.x); // x component of the force
-        // local_force_central[1] += force * (atom_1.y - atom_2.y); // y component of the force
-        // local_force_central[2] += force * (atom_1.z - atom_2.z); // z component of the force
         {
             real_t y0 = force * (atom_1.x - atom_2.x) - force_conpensate[0]; // calculate the difference for x component
             real_t t0 = local_force_central[0] + y0; // add the difference to the local force
@@ -830,15 +828,6 @@ __global__ void two_body_kernel(device_data_t *data){
         }
 
         /* accumulate stress to local matrix instead of directly using atomicAdd, divide by 2 becuase the same entry will be calculated twice (when atom_2 is the central atom), use Kahan summation for better accuracy */
-        // local_stress[0*3+0] += -1.0f * (atom_1.x - atom_2.x) * force * (atom_1.x - atom_2.x)/2.0f / cell_volume; // stress_xx
-        // local_stress[0*3+1] += -1.0f * (atom_1.x - atom_2.x) * force * (atom_1.y - atom_2.y)/2.0f / cell_volume; // stress_xy
-        // local_stress[0*3+2] += -1.0f * (atom_1.x - atom_2.x) * force * (atom_1.z - atom_2.z)/2.0f / cell_volume; // stress_xz
-        // local_stress[1*3+0] += -1.0f * (atom_1.y - atom_2.y) * force * (atom_1.x - atom_2.x)/2.0f / cell_volume; // stress_yx
-        // local_stress[1*3+1] += -1.0f * (atom_1.y - atom_2.y) * force * (atom_1.y - atom_2.y)/2.0f / cell_volume; // stress_yy
-        // local_stress[1*3+2] += -1.0f * (atom_1.y - atom_2.y) * force * (atom_1.z - atom_2.z)/2.0f / cell_volume; // stress_yz
-        // local_stress[2*3+0] += -1.0f * (atom_1.z - atom_2.z) * force * (atom_1.x - atom_2.x)/2.0f / cell_volume; // stress_zx
-        // local_stress[2*3+1] += -1.0f * (atom_1.z - atom_2.z) * force * (atom_1.y - atom_2.y)/2.0f / cell_volume; // stress_zy
-        // local_stress[2*3+2] += -1.0f * (atom_1.z - atom_2.z) * force * (atom_1.z - atom_2.z)/2.0f / cell_volume; // stress_zz
         {
             real_t y0 = -1.0f * (atom_1.x - atom_2.x) * force * (atom_1.x - atom_2.x)/2.0f / cell_volume - stress_conpensate[0]; // calculate the difference for stress_xx
             real_t t0 = local_stress[0*3+0] + y0; // add the difference to the local stress
