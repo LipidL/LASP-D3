@@ -33,8 +33,8 @@
 /* cuda kernel launch parameters */ 
 #define MAX_BLOCK_SIZE 512 // number of threads per block
 #define MAX_ELEMENTS 118
-#define MAX_NEIGHBORS 10000 // the maximum number of neighbors, dependent on the cutoff choice
-#define MAX_LOCAL_NEIGHBORS 800 // the maximum neighbor of one thread, equal to max_supercell_size * (num_atoms / num_threads)
+#define MAX_NEIGHBORS 5000 // the maximum number of neighbors, dependent on the cutoff choice
+#define MAX_LOCAL_NEIGHBORS 100 // the maximum neighbor of one thread, equal to max_supercell_size * (num_atoms / num_threads)
 
 /* 
 constants used in the simulation
@@ -222,6 +222,8 @@ private:
 class Device_Buffer {
 public:
     __host__ Device_Buffer(real_t coords[][3], uint16_t *elements, real_t cell[3][3], uint64_t length, real_t cutoff, real_t CN_cutoff){
+        memset(&this->host_data_, 0, sizeof(device_data_t)); // initialize the host data to 0
+        this->device_data_ = nullptr; // initialize the device data pointer to null
         Unique_Elements unique_elements(elements, length); // create the unique elements object
         {
             /* construct elements */
@@ -392,23 +394,22 @@ public:
         this->device_data_ = d_data; // set the data pointer in the class
     } // Device_Buffer constructor
     __host__ ~Device_Buffer() {
-        if (this->device_data_ != NULL) {
-            CHECK_CUDA(cudaFree(this->host_data_.atom_types)); // free the atom types array
-            CHECK_CUDA(cudaFree(this->host_data_.atoms)); // free the atoms array
-            CHECK_CUDA(cudaFree(this->host_data_.c6_ab_ref)); // free the c6ab_ref array
-            CHECK_CUDA(cudaFree(this->host_data_.r0ab)); // free the r0ab array
-            CHECK_CUDA(cudaFree(this->host_data_.rcov)); // free the rcov array
-            CHECK_CUDA(cudaFree(this->host_data_.r2r4)); // free the r2r4 array
-            CHECK_CUDA(cudaFree(this->host_data_.neighbors)); // free the neighbors array
-            CHECK_CUDA(cudaFree(this->host_data_.CN_neighbors)); // free the CN neighbors array
-            CHECK_CUDA(cudaFree(this->host_data_.coordination_numbers)); // free the coordination numbers array
-            CHECK_CUDA(cudaFree(this->host_data_.num_neighbors)); // free the number of neighbors array
-            CHECK_CUDA(cudaFree(this->host_data_.num_CN_neighbors)); // free the number of CN neighbors array
-            CHECK_CUDA(cudaFree(this->host_data_.dE_dCN)); // free the dE/dCN array
-            CHECK_CUDA(cudaFree(this->host_data_.energy)); // free the energy array
-            CHECK_CUDA(cudaFree(this->host_data_.forces)); // free the forces array
-            CHECK_CUDA(cudaFree(this->host_data_.stress)); // free the stress array
-        }
+        CHECK_CUDA(cudaFree(this->host_data_.atom_types)); // free the atom types array
+        CHECK_CUDA(cudaFree(this->host_data_.atoms)); // free the atoms array
+        CHECK_CUDA(cudaFree(this->host_data_.c6_ab_ref)); // free the c6ab_ref array
+        CHECK_CUDA(cudaFree(this->host_data_.r0ab)); // free the r0ab array
+        CHECK_CUDA(cudaFree(this->host_data_.rcov)); // free the rcov array
+        CHECK_CUDA(cudaFree(this->host_data_.r2r4)); // free the r2r4 array
+        CHECK_CUDA(cudaFree(this->host_data_.neighbors)); // free the neighbors array
+        CHECK_CUDA(cudaFree(this->host_data_.CN_neighbors)); // free the CN neighbors array
+        CHECK_CUDA(cudaFree(this->host_data_.coordination_numbers)); // free the coordination numbers array
+        CHECK_CUDA(cudaFree(this->host_data_.num_neighbors)); // free the number of neighbors array
+        CHECK_CUDA(cudaFree(this->host_data_.num_CN_neighbors)); // free the number of CN neighbors array
+        CHECK_CUDA(cudaFree(this->host_data_.dE_dCN)); // free the dE/dCN array
+        CHECK_CUDA(cudaFree(this->host_data_.energy)); // free the energy array
+        CHECK_CUDA(cudaFree(this->host_data_.forces)); // free the forces array
+        CHECK_CUDA(cudaFree(this->host_data_.stress)); // free the stress array
+        CHECK_CUDA(cudaFree(this->device_data_)); // free the device data pointer
     } // Device_Buffer destructor
 
     /* disable copying */
@@ -416,20 +417,22 @@ public:
     Device_Buffer& operator=(const Device_Buffer&) = delete; // disable copy assignment operator
 
     /* enable moving */
-    __host__ Device_Buffer(Device_Buffer&& other) noexcept : device_data_(other.device_data_) {
+    __host__ Device_Buffer(Device_Buffer&& other) noexcept 
+    : device_data_(other.device_data_), host_data_(other.host_data_) {
         other.device_data_ = nullptr; // transfer ownership of the data pointer
+        memset(&other.host_data_, 0, sizeof(device_data_t)); // reset the other host data to 0
     } // move constructor
     __host__ Device_Buffer& operator=(Device_Buffer&& other) noexcept {
         if (this != &other) {
-            if (this->device_data_ != nullptr){
-                CHECK_CUDA(cudaFree(this->device_data_)); // free the current data
-            }
-            this->device_data_ = other.device_data_; // transfer ownership of the data pointer
-            other.device_data_ = nullptr; // set the other data pointer to null
+            // Transfer ownership from other to this
+            this->device_data_ = other.device_data_;
+            this->host_data_ = other.host_data_;
+            // Null out other's pointers to prevent double free by its destructor
+            other.device_data_ = nullptr;
+            memset(&other.host_data_, 0, sizeof(device_data_t)); // Zero out all pointers in other.host_data_
         }
         return *this;
-    } // move assignment operator
-
+    } 
     __host__ device_data_t* get_device_data() {
         return this->device_data_; // return the device data pointer
     } // get device data pointer
@@ -954,15 +957,15 @@ void compute_dispersion_energy_from_handle(
     Device_Buffer *buffer = (Device_Buffer *)handle; // cast the handle to Device_Buffer
     // launch the kernel
     uint64_t length = buffer->get_host_data().num_atoms; // get the number of atoms in the system
-    uint64_t CN_kernel_block_size = (length < 512) ? length : 512; // use 256 threads per block for coordination number kernel if length is larger than 256
+    uint64_t CN_kernel_block_size = (length < MAX_BLOCK_SIZE) ? length : MAX_BLOCK_SIZE; // use 256 threads per block for coordination number kernel if length is larger than MAX_BLOCK_SIZE
     printf("launching coordination_number_kernel, size: %zu, %zu\n", length, CN_kernel_block_size);
     coordination_number_kernel<<<length, CN_kernel_block_size>>>(buffer->get_device_data()); // launch the kernel to compute the coordination numbers
     CHECK_CUDA(cudaDeviceSynchronize()); // synchronize the device to ensure all threads are finished
-    printf("launching two_body_kernel, size: %zu, %zu\n", length, (uint64_t)512);
-    two_body_kernel<<<length, 512, length * 3 * sizeof(real_t)>>>(buffer->get_device_data());
+    printf("launching two_body_kernel, size: %zu, %zu\n", length, (uint64_t)MAX_BLOCK_SIZE);
+    two_body_kernel<<<length, MAX_BLOCK_SIZE, length * 3 * sizeof(real_t)>>>(buffer->get_device_data());
     CHECK_CUDA(cudaDeviceSynchronize()); // synchronize the device to ensure all threads are finished
-    printf("launching three_body_kernel, size: %zu, %zu\n", length, (uint64_t)512);
-    three_body_kernel<<<length, 512>>>(buffer->get_device_data());
+    printf("launching three_body_kernel, size: %zu, %zu\n", length, (uint64_t)MAX_BLOCK_SIZE);
+    three_body_kernel<<<length, MAX_BLOCK_SIZE>>>(buffer->get_device_data());
     CHECK_CUDA(cudaDeviceSynchronize()); // synchronize the device to ensure all threads are finished
 
     cudaMemcpy(force, buffer->get_host_data().forces, length * 3 * sizeof(real_t), cudaMemcpyDeviceToHost); // copy the forces back to host memory

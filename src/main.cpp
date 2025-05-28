@@ -55,7 +55,7 @@ int main(int argc, char* argv[])
             float *stress = (float *)malloc(sizeof(float) * 9); // allocate memory for stress
             // Start measuring execution time
             D3Handle_t *handle = init_d3_handle(elements, num_atoms, cutoff_radius, CN_cutoff_radius);
-            for (size_t i = 0; i < 1000; ++i){
+            for (size_t i = 0; i < 100000; ++i){
                 auto start_time = std::chrono::high_resolution_clock::now();
                 // compute_dispersion_energy((float (*)[3])atoms, elements, num_atoms, structure.cell.cell, cutoff_radius, CN_cutoff_radius, &energy, force, stress);
 
