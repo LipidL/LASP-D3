@@ -347,41 +347,41 @@ public:
         {
             /* construct other fields */
             neighbor_t *neighbors;
-            cudaMalloc((void**)&neighbors, length * max_neighbors * sizeof(neighbor_t));
-            cudaMemset(neighbors, 0, length * max_neighbors * sizeof(neighbor_t));
+            CHECK_CUDA(cudaMalloc((void**)&neighbors, length * max_neighbors * sizeof(neighbor_t)));
+            CHECK_CUDA(cudaMemset(neighbors, 0, length * max_neighbors * sizeof(neighbor_t)));
             this->host_data_.neighbors = neighbors;
             neighbor_t *CN_neighbors;
-            cudaMalloc((void**)&CN_neighbors, length * max_neighbors * sizeof(neighbor_t));
-            cudaMemset(CN_neighbors, 0, length * max_neighbors * sizeof(neighbor_t));
+            CHECK_CUDA(cudaMalloc((void**)&CN_neighbors, length * max_neighbors * sizeof(neighbor_t)));
+            CHECK_CUDA(cudaMemset(CN_neighbors, 0, length * max_neighbors * sizeof(neighbor_t)));
             this->host_data_.CN_neighbors = CN_neighbors;
             real_t *coordination_numbers;
-            cudaMalloc((void**)&coordination_numbers, length * sizeof(real_t));
-            cudaMemset(coordination_numbers, 0, length * sizeof(real_t));
+            CHECK_CUDA(cudaMalloc((void**)&coordination_numbers, length * sizeof(real_t)));
+            CHECK_CUDA(cudaMemset(coordination_numbers, 0, length * sizeof(real_t)));
             this->host_data_.coordination_numbers = coordination_numbers;
             uint64_t *num_neighbors;
-            cudaMalloc((void**)&num_neighbors, length * sizeof(uint64_t));
-            cudaMemset(num_neighbors, 0, length * sizeof(uint64_t));
+            CHECK_CUDA(cudaMalloc((void**)&num_neighbors, length * sizeof(uint64_t)));
+            CHECK_CUDA(cudaMemset(num_neighbors, 0, length * sizeof(uint64_t)));
             this->host_data_.num_neighbors = num_neighbors;
             uint64_t *num_CN_neighbors;
-            cudaMalloc((void**)&num_CN_neighbors, length * sizeof(uint64_t));
-            cudaMemset(num_CN_neighbors, 0, length * sizeof(uint64_t));
+            CHECK_CUDA(cudaMalloc((void**)&num_CN_neighbors, length * sizeof(uint64_t)));
+            CHECK_CUDA(cudaMemset(num_CN_neighbors, 0, length * sizeof(uint64_t)));
             this->host_data_.num_CN_neighbors = num_CN_neighbors;
-            this->host_data_.max_neighbors = max_neighbors; // initialize the maximum number of CN neighbors to 0
+            this->host_data_.max_neighbors = max_neighbors; 
             real_t *dE_dCN;
-            cudaMalloc((void**)&dE_dCN, length * sizeof(real_t));
-            cudaMemset(dE_dCN, 0, length * sizeof(real_t));
+            CHECK_CUDA(cudaMalloc((void**)&dE_dCN, length * sizeof(real_t)));
+            CHECK_CUDA(cudaMemset(dE_dCN, 0, length * sizeof(real_t)));
             this->host_data_.dE_dCN = dE_dCN;
             real_t *energy;
-            cudaMalloc((void**)&energy, sizeof(real_t));
-            cudaMemset(energy, 0, sizeof(real_t));
+            CHECK_CUDA(cudaMalloc((void**)&energy, sizeof(real_t)));
+            CHECK_CUDA(cudaMemset(energy, 0, sizeof(real_t)));
             this->host_data_.energy = energy;
             real_t *forces;
-            cudaMalloc((void**)&forces, length * 3 * sizeof(real_t));
-            cudaMemset(forces, 0, length * 3 * sizeof(real_t));
+            CHECK_CUDA(cudaMalloc((void**)&forces, length * 3 * sizeof(real_t)));
+            CHECK_CUDA(cudaMemset(forces, 0, length * 3 * sizeof(real_t)));
             this->host_data_.forces = forces;
             real_t *stress;
-            cudaMalloc((void**)&stress, 9 * sizeof(real_t));
-            cudaMemset(stress, 0, 9 * sizeof(real_t));
+            CHECK_CUDA(cudaMalloc((void**)&stress, 9 * sizeof(real_t)));
+            CHECK_CUDA(cudaMemset(stress, 0, 9 * sizeof(real_t)));
             this->host_data_.stress = stress;
         }
         /* copy the data to device */
