@@ -1018,6 +1018,7 @@ __host__ void compute_dispersion_energy(
     auto end_time = std::chrono::high_resolution_clock::now();
     std::chrono::duration<double> elapsed_time = end_time - start_time;
     debug("Elapsed time: %.6f seconds\n", elapsed_time.count());
+    free_d3_handle(handle);
 }
 
 #ifndef BUILD_LIBRARY
