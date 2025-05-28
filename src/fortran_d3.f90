@@ -10,7 +10,7 @@ program test_d3
         end subroutine init_params
 
         subroutine compute_dispersion_energy(atoms, elements, num_atoms, cell, &
-                cutoff_radius, CN_cutoff_radius, &
+                cutoff_radius, CN_cutoff_radius, max_neighbors, &
                 energy, force, &
                 stress) bind(c, name='compute_dispersion_energy')
             use, intrinsic :: iso_c_binding
@@ -22,13 +22,14 @@ program test_d3
             real(c_float), intent(in) :: cell(3,3)
             real(c_float), value :: cutoff_radius
             real(c_float), value :: CN_cutoff_radius
+            integer(c_int64_t), value :: max_neighbors
             real(c_float), intent(out) :: energy
             real(c_float), intent(out) :: force(*)
             real(c_float), intent(out) :: stress(9)
         end subroutine compute_dispersion_energy
 
         function init_d3_handle(elements, max_length, cutoff_radius, &
-            coordination_number_cutoff) bind(c, name='init_d3_handle')
+            coordination_number_cutoff, max_neighbors) bind(c, name='init_d3_handle')
             use, intrinsic :: iso_c_binding
             implicit none
             
@@ -36,6 +37,7 @@ program test_d3
             integer(c_int64_t), value :: max_length
             real(c_float), value :: cutoff_radius
             real(c_float), value :: coordination_number_cutoff
+            integer(c_int64_t), value :: max_neighbors
             type(c_ptr) :: init_d3_handle
         end function init_d3_handle
 

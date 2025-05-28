@@ -33,7 +33,6 @@
 /* cuda kernel launch parameters */ 
 #define MAX_BLOCK_SIZE 512 // number of threads per block
 #define MAX_ELEMENTS 118
-#define MAX_NEIGHBORS 5000 // the maximum number of neighbors, dependent on the cutoff choice
 #define MAX_LOCAL_NEIGHBORS 100 // the maximum neighbor of one thread, equal to max_supercell_size * (num_atoms / num_threads)
 
 /* 
@@ -147,7 +146,7 @@ typedef struct device_data {
     real_t *coordination_numbers; // array of coordination numbers, length: num_atoms.
     uint64_t *num_neighbors; // array of maximum number of neighbors for each atom, length: num_atoms.
     uint64_t *num_CN_neighbors;
-    uint64_t max_num_CN_neighbor;
+    uint64_t max_neighbors;
     real_t *dE_dCN; // dE/dCN for each atom, length: num_atoms.
     real_t *energy; // energy of the system, length: 1
     real_t *forces; // forces on each atom, length: 3*num_atoms.
@@ -221,7 +220,7 @@ private:
  */
 class Device_Buffer {
 public:
-    __host__ Device_Buffer(real_t coords[][3], uint16_t *elements, real_t cell[3][3], uint64_t length, real_t cutoff, real_t CN_cutoff){
+    __host__ Device_Buffer(real_t coords[][3], uint16_t *elements, real_t cell[3][3], uint64_t length, real_t cutoff, real_t CN_cutoff, uint64_t max_neighbors){
         memset(&this->host_data_, 0, sizeof(device_data_t)); // initialize the host data to 0
         this->device_data_ = nullptr; // initialize the device data pointer to null
         Unique_Elements unique_elements(elements, length); // create the unique elements object
@@ -350,12 +349,12 @@ public:
         {
             /* construct other fields */
             neighbor_t *neighbors;
-            cudaMalloc((void**)&neighbors, length * MAX_NEIGHBORS * sizeof(neighbor_t));
-            cudaMemset(neighbors, 0, length * MAX_NEIGHBORS * sizeof(neighbor_t));
+            cudaMalloc((void**)&neighbors, length * max_neighbors * sizeof(neighbor_t));
+            cudaMemset(neighbors, 0, length * max_neighbors * sizeof(neighbor_t));
             this->host_data_.neighbors = neighbors;
             neighbor_t *CN_neighbors;
-            cudaMalloc((void**)&CN_neighbors, length * MAX_NEIGHBORS * sizeof(neighbor_t));
-            cudaMemset(CN_neighbors, 0, length * MAX_NEIGHBORS * sizeof(neighbor_t));
+            cudaMalloc((void**)&CN_neighbors, length * max_neighbors * sizeof(neighbor_t));
+            cudaMemset(CN_neighbors, 0, length * max_neighbors * sizeof(neighbor_t));
             this->host_data_.CN_neighbors = CN_neighbors;
             real_t *coordination_numbers;
             cudaMalloc((void**)&coordination_numbers, length * sizeof(real_t));
@@ -369,7 +368,7 @@ public:
             cudaMalloc((void**)&num_CN_neighbors, length * sizeof(uint64_t));
             cudaMemset(num_CN_neighbors, 0, length * sizeof(uint64_t));
             this->host_data_.num_CN_neighbors = num_CN_neighbors;
-            this->host_data_.max_num_CN_neighbor = 0; // initialize the maximum number of CN neighbors to 0
+            this->host_data_.max_neighbors = max_neighbors; // initialize the maximum number of CN neighbors to 0
             real_t *dE_dCN;
             cudaMalloc((void**)&dE_dCN, length * sizeof(real_t));
             cudaMemset(dE_dCN, 0, length * sizeof(real_t));
@@ -512,8 +511,8 @@ public:
         CHECK_CUDA(cudaMemset(host_data_.energy, 0, sizeof(real_t))); // clear the energy
         CHECK_CUDA(cudaMemset(host_data_.forces, 0, host_data_.num_atoms * 3 * sizeof(real_t))); // clear the forces
         CHECK_CUDA(cudaMemset(host_data_.stress, 0, 9 * sizeof(real_t))); // clear the stress
-        CHECK_CUDA(cudaMemset(host_data_.neighbors, 0, host_data_.num_atoms * MAX_NEIGHBORS * sizeof(neighbor_t))); // clear the neighbors
-        CHECK_CUDA(cudaMemset(host_data_.CN_neighbors, 0, host_data_.num_atoms * MAX_NEIGHBORS * sizeof(neighbor_t))); // clear the CN neighbors
+        CHECK_CUDA(cudaMemset(host_data_.neighbors, 0, host_data_.num_atoms * host_data_.max_neighbors * sizeof(neighbor_t))); // clear the neighbors
+        CHECK_CUDA(cudaMemset(host_data_.CN_neighbors, 0, host_data_.num_atoms * host_data_.max_neighbors * sizeof(neighbor_t))); // clear the CN neighbors
     }
     private:
     device_data_t *device_data_; // pointer to the device data
@@ -631,8 +630,8 @@ __global__ void coordination_number_kernel(device_data_t *data) {
         uint64_t neighbor_index = CN_neighbor_flags[threadIdx.x]; // index of the neighbor in the neighbors array
         uint64_t atom_2_index = CN_neighbors[i].index; // index of the second atom in the pair
         uint64_t atom_2_type = data->atom_types[atom_2_index]; // type of the surrounding atom
-        neighbor_t *data_neighbors = &data->CN_neighbors[atom_1_index * MAX_NEIGHBORS]; // pointer to the neighbors array for the central atom
-        assert(neighbor_index + i < MAX_NEIGHBORS); // make sure the index is in bounds
+        neighbor_t *data_neighbors = &data->CN_neighbors[atom_1_index * data->max_neighbors]; // pointer to the neighbors array for the central atom
+        assert(neighbor_index + i < data->max_neighbors); // make sure the index is in bounds
         assert(data_neighbors[neighbor_index+i].index == 0); // make sure the index is not already set
         assert(data_neighbors[neighbor_index+i].distance == 0); // make sure the distance is not already set
         data_neighbors[neighbor_index+i] = CN_neighbors[i];
@@ -658,8 +657,8 @@ __global__ void coordination_number_kernel(device_data_t *data) {
         assert(distance <= cutoff);
         /* if the distance is within cutoff range, update neighbors */
         uint64_t neighbor_index = neighbor_flags[threadIdx.x]; // index of the neighbor in the neighbors array
-        neighbor_t *data_neighbors = &data->neighbors[atom_1_index * MAX_NEIGHBORS]; // pointer to the neighbors array for the central atom
-        assert(neighbor_index + i < MAX_NEIGHBORS); // make sure the index is in bounds
+        neighbor_t *data_neighbors = &data->neighbors[atom_1_index * data->max_neighbors]; // pointer to the neighbors array for the central atom
+        assert(neighbor_index + i < data->max_neighbors); // make sure the index is in bounds
         assert(data_neighbors[neighbor_index+i].index == 0); // make sure the index is not already set
         data_neighbors[neighbor_index+i] = neighbors[i];
     }
@@ -682,9 +681,9 @@ __global__ void two_body_kernel(device_data_t *data){
     real_t local_energy = 0.0f; // local energy for the central atom
     real_t local_force_central[3] = {0.0f, 0.0f, 0.0f}; // local force for the central atom
     real_t local_stress[9] = {0.0f}; // local stress matrix
-    assert(data->num_neighbors[atom_1_index] <= MAX_NEIGHBORS); // make sure the number of neighbors is in bounds
+    assert(data->num_neighbors[atom_1_index] <= data->max_neighbors); // make sure the number of neighbors is in bounds
     if (atom_1_index != data->num_atoms - 1) {
-        assert(data->neighbors[atom_1_index * MAX_NEIGHBORS + data->num_neighbors[atom_1_index]].index == 0); // make sure the last entry is empty
+        assert(data->neighbors[atom_1_index * data->max_neighbors + data->num_neighbors[atom_1_index]].index == 0); // make sure the last entry is empty
     }
     uint64_t num_neighbors = data->num_neighbors[atom_1_index]; // number of neighbors for the central atom
     uint64_t workload_per_thread = (num_neighbors + blockDim.x - 1) / blockDim.x; // number of neighbors per thread
@@ -698,7 +697,7 @@ __global__ void two_body_kernel(device_data_t *data){
         if (neighbor_index >= data->num_neighbors[atom_1_index]) {
             break; // exit the loop if the index is out of bounds
         }
-        neighbor_t neighbor = data->neighbors[atom_1_index * MAX_NEIGHBORS + neighbor_index]; // neighbor atom
+        neighbor_t neighbor = data->neighbors[atom_1_index * data->max_neighbors + neighbor_index]; // neighbor atom
         uint64_t atom_2_index = neighbor.index; // index of the second atom in the pair
         atom_t atom_2 = neighbor.atom; // surrounding atom
         real_t distance = neighbor.distance; // distance to the neighbor atom
@@ -749,7 +748,15 @@ __global__ void two_body_kernel(device_data_t *data){
         }
         real_t L_ij = W;
         real_t dC6ab_dCN_1 = (L_ij * L_ij > 0.0f) ? (c_ref_dL_ij_1*L_ij - c_ref_L_ij * dL_ij_1) / powf(L_ij,2.0f) : 0.0f; // avoid division by zero
+        if (isnan(dC6ab_dCN_1) || isinf(dC6ab_dCN_1)) {
+            printf("Error: dC6ab/dCN_1 is NaN or Inf for atom pair (%llu, %llu)\n", atom_1_index, atom_2_index);
+            dC6ab_dCN_1 = 0.0f; // reset to 0.0f if it's NaN or Inf
+        }
         real_t c6_ab = (W > 0.0f) ? Z / W : 0.0f; // avoid division by zero
+        if (isnan(c6_ab) || isinf(c6_ab)) {
+            printf("Error: C6_ab is NaN or Inf for atom pair (%llu, %llu)\n", atom_1_index, atom_2_index);
+            c6_ab = 0.0f; // reset to 0.0f if it's NaN or Inf
+        }
         /* calculate c8_ab by $C_8^{AB} = 3C_6^{AB}\sqrt{Q^AQ^B}$*/
         real_t r2r4_1 = data->r2r4[atom_1_type];
         real_t r2r4_2 = data->r2r4[atom_2_type];
@@ -931,10 +938,10 @@ __global__ void three_body_kernel(device_data_t *data){
     real_t force_neighbor_a[3] = {0.0f, 0.0f, 0.0f}; // force cache for the neighbor atom during the following loop
     real_t force_central[3] = {0.0f, 0.0f, 0.0f}; // force cache for the central atom during the following loop
     real_t stress[9] = {0.0f}; // stress cache for the central atom during the following loop
-    uint64_t current_neighbor_a_index = data->CN_neighbors[atom_1_index * MAX_NEIGHBORS + 0].index; // index of the first neighbor atom
+    uint64_t current_neighbor_a_index = data->CN_neighbors[atom_1_index * data->max_neighbors + 0].index; // index of the first neighbor atom
     for (uint64_t neighbor_index = start_index; neighbor_index < end_index; ++neighbor_index) {
         /* calculate dEi/drik = dEi/dCNi * dCNi/drik */
-        neighbor_t neighbor_data = data->neighbors[atom_1_index * MAX_NEIGHBORS + neighbor_index]; // neighbor atom
+        neighbor_t neighbor_data = data->neighbors[atom_1_index * data->max_neighbors + neighbor_index]; // neighbor atom
         uint64_t atom_k_index = neighbor_data.index; // index of the neighbor atom
         real_t dCN_dr = neighbor_data.dCN_dr; // dCN/dr for the neighbor atom
         atom_t atom_k = neighbor_data.atom; // surrounding atom
@@ -996,11 +1003,12 @@ D3Handle_t *init_d3_handle(
     uint16_t *elements,
     uint64_t max_length, 
     real_t cutoff_radius,
-    real_t coordination_number_cutoff
+    real_t coordination_number_cutoff,
+    uint64_t max_neighbors
 ) {
     real_t *coords = (real_t *)malloc(max_length * 3 * sizeof(real_t)); // allocate memory for coordinates
     real_t cell[3][3] = {0}; // initialize the cell matrix
-    Device_Buffer *buffer = new Device_Buffer((real_t (*)[3])coords, elements, cell, max_length, cutoff_radius, coordination_number_cutoff); // create a buffer to hold the data
+    Device_Buffer *buffer = new Device_Buffer((real_t (*)[3])coords, elements, cell, max_length, cutoff_radius, coordination_number_cutoff, max_neighbors); // create a buffer to hold the data
     return (D3Handle_t *)buffer; // return the handle
 }
 
@@ -1096,6 +1104,7 @@ __host__ void compute_dispersion_energy(
     real_t cell[3][3],
     real_t cutoff_radius,
     real_t coordination_number_cutoff,
+    uint64_t max_neighbors,
     real_t *energy,
     real_t *force,
     real_t *stress
@@ -1104,7 +1113,7 @@ __host__ void compute_dispersion_energy(
     init_params();
     // compute dispersion energy
     // Start measuring execution time
-    D3Handle_t *handle = init_d3_handle(elements, length, cutoff_radius, coordination_number_cutoff);
+    D3Handle_t *handle = init_d3_handle(elements, length, cutoff_radius, coordination_number_cutoff, max_neighbors);
     auto start_time = std::chrono::high_resolution_clock::now();
     set_atoms(handle, (real_t *)coords, elements, length);
     set_cell(handle, cell);
@@ -1159,7 +1168,7 @@ int main()
     real_t energy;
     real_t *force = (real_t *)malloc(sizeof(real_t) * 10 * 3); // allocate memory for force
     real_t *stress = (real_t *)malloc(sizeof(real_t) * 9); // allocate memory for stress
-    compute_dispersion_energy(atoms, elements, 10, cell, cutoff_radius, CN_cutoff_radius,&energy, force, stress);
+    compute_dispersion_energy(atoms, elements, 10, cell, cutoff_radius, CN_cutoff_radius, 5000, &energy, force, stress);
     printf("energy: %f eV\n", energy);
     real_t force_sum[3] = {0.0f, 0.0f, 0.0f};
     for (int i = 0; i < 10; ++i) {
