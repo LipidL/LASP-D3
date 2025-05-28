@@ -7,8 +7,6 @@
 
 #include "d3.h"
 
-#define DEBUG
-
 // macros for debugging
 #ifdef DEBUG
 #define CHECK_CUDA(call) do { \
@@ -344,7 +342,7 @@ public:
             this->host_data_.cutoff = cutoff;
             real_t larger_cutoff = CN_cutoff > cutoff ? CN_cutoff : cutoff;
             calculate_cell_repeats(cell, larger_cutoff, this->host_data_.max_cell_bias); 
-            printf("max_cell_bias: %zu %zu %zu\n", this->host_data_.max_cell_bias[0], this->host_data_.max_cell_bias[1], this->host_data_.max_cell_bias[2]);
+            debug("max_cell_bias: %zu %zu %zu\n", this->host_data_.max_cell_bias[0], this->host_data_.max_cell_bias[1], this->host_data_.max_cell_bias[2]);
         } // cupercell information
         {
             /* construct other fields */
@@ -1050,13 +1048,13 @@ void compute_dispersion_energy_from_handle(
     // launch the kernel
     uint64_t length = buffer->get_host_data().num_atoms; // get the number of atoms in the system
     uint64_t CN_kernel_block_size = (length < MAX_BLOCK_SIZE) ? length : MAX_BLOCK_SIZE; // use 256 threads per block for coordination number kernel if length is larger than MAX_BLOCK_SIZE
-    printf("launching coordination_number_kernel, size: %zu, %zu\n", length, CN_kernel_block_size);
+    debug("launching coordination_number_kernel, size: %zu, %zu\n", length, CN_kernel_block_size);
     coordination_number_kernel<<<length, CN_kernel_block_size>>>(buffer->get_device_data()); // launch the kernel to compute the coordination numbers
     CHECK_CUDA(cudaDeviceSynchronize()); // synchronize the device to ensure all threads are finished
-    printf("launching two_body_kernel, size: %zu, %zu\n", length, (uint64_t)MAX_BLOCK_SIZE);
+    debug("launching two_body_kernel, size: %zu, %zu\n", length, (uint64_t)MAX_BLOCK_SIZE);
     two_body_kernel<<<length, MAX_BLOCK_SIZE, length * 3 * sizeof(real_t)>>>(buffer->get_device_data());
     CHECK_CUDA(cudaDeviceSynchronize()); // synchronize the device to ensure all threads are finished
-    printf("launching three_body_kernel, size: %zu, %zu\n", length, (uint64_t)MAX_BLOCK_SIZE);
+    debug("launching three_body_kernel, size: %zu, %zu\n", length, (uint64_t)MAX_BLOCK_SIZE);
     three_body_kernel<<<length, MAX_BLOCK_SIZE>>>(buffer->get_device_data());
     CHECK_CUDA(cudaDeviceSynchronize()); // synchronize the device to ensure all threads are finished
 
@@ -1158,7 +1156,7 @@ int main()
     real_t *force = (real_t *)malloc(sizeof(real_t) * 10 * 3); // allocate memory for force
     real_t *stress = (real_t *)malloc(sizeof(real_t) * 9); // allocate memory for stress
     compute_dispersion_energy(atoms, elements, 10, cell, cutoff_radius, CN_cutoff_radius, 5000, &energy, force, stress);
-    printf("energy: %f eV\n", energy);
+    debug("energy: %f eV\n", energy);
     real_t force_sum[3] = {0.0f, 0.0f, 0.0f};
     for (int i = 0; i < 10; ++i) {
         real_t force_x = force[0 + i * 3];
@@ -1167,12 +1165,12 @@ int main()
         force_sum[0] += force_x;
         force_sum[1] += force_y;
         force_sum[2] += force_z;
-        printf("force[%d]: %.13f %.13f %.13f\n", i, force_x, force_y, force_z);
+        debug("force[%d]: %.13f %.13f %.13f\n", i, force_x, force_y, force_z);
     }
-    printf("force sum: %.13f %.13f %.13f\n", force_sum[0], force_sum[1], force_sum[2]);
+    debug("force sum: %.13f %.13f %.13f\n", force_sum[0], force_sum[1], force_sum[2]);
     for (int i = 0; i < 3; ++i) {
         for (int j = 0; j < 3; ++j) {
-            printf("stress[%d][%d]: %.13f\n", i, j, stress[i * 3 + j]);
+            debug("stress[%d][%d]: %.13f\n", i, j, stress[i * 3 + j]);
         }
     }
     return 0;
