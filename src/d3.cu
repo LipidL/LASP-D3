@@ -7,10 +7,6 @@
 
 #include "d3.h"
 
-#define DEBUG
-
-// macros for debugging
-#ifdef DEBUG
 #define CHECK_CUDA(call) do { \
     cudaError_t err = call; \
     if (err != cudaSuccess) { \
@@ -23,9 +19,11 @@
         printf("CUDA Error: %s\n", cudaGetErrorString(error)); \
     } \
 } while (0)
+// macros for debugging
+#define DEBUG
+#ifdef DEBUG
 #define debug(...) printf(__VA_ARGS__)
 #else
-#define CHECK_CUDA(call) call
 #define debug(...)
 #endif
 
