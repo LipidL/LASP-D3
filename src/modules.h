@@ -112,7 +112,39 @@ namespace periodic_table
             elements.push_back(Element<T>{"Bismuth", "Bi", 83, 208.980, 1.52, 1.46, 5, 15, 6});
             elements.push_back(Element<T>{"Polonium", "Po", 84, 209.0, 1.53, 1.46, 6, 16, 6});
             elements.push_back(Element<T>{"Astatine", "At", 85, 210.0, 1.50, 1.45, 7, 17, 6});
-            elements.push_back(Element<T>{"Radon", "Rn", 86, 222.0, 1.50, 1.45, 8, 18, 6}); 
+            elements.push_back(Element<T>{"Radon", "Rn", 86, 222.0, 1.50, 1.45, 8, 18, 6});
+            elements.push_back(Element<T>{"Francium", "Fr", 87, 223.0, 3.48, 2.60, 1, 1, 7});
+            elements.push_back(Element<T>{"Radium", "Ra", 88, 226.0, 2.83, 2.21, 2, 2, 7});
+            elements.push_back(Element<T>{"Actinium", "Ac", 89, 227.0, 2.60, 2.15, 3, 3, 7});
+            elements.push_back(Element<T>{"Thorium", "Th", 90, 232.038, 2.52, 2.06, 4, 3, 7});
+            elements.push_back(Element<T>{"Protactinium", "Pa", 91, 231.036, 2.43, 2.00, 5, 3, 7});
+            elements.push_back(Element<T>{"Uranium", "U", 92, 238.029, 2.41, 1.96, 6, 3, 7});
+            elements.push_back(Element<T>{"Neptunium", "Np", 93, 237.0, 2.39, 1.90, 7, 3, 7});
+            elements.push_back(Element<T>{"Plutonium", "Pu", 94, 244.0, 2.43, 1.87, 8, 3, 7});
+            elements.push_back(Element<T>{"Americium", "Am", 95, 243.0, 2.44, 1.80, 9, 3, 7});
+            elements.push_back(Element<T>{"Curium", "Cm", 96, 247.0, 2.45, 1.69, 10, 3, 7});
+            elements.push_back(Element<T>{"Berkelium", "Bk", 97, 247.0, 2.44, 1.68, 11, 3, 7});
+            elements.push_back(Element<T>{"Californium", "Cf", 98, 251.0, 2.45, 1.68, 12, 3, 7});
+            elements.push_back(Element<T>{"Einsteinium", "Es", 99, 252.0, 2.45, 1.65, 13, 3, 7});
+            elements.push_back(Element<T>{"Fermium", "Fm", 100, 257.0, 2.45, 1.67, 14, 3, 7});
+            elements.push_back(Element<T>{"Mendelevium", "Md", 101, 258.0, 2.46, 1.73, 15, 3, 7});
+            elements.push_back(Element<T>{"Nobelium", "No", 102, 259.0, 2.46, 1.76, 16, 3, 7});
+            elements.push_back(Element<T>{"Lawrencium", "Lr", 103, 266.0, 2.46, 1.61, 17, 3, 7});
+            elements.push_back(Element<T>{"Rutherfordium", "Rf", 104, 267.0, 2.40, 1.57, 4, 4, 7});
+            elements.push_back(Element<T>{"Dubnium", "Db", 105, 268.0, 2.20, 1.49, 5, 5, 7});
+            elements.push_back(Element<T>{"Seaborgium", "Sg", 106, 269.0, 2.15, 1.43, 6, 6, 7});
+            elements.push_back(Element<T>{"Bohrium", "Bh", 107, 270.0, 2.10, 1.41, 7, 7, 7});
+            elements.push_back(Element<T>{"Hassium", "Hs", 108, 277.0, 2.05, 1.34, 8, 8, 7});
+            elements.push_back(Element<T>{"Meitnerium", "Mt", 109, 278.0, 2.00, 1.29, 9, 9, 7});
+            elements.push_back(Element<T>{"Darmstadtium", "Ds", 110, 281.0, 1.95, 1.28, 10, 10, 7});
+            elements.push_back(Element<T>{"Roentgenium", "Rg", 111, 282.0, 1.90, 1.21, 11, 11, 7});
+            elements.push_back(Element<T>{"Copernicium", "Cn", 112, 285.0, 1.85, 1.22, 12, 12, 7});
+            elements.push_back(Element<T>{"Nihonium", "Nh", 113, 286.0, 1.80, 1.36, 3, 13, 7});
+            elements.push_back(Element<T>{"Flerovium", "Fl", 114, 289.0, 1.75, 1.43, 4, 14, 7});
+            elements.push_back(Element<T>{"Moscovium", "Mc", 115, 289.0, 1.70, 1.62, 5, 15, 7});
+            elements.push_back(Element<T>{"Livermorium", "Lv", 116, 293.0, 1.65, 1.75, 6, 16, 7});
+            elements.push_back(Element<T>{"Tennessine", "Ts", 117, 294.0, 1.60, 1.65, 7, 17, 7});
+            elements.push_back(Element<T>{"Oganesson", "Og", 118, 294.0, 1.55, 1.57, 8, 18, 7});
         }
         ~PeriodicTable() = default; // Default destructor
 
