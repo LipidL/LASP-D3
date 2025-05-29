@@ -130,7 +130,7 @@ program test_d3
     
     ! Call the compute_dispersion_energy function
     call compute_dispersion_energy(atoms, elements, int(num_atoms, c_int64_t), cell, &
-                                  cutoff_radius, CN_cutoff_radius, &
+                                  cutoff_radius, CN_cutoff_radius, int(5000, c_int64_t), &
                                   energy, force, stress)
     
     ! Print results

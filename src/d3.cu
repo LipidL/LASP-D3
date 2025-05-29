@@ -7,6 +7,8 @@
 
 #include "d3.h"
 
+#define DEBUG
+
 // macros for debugging
 #ifdef DEBUG
 #define CHECK_CUDA(call) do { \
@@ -671,7 +673,7 @@ __global__ void coordination_number_kernel(device_data_t *data) {
  * @note the number of threads in each block can be any value, but it's better to set a value smaller than the number of neighbors.
  */
 __global__ void two_body_kernel(device_data_t *data){
-    extern __shared__ real_t dE_dCN_cache[]; // shared memory for forces, size: 3 * data->num_atoms
+    extern __shared__ real_t dE_dCN_cache[]; // shared memory for dE/dCN cache
     real_t dE_dCN = 0.0f; // derivative of energy with respect to coordination number
     uint64_t atom_1_index = blockIdx.x; // each block is responsible for one central atom
     atom_t atom_1 = data->atoms[atom_1_index]; // central atom
@@ -1052,7 +1054,7 @@ void compute_dispersion_energy_from_handle(
     coordination_number_kernel<<<length, CN_kernel_block_size>>>(buffer->get_device_data()); // launch the kernel to compute the coordination numbers
     CHECK_CUDA(cudaDeviceSynchronize()); // synchronize the device to ensure all threads are finished
     debug("launching two_body_kernel, size: %zu, %zu\n", length, (uint64_t)MAX_BLOCK_SIZE);
-    two_body_kernel<<<length, MAX_BLOCK_SIZE, length * 3 * sizeof(real_t)>>>(buffer->get_device_data());
+    two_body_kernel<<<length, MAX_BLOCK_SIZE, MAX_BLOCK_SIZE * sizeof(real_t)>>>(buffer->get_device_data());
     CHECK_CUDA(cudaDeviceSynchronize()); // synchronize the device to ensure all threads are finished
     debug("launching three_body_kernel, size: %zu, %zu\n", length, (uint64_t)MAX_BLOCK_SIZE);
     three_body_kernel<<<length, MAX_BLOCK_SIZE>>>(buffer->get_device_data());
