@@ -19,7 +19,6 @@
     } \
 } while (0)
 // macros for debugging
-#define DEBUG
 #ifdef DEBUG
 #define debug(...) printf(__VA_ARGS__)
 #define assert_(...) assert(__VA_ARGS__)
@@ -555,7 +554,6 @@ __global__ void coordination_number_kernel(device_data_t *data) {
         {data->cell[1][0], data->cell[1][1], data->cell[1][2]},
         {data->cell[2][0], data->cell[2][1], data->cell[2][2]}
     };
-    const uint64_t num_atoms = data->num_atoms; // number of atoms in the system
     const real_t CN_cutoff = data->coordination_number_cutoff;
     const real_t cutoff = data->cutoff;
 
@@ -569,7 +567,7 @@ __global__ void coordination_number_kernel(device_data_t *data) {
             int64_t x_bias = (bias_index % mcb0) - (mcb0/2); // x bias
             int64_t y_bias = ((bias_index / mcb0) % mcb1) - (mcb1/2); // y bias
             int64_t z_bias = (bias_index / (mcb0 * mcb1) % mcb2) - (mcb2/2); // z bias
-            assert_(atom_2_index < num_atoms); // make sure the index is in bounds
+            assert_(atom_2_index < data->num_atoms); // make sure the index is in bounds
 
             atom_t atom_2 = data->atoms[atom_2_index]; // surrounding atom
             /* translate atom_2 due to periodic boundaries */
@@ -652,8 +650,7 @@ __global__ void coordination_number_kernel(device_data_t *data) {
     /* now the coordination number of the central atom is stored in local_coordination_number, add it back to global memory. */
     atomicAdd(&data->coordination_numbers[atom_1_index], local_coordination_number); // accumulate the coordination number for the central atom
     for (uint64_t i = 0; i < neighbors_index; ++i) {
-        real_t distance = neighbors[i].distance; // distance to the neighbor atom
-        assert_(distance <= cutoff);
+        assert_(neighbors[i].distance <= cutoff);
         /* if the distance is within cutoff range, update neighbors */
         uint64_t neighbor_index = neighbor_flags[threadIdx.x]; // index of the neighbor in the neighbors array
         neighbor_t *data_neighbors = &data->neighbors[atom_1_index * data->max_neighbors]; // pointer to the neighbors array for the central atom
@@ -811,7 +808,8 @@ __global__ void two_body_kernel(device_data_t *data){
         
         /* accumulate dEij/dCNi to local variable, use Kagan summation for better accuracy */
         {
-            real_t y = S6 * (f_dn_6 * distance_6) * dC6ab_dCN_1 + S8 * (f_dn_8 * distance_8) * dC8ab_dCN_1 - dE_dCN_conpensate; // calculate the difference
+            // real_t y = S6 * (f_dn_6 / distance_6) * dC6ab_dCN_1 + S8 * (f_dn_8 / distance_8) * dC8ab_dCN_1 - dE_dCN_conpensate; // calculate the difference
+            real_t y = ((S6 * f_dn_6 * distance_2 * dC6ab_dCN_1 + S8 * f_dn_8 * dC8ab_dCN_1) / distance_8) - dE_dCN_conpensate; // calculate the difference
             real_t t = dE_dCN + y; // add the difference to the local dE/dCN
             dE_dCN_conpensate = (t - dE_dCN) - y; // calculate the compensation for the next iteration
             dE_dCN = t; // update the local dE/dCN
@@ -935,7 +933,7 @@ __global__ void three_body_kernel(device_data_t *data){
     uint64_t atom_1_index = blockIdx.x; // each block is responsible for one central atom
     atom_t atom_1 = data->atoms[atom_1_index]; // central atom
     real_t dE_dCN = data->dE_dCN[atom_1_index]; // derivative of energy with respect to coordination number
-    uint64_t num_neighbors = data->num_neighbors[atom_1_index]; // number of neighbors for the central atom
+    uint64_t num_neighbors = data->num_CN_neighbors[atom_1_index]; // number of neighbors for the central atom
     uint64_t workload_per_thread = (num_neighbors + blockDim.x - 1) / blockDim.x; // number of neighbors per thread
     uint64_t start_index = threadIdx.x * workload_per_thread; // start index for the thread
     uint64_t end_index = (threadIdx.x + 1) * workload_per_thread; // end index for the thread
@@ -948,10 +946,10 @@ __global__ void three_body_kernel(device_data_t *data){
     real_t force_compensate_central[3] = {0.0f, 0.0f, 0.0f}; // force compensation for the central atom to improve numerical stability
     real_t stress[9] = {0.0f}; // stress cache for the central atom during the following loop
     real_t stress_compensate[9] = {0.0f}; // stress compensation for the central atom to improve numerical stability
-    uint64_t current_neighbor_a_index = data->CN_neighbors[atom_1_index * data->max_neighbors + 0].index; // index of the first neighbor atom
+    uint64_t current_neighbor_a_index = data->CN_neighbors[atom_1_index * data->max_neighbors + start_index].index; // index of the first neighbor atom
     for (uint64_t neighbor_index = start_index; neighbor_index < end_index; ++neighbor_index) {
         /* calculate dEi/drik = dEi/dCNi * dCNi/drik */
-        neighbor_t neighbor_data = data->neighbors[atom_1_index * data->max_neighbors + neighbor_index]; // neighbor atom
+        neighbor_t neighbor_data = data->CN_neighbors[atom_1_index * data->max_neighbors + neighbor_index]; // neighbor atom
         uint64_t atom_k_index = neighbor_data.index; // index of the neighbor atom
         real_t dCN_dr = neighbor_data.dCN_dr; // dCN/dr for the neighbor atom
         atom_t atom_k = neighbor_data.atom; // surrounding atom
@@ -967,6 +965,8 @@ __global__ void three_body_kernel(device_data_t *data){
             force_neighbor_a[2] = 0.0f; // reset the force cache
         }
         real_t dE_drik = dE_dCN * dCN_dr; // dE/drik * 1/rik
+        // if (neighbor_data.distance < 5.0f)
+            // printf("atom (%lld,%lld), distance: %f, dE_drik: %f, dE_dCN: %f, dCN_dr: %f\n",atom_1_index, neighbor_data.index, neighbor_data.distance,dE_drik, dE_dCN, dCN_dr);
         /* accumulate force for the central atom */
         // force_central[0] += dE_drik * (atom_1.x - atom_k.x);
         // force_central[1] += dE_drik * (atom_1.y - atom_k.y);
