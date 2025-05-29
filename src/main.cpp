@@ -74,25 +74,6 @@ int main(int argc, char* argv[])
                     }
                 }
             }
-            auto structure = structures[0]; // only handle first structure
-            std::cout << "Parsed structure with energy: " << structure.energy << std::endl;
-            size_t num_atoms = structure.atoms.size();
-            std::cout << "Number of atoms: " << num_atoms << std::endl;
-            uint16_t *elements = (uint16_t *)malloc(sizeof(uint16_t) * num_atoms);
-            float *atoms = (float *)malloc(sizeof(float) * num_atoms * 3); // allocate memory for atom positions
-            float angstron_to_bohr = 1 / 0.52917726f; // angstron to bohr conversion factor
-            for (size_t i = 0; i < num_atoms; ++i) {
-                elements[i] = structure.atoms[i].element.atomic_number;
-                atoms[i * 3] = structure.atoms[i].position.x * angstron_to_bohr; // convert to bohr
-                atoms[i * 3 + 1] = structure.atoms[i].position.y * angstron_to_bohr;
-                atoms[i * 3 + 2] = structure.atoms[i].position.z * angstron_to_bohr;
-            }
-            for (size_t i = 0; i < 3; ++i) {
-                for (size_t j = 0; j < 3; ++j) {
-                    structure.cell.cell[i][j] *= angstron_to_bohr; // convert to bohr   
-                    std::cout << "Cell[" << i << "][" << j << "]: " << structure.cell.cell[i][j] << std::endl;
-                }
-            }
         }
     } else {
         std::cerr << "No input file provided. Use -h or --help for usage." << std::endl;

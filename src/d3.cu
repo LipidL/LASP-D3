@@ -33,6 +33,7 @@
 #define MAX_BLOCK_SIZE 512 // number of threads per block
 #define MAX_ELEMENTS 118
 #define MAX_LOCAL_NEIGHBORS 1000 // the maximum neighbor of one thread, equal to max_supercell_size * (num_atoms / num_threads)
+#define FLT_MAX 3.402823466e+38F // maximum float value, used to initialize distances
 
 /* 
 constants used in the simulation
@@ -111,7 +112,6 @@ void calculate_cell_repeats(const real_t cell[3][3], real_t cutoff, uint64_t rep
     // Multiply by cutoff and round up to nearest integer
     for (int i = 0; i < 3; i++) {
         repeats[i] = ((int)(cutoff * norms[i]) + 1) * 2 + 1; // the number of repeats need to be timed by 2 due to two directions, and add 1 due to the central unit (no translation at all)
-        repeats[i] = ((int)(cutoff * norms[i]) + 2) + 1; // the number of repeats need to be timed by 2 due to two directions, and add 1 due to the central unit (no translation at all)
     }
 }
 
@@ -663,6 +663,14 @@ __global__ void coordination_number_kernel(device_data_t *data) {
     }
     return; // return from the kernel
 }
+__global__ void print_coordination_number_kernel(device_data_t *data) {
+    if (threadIdx.x == 0) {
+        printf("Coordination numbers:\n");
+        for (uint64_t i = 0; i < data->num_atoms; ++i) {
+            printf("Atom %llu, element: %llu: %f\n", i, data->atoms[i].element, data->coordination_numbers[i]);
+        }
+    }
+} // print coordination number kernel
 
 /**
  * @brief this kernel is used to compute the two-body interactions between atoms in the system.
@@ -711,11 +719,11 @@ __global__ void two_body_kernel(device_data_t *data){
             where $Z = \sum_{a,b}C_{6,ref}^{i,j}L_{a,b}$
             $W = \sum_{a,b}L_{a,b}$
             $L_{a,b} = \exp(-k3((CN^A-CN^A_{ref,a})^2 + (CN^B-CN^B_{ref,b})^2))$ */
-        real_t Z = 0.0f;
-        real_t W = 0.0f;
-        real_t c_ref_L_ij = 0.0f;
-        real_t c_ref_dL_ij_1 = 0.0f;
-        real_t dL_ij_1 = 0.0f;
+        real_t exponent_args[NUM_REF_C6 * NUM_REF_C6] = {0.0f}; // array to store the exponent arguments for L_ij
+        real_t CN_ref_1[NUM_REF_C6 * NUM_REF_C6] = {0.0f}; // array to store the CNref values for atom_1
+        real_t c6ab_ref[NUM_REF_C6 * NUM_REF_C6] = {0.0f}; // array to store the C6ab_ref values
+        uint16_t valid_term_count = 0; // count of valid terms in the C6ref arrays
+        real_t max_exponent_arg = -FLT_MAX; // maximum exponent argument for L_ij
         for (uint64_t i = 0; i < NUM_REF_C6; ++i) {
             for (uint64_t j = 0; j < NUM_REF_C6; ++j) {
                 /* find the C6ref */
@@ -728,23 +736,35 @@ __global__ void two_body_kernel(device_data_t *data){
                 /* these entries could be -1.0f if they are not valid, but at least one should be valid*/
                 real_t coordination_number_ref_1 = data->c6_ab_ref[index + 1];
                 real_t coordination_number_ref_2 = data->c6_ab_ref[index + 2];
-                /* because they could be invalid, L_ij cannot be used directly */
-                real_t L_ij_candidate = expf(-K3 * (powf(coordination_number_1 - coordination_number_ref_1, 2) + powf(coordination_number_2 - coordination_number_ref_2, 2)));
-                real_t dL_ij_candidate_1 = -2.0f * K3 * (coordination_number_1 - coordination_number_ref_1) * L_ij_candidate; // dL_ij/dCN_1
-                /* since we need the value $\frac{\sum_{i,j}C_{6,ref}^{A,B}L_{i,j}}{\sum_{i,j}L_{i,j}}$
-                    we can set invalid L_ij to 0.0f and perform the summation in the same loop
-                    invalid entry: have -1.0f in c6_ref, coordination_number_ref_1 and coordination_number_ref_2
-                    we check coordination_number_ref_1 here. */
-                if (coordination_number_ref_1 - (-1.0f) > 1e-5f) {
-                    Z += c6_ref * L_ij_candidate; // accumulate the value of Z
-                    W += L_ij_candidate; // accumulate the value of W
-                    /* accumulate the value of c_ref_L_ij, dL_ij_1 and dL_ij_2 */
-                    c_ref_L_ij += c6_ref * L_ij_candidate;
-                    c_ref_dL_ij_1 += c6_ref * dL_ij_candidate_1;
-                    dL_ij_1 += dL_ij_candidate_1;
+                if (coordination_number_1 - (-1.0f) > 1e-5f && coordination_number_2 - (-1.0f) > 1e-5f) {
+                    /* if both coordination numbers are valid, we can use them */
+                    exponent_args[valid_term_count] = -K3 * (powf(coordination_number_1 - coordination_number_ref_1, 2) + powf(coordination_number_2 - coordination_number_ref_2, 2));
+                    CN_ref_1[valid_term_count] = coordination_number_ref_1; // store the C6ref for atom_1
+                    c6ab_ref[valid_term_count] = c6_ref; // store the C6ab_ref
+                    max_exponent_arg = fmaxf(max_exponent_arg, exponent_args[valid_term_count]); // update the maximum exponent argument
+                    valid_term_count++;
                 }
             }
         }
+        real_t Z = 0.0f;
+        real_t W = 0.0f;
+        real_t c_ref_L_ij = 0.0f;
+        real_t c_ref_dL_ij_1 = 0.0f;
+        real_t dL_ij_1 = 0.0f;
+
+        if (valid_term_count > 0) {
+            for (uint16_t i = 0; i < valid_term_count; ++i) {
+                /* calculate L_ij for the valid terms */
+                real_t L_ij = expf(exponent_args[i] - max_exponent_arg); // normalize the exponent argument
+                real_t dL_ij_1_part = -2.0f * K3 * (coordination_number_1 - CN_ref_1[i]) * L_ij; // dL_ij/dCN_1
+                Z += c6ab_ref[i] * L_ij; // accumulate the value of Z
+                W += L_ij; // accumulate the value of W
+                c_ref_L_ij += c6ab_ref[i] * L_ij; // accumulate the value of c_ref_L_ij
+                c_ref_dL_ij_1 += c6ab_ref[i] * dL_ij_1_part; // accumulate the value of c_ref_dL_ij_1
+                dL_ij_1 += dL_ij_1_part; // accumulate the value of dL_ij_1
+            }
+        }
+
         real_t L_ij = W;
         real_t dC6ab_dCN_1 = (L_ij * L_ij > 0.0f) ? (c_ref_dL_ij_1*L_ij - c_ref_L_ij * dL_ij_1) / powf(L_ij,2.0f) : 0.0f; // avoid division by zero
         if (isnan(dC6ab_dCN_1) || isinf(dC6ab_dCN_1)) {
@@ -925,7 +945,9 @@ __global__ void three_body_kernel(device_data_t *data){
     Therefore, we can cache the force and only use `atomicAdd` after accumulating all forces */
     real_t force_neighbor_a[3] = {0.0f, 0.0f, 0.0f}; // force cache for the neighbor atom during the following loop
     real_t force_central[3] = {0.0f, 0.0f, 0.0f}; // force cache for the central atom during the following loop
+    real_t force_compensate_central[3] = {0.0f, 0.0f, 0.0f}; // force compensation for the central atom to improve numerical stability
     real_t stress[9] = {0.0f}; // stress cache for the central atom during the following loop
+    real_t stress_compensate[9] = {0.0f}; // stress compensation for the central atom to improve numerical stability
     uint64_t current_neighbor_a_index = data->CN_neighbors[atom_1_index * data->max_neighbors + 0].index; // index of the first neighbor atom
     for (uint64_t neighbor_index = start_index; neighbor_index < end_index; ++neighbor_index) {
         /* calculate dEi/drik = dEi/dCNi * dCNi/drik */
@@ -946,23 +968,87 @@ __global__ void three_body_kernel(device_data_t *data){
         }
         real_t dE_drik = dE_dCN * dCN_dr; // dE/drik * 1/rik
         /* accumulate force for the central atom */
-        force_central[0] += dE_drik * (atom_1.x - atom_k.x);
-        force_central[1] += dE_drik * (atom_1.y - atom_k.y);
-        force_central[2] += dE_drik * (atom_1.z - atom_k.z);
+        // force_central[0] += dE_drik * (atom_1.x - atom_k.x);
+        // force_central[1] += dE_drik * (atom_1.y - atom_k.y);
+        // force_central[2] += dE_drik * (atom_1.z - atom_k.z);
+        /* use Kahan summation to improve numerical stability */
+        {
+            real_t y0 = dE_drik * (atom_1.x - atom_k.x) - force_compensate_central[0]; // calculate the difference for x component
+            real_t t0 = force_central[0] + y0; // add the difference to the local force
+            force_compensate_central[0] = (t0 - force_central[0]) - y0; // calculate the compensation for the next iteration
+            force_central[0] = t0; // update the local force for x component
+
+            real_t y1 = dE_drik * (atom_1.y - atom_k.y) - force_compensate_central[1]; // calculate the difference for y component
+            real_t t1 = force_central[1] + y1; // add the difference to the local force
+            force_compensate_central[1] = (t1 - force_central[1]) - y1; // calculate the compensation for the next iteration
+            force_central[1] = t1; // update the local force for y component
+
+            real_t y2 = dE_drik * (atom_1.z - atom_k.z) - force_compensate_central[2]; // calculate the difference for z component
+            real_t t2 = force_central[2] + y2; // add the difference to the local force
+            force_compensate_central[2] = (t2 - force_central[2]) - y2; // calculate the compensation for the next iteration
+            force_central[2] = t2; // update the local force for z component
+        }
         /* accumulate force for the neighbor atom */
         force_neighbor_a[0] += -dE_drik * (atom_1.x - atom_k.x);
         force_neighbor_a[1] += -dE_drik * (atom_1.y - atom_k.y);
         force_neighbor_a[2] += -dE_drik * (atom_1.z - atom_k.z);
         /* accumulate stress */
-        stress[0 * 3 + 0] += -1.0f * (atom_1.x - atom_k.x) * dE_drik * (atom_1.x - atom_k.x); // stress_xx
-        stress[0 * 3 + 1] += -1.0f * (atom_1.x - atom_k.x) * dE_drik * (atom_1.y - atom_k.y); // stress_xy
-        stress[0 * 3 + 2] += -1.0f * (atom_1.x - atom_k.x) * dE_drik * (atom_1.z - atom_k.z); // stress_xz
-        stress[1 * 3 + 0] += -1.0f * (atom_1.y - atom_k.y) * dE_drik * (atom_1.x - atom_k.x); // stress_yx
-        stress[1 * 3 + 1] += -1.0f * (atom_1.y - atom_k.y) * dE_drik * (atom_1.y - atom_k.y); // stress_yy
-        stress[1 * 3 + 2] += -1.0f * (atom_1.y - atom_k.y) * dE_drik * (atom_1.z - atom_k.z); // stress_yz
-        stress[2 * 3 + 0] += -1.0f * (atom_1.z - atom_k.z) * dE_drik * (atom_1.x - atom_k.x); // stress_zx
-        stress[2 * 3 + 1] += -1.0f * (atom_1.z - atom_k.z) * dE_drik * (atom_1.y - atom_k.y); // stress_zy
-        stress[2 * 3 + 2] += -1.0f * (atom_1.z - atom_k.z) * dE_drik * (atom_1.z - atom_k.z); // stress_zz
+        // stress[0 * 3 + 0] += -1.0f * (atom_1.x - atom_k.x) * dE_drik * (atom_1.x - atom_k.x); // stress_xx
+        // stress[0 * 3 + 1] += -1.0f * (atom_1.x - atom_k.x) * dE_drik * (atom_1.y - atom_k.y); // stress_xy
+        // stress[0 * 3 + 2] += -1.0f * (atom_1.x - atom_k.x) * dE_drik * (atom_1.z - atom_k.z); // stress_xz
+        // stress[1 * 3 + 0] += -1.0f * (atom_1.y - atom_k.y) * dE_drik * (atom_1.x - atom_k.x); // stress_yx
+        // stress[1 * 3 + 1] += -1.0f * (atom_1.y - atom_k.y) * dE_drik * (atom_1.y - atom_k.y); // stress_yy
+        // stress[1 * 3 + 2] += -1.0f * (atom_1.y - atom_k.y) * dE_drik * (atom_1.z - atom_k.z); // stress_yz
+        // stress[2 * 3 + 0] += -1.0f * (atom_1.z - atom_k.z) * dE_drik * (atom_1.x - atom_k.x); // stress_zx
+        // stress[2 * 3 + 1] += -1.0f * (atom_1.z - atom_k.z) * dE_drik * (atom_1.y - atom_k.y); // stress_zy
+        // stress[2 * 3 + 2] += -1.0f * (atom_1.z - atom_k.z) * dE_drik * (atom_1.z - atom_k.z); // stress_zz
+        /* use Kahan summation to improve numerical stability */
+        {
+            real_t y0 = -1.0f * (atom_1.x - atom_k.x) * dE_drik * (atom_1.x - atom_k.x) - stress_compensate[0]; // calculate the difference for stress_xx
+            real_t t0 = stress[0 * 3 + 0] + y0; // add the difference to the local stress
+            stress_compensate[0] = (t0 - stress[0 * 3 + 0]) - y0; // calculate the compensation for the next iteration
+            stress[0 * 3 + 0] = t0; // update the local stress for stress_xx
+
+            real_t y1 = -1.0f * (atom_1.x - atom_k.x) * dE_drik * (atom_1.y - atom_k.y) - stress_compensate[1]; // calculate the difference for stress_xy
+            real_t t1 = stress[0 * 3 + 1] + y1; // add the difference to the local stress
+            stress_compensate[1] = (t1 - stress[0 * 3 + 1]) - y1; // calculate the compensation for the next iteration
+            stress[0 * 3 + 1] = t1; // update the local stress for stress_xy
+
+            real_t y2 = -1.0f * (atom_1.x - atom_k.x) * dE_drik * (atom_1.z - atom_k.z) - stress_compensate[2]; // calculate the difference for stress_xz
+            real_t t2 = stress[0 * 3 + 2] + y2; // add the difference to the local stress
+            stress_compensate[2] = (t2 - stress[0 * 3 + 2]) - y2; // calculate the compensation for the next iteration
+            stress[0 * 3 + 2] = t2; // update the local stress for stress_xz
+
+            real_t y3 = -1.0f * (atom_1.y - atom_k.y) * dE_drik * (atom_1.x - atom_k.x) - stress_compensate[3]; // calculate the difference for stress_yx
+            real_t t3 = stress[1 * 3 + 0] + y3; // add the difference to the local stress
+            stress_compensate[3] = (t3 - stress[1 * 3 + 0]) - y3; // calculate the compensation for the next iteration
+            stress[1 * 3 + 0] = t3; // update the local stress for stress_yx
+
+            real_t y4 = -1.0f * (atom_1.y - atom_k.y) * dE_drik * (atom_1.y - atom_k.y) - stress_compensate[4]; // calculate the difference for stress_yy
+            real_t t4 = stress[1 * 3 + 1] + y4; // add the difference to the local stress
+            stress_compensate[4] = (t4 - stress[1 * 3 + 1]) - y4; // calculate the compensation for the next iteration
+            stress[1 * 3 + 1] = t4; // update the local stress for stress_yy
+
+            real_t y5 = -1.0f * (atom_1.y - atom_k.y) * dE_drik * (atom_1.z - atom_k.z) - stress_compensate[5]; // calculate the difference for stress_yz
+            real_t t5 = stress[1 * 3 + 2] + y5; // add the difference to the local stress
+            stress_compensate[5] = (t5 - stress[1 * 3 + 2]) - y5; // calculate the compensation for the next iteration
+            stress[1 * 3 + 2] = t5; // update the local stress for stress_yz
+
+            real_t y6 = -1.0f * (atom_1.z - atom_k.z) * dE_drik * (atom_1.x - atom_k.x) - stress_compensate[6]; // calculate the difference for stress_zx
+            real_t t6 = stress[2 * 3 + 0] + y6; // add the difference to the local stress
+            stress_compensate[6] = (t6 - stress[2 * 3 + 0]) - y6; // calculate the compensation for the next iteration
+            stress[2 * 3 + 0] = t6; // update the local stress for stress_zx
+
+            real_t y7 = -1.0f * (atom_1.z - atom_k.z) * dE_drik * (atom_1.y - atom_k.y) - stress_compensate[7]; // calculate the difference for stress_zy
+            real_t t7 = stress[2 * 3 + 1] + y7; // add the difference to the local stress
+            stress_compensate[7] = (t7 - stress[2 * 3 + 1]) - y7; // calculate the compensation for the next iteration
+            stress[2 * 3 + 1] = t7; // update the local stress for stress_zy
+
+            real_t y8 = -1.0f * (atom_1.z - atom_k.z) * dE_drik * (atom_1.z - atom_k.z) - stress_compensate[8]; // calculate the difference for stress_zz
+            real_t t8 = stress[2 * 3 + 2] + y8; // add the difference to the local stress
+            stress_compensate[8] = (t8 - stress[2 * 3 + 2]) - y8; // calculate the compensation for the next iteration
+            stress[2 * 3 + 2] = t8; // update the local stress for stress_zz
+        }
     }
     /* accumulate force of last neighboring atom to local memory */
     atomicAdd(&data->forces[current_neighbor_a_index * 3 + 0], force_neighbor_a[0]); // accumulate the force for the central atom
@@ -1052,6 +1138,10 @@ void compute_dispersion_energy_from_handle(
     debug("launching coordination_number_kernel, size: %zu, %zu\n", length, CN_kernel_block_size);
     coordination_number_kernel<<<length, CN_kernel_block_size>>>(buffer->get_device_data()); // launch the kernel to compute the coordination numbers
     CHECK_CUDA(cudaDeviceSynchronize()); // synchronize the device to ensure all threads are finished
+    #ifdef DEBUG
+    print_coordination_number_kernel<<<1,1>>>(buffer->get_device_data()); // print the coordination numbers for debugging
+    CHECK_CUDA(cudaDeviceSynchronize()); // synchronize the device to ensure all threads are finished
+    #endif
     debug("launching two_body_kernel, size: %zu, %zu\n", length, (uint64_t)MAX_BLOCK_SIZE);
     two_body_kernel<<<length, MAX_BLOCK_SIZE, MAX_BLOCK_SIZE * sizeof(real_t)>>>(buffer->get_device_data());
     CHECK_CUDA(cudaDeviceSynchronize()); // synchronize the device to ensure all threads are finished
@@ -1064,7 +1154,7 @@ void compute_dispersion_energy_from_handle(
     cudaMemcpy(stress, buffer->get_host_data().stress, 9 * sizeof(real_t), cudaMemcpyDeviceToHost); // copy the stress back to host memory
     real_t angstron_to_bohr = 1/0.52917726f; // angstron to bohr conversion factor
     real_t hartree_to_eV = 27.211396641308f; // hartree to eV conversion factor
-    *energy *= hartree_to_eV; // convert energy to eV
+    *energy *= -hartree_to_eV; // convert energy to eV and negate it
     for (uint64_t i = 0; i < length; ++i) {
         /* convert force from hartree/bohr to eV/angstron */
         force[i * 3 + 0] *= hartree_to_eV * angstron_to_bohr;
