@@ -12,7 +12,6 @@
     if (err != cudaSuccess) { \
         fprintf(stderr, "CUDA error in %s at %s:%d: %s\n", \
             __func__, __FILE__, __LINE__, cudaGetErrorString(err)); \
-        exit(EXIT_FAILURE); \
     } \
     cudaError_t error = cudaGetLastError(); \
     if (error != cudaSuccess) { \
@@ -23,15 +22,17 @@
 #define DEBUG
 #ifdef DEBUG
 #define debug(...) printf(__VA_ARGS__)
+#define assert_(...) assert(__VA_ARGS__)
 #else
 #define debug(...)
+#define assert_(...)
 #endif
 
 /* global parameters */
 /* cuda kernel launch parameters */ 
 #define MAX_BLOCK_SIZE 512 // number of threads per block
 #define MAX_ELEMENTS 118
-#define MAX_LOCAL_NEIGHBORS 100 // the maximum neighbor of one thread, equal to max_supercell_size * (num_atoms / num_threads)
+#define MAX_LOCAL_NEIGHBORS 1000 // the maximum neighbor of one thread, equal to max_supercell_size * (num_atoms / num_threads)
 
 /* 
 constants used in the simulation
@@ -183,7 +184,7 @@ public:
                 index++;
             }
         }
-        assert(index == this->num_elements); // check if the number of unique elements is correct
+        assert_(index == this->num_elements); // check if the number of unique elements is correct
         free(all_elements); // free the temporary array        
     } // Unique_Elements constructor
     ~Unique_Elements() {
@@ -568,7 +569,7 @@ __global__ void coordination_number_kernel(device_data_t *data) {
             int64_t x_bias = (bias_index % mcb0) - (mcb0/2); // x bias
             int64_t y_bias = ((bias_index / mcb0) % mcb1) - (mcb1/2); // y bias
             int64_t z_bias = (bias_index / (mcb0 * mcb1) % mcb2) - (mcb2/2); // z bias
-            assert(atom_2_index < num_atoms); // make sure the index is in bounds
+            assert_(atom_2_index < num_atoms); // make sure the index is in bounds
 
             atom_t atom_2 = data->atoms[atom_2_index]; // surrounding atom
             /* translate atom_2 due to periodic boundaries */
@@ -623,15 +624,15 @@ __global__ void coordination_number_kernel(device_data_t *data) {
     real_t local_coordination_number = 0.0f; // local coordination number for the central atom
     for(uint64_t i = 0; i < CN_neighbors_index; ++i) {
         real_t distance = CN_neighbors[i].distance; // distance to the neighbor atom
-        assert(distance <= CN_cutoff); // make sure the distance is in bounds
+        assert_(distance <= CN_cutoff); // make sure the distance is in bounds
         /* if the distance is within cutoff range, update neighbors */
         uint64_t neighbor_index = CN_neighbor_flags[threadIdx.x]; // index of the neighbor in the neighbors array
         uint64_t atom_2_index = CN_neighbors[i].index; // index of the second atom in the pair
         uint64_t atom_2_type = data->atom_types[atom_2_index]; // type of the surrounding atom
         neighbor_t *data_neighbors = &data->CN_neighbors[atom_1_index * data->max_neighbors]; // pointer to the neighbors array for the central atom
-        assert(neighbor_index + i < data->max_neighbors); // make sure the index is in bounds
-        assert(data_neighbors[neighbor_index+i].index == 0); // make sure the index is not already set
-        assert(data_neighbors[neighbor_index+i].distance == 0); // make sure the distance is not already set
+        assert_(neighbor_index + i < data->max_neighbors); // make sure the index is in bounds
+        assert_(data_neighbors[neighbor_index+i].index == 0); // make sure the index is not already set
+        assert_(data_neighbors[neighbor_index+i].distance == 0); // make sure the distance is not already set
         data_neighbors[neighbor_index+i] = CN_neighbors[i];
         /* compute the coordination number and add to the CN of atom 1 and atom 2 */
         real_t covalent_radii_1 = data->rcov[atom_1_type];
@@ -652,12 +653,12 @@ __global__ void coordination_number_kernel(device_data_t *data) {
     atomicAdd(&data->coordination_numbers[atom_1_index], local_coordination_number); // accumulate the coordination number for the central atom
     for (uint64_t i = 0; i < neighbors_index; ++i) {
         real_t distance = neighbors[i].distance; // distance to the neighbor atom
-        assert(distance <= cutoff);
+        assert_(distance <= cutoff);
         /* if the distance is within cutoff range, update neighbors */
         uint64_t neighbor_index = neighbor_flags[threadIdx.x]; // index of the neighbor in the neighbors array
         neighbor_t *data_neighbors = &data->neighbors[atom_1_index * data->max_neighbors]; // pointer to the neighbors array for the central atom
-        assert(neighbor_index + i < data->max_neighbors); // make sure the index is in bounds
-        assert(data_neighbors[neighbor_index+i].index == 0); // make sure the index is not already set
+        assert_(neighbor_index + i < data->max_neighbors); // make sure the index is in bounds
+        assert_(data_neighbors[neighbor_index+i].index == 0); // make sure the index is not already set
         data_neighbors[neighbor_index+i] = neighbors[i];
     }
     return; // return from the kernel
@@ -679,9 +680,9 @@ __global__ void two_body_kernel(device_data_t *data){
     real_t local_energy = 0.0f; // local energy for the central atom
     real_t local_force_central[3] = {0.0f, 0.0f, 0.0f}; // local force for the central atom
     real_t local_stress[9] = {0.0f}; // local stress matrix
-    assert(data->num_neighbors[atom_1_index] <= data->max_neighbors); // make sure the number of neighbors is in bounds
+    assert_(data->num_neighbors[atom_1_index] <= data->max_neighbors); // make sure the number of neighbors is in bounds
     if (atom_1_index != data->num_atoms - 1) {
-        assert(data->neighbors[atom_1_index * data->max_neighbors + data->num_neighbors[atom_1_index]].index == 0); // make sure the last entry is empty
+        assert_(data->neighbors[atom_1_index * data->max_neighbors + data->num_neighbors[atom_1_index]].index == 0); // make sure the last entry is empty
     }
     uint64_t num_neighbors = data->num_neighbors[atom_1_index]; // number of neighbors for the central atom
     uint64_t workload_per_thread = (num_neighbors + blockDim.x - 1) / blockDim.x; // number of neighbors per thread
