@@ -19,6 +19,7 @@
     } \
 } while (0)
 // macros for debugging
+#define DEBUG
 #ifdef DEBUG
 #define debug(...) printf(__VA_ARGS__)
 #define assert_(...) assert(__VA_ARGS__)
@@ -775,7 +776,7 @@ __global__ void two_body_kernel(device_data_t *data){
                     exponent_args[valid_term_count] = -K3 * (powf(coordination_number_1 - coordination_number_ref_1, 2) + powf(coordination_number_2 - coordination_number_ref_2, 2));
                     CN_ref_1[valid_term_count] = coordination_number_ref_1; // store the C6ref for atom_1
                     c6ab_ref[valid_term_count] = c6_ref; // store the C6ab_ref
-                    max_exponent_arg = fmaxf(max_exponent_arg, exponent_args[valid_term_count]); // update the maximum exponent argument
+                    max_exponent_arg = (max_exponent_arg > exponent_args[valid_term_count]) ? max_exponent_arg : exponent_args[valid_term_count]; // update the maximum exponent argument
                     valid_term_count++;
                 }
             }
@@ -797,6 +798,8 @@ __global__ void two_body_kernel(device_data_t *data){
                 c_ref_dL_ij_1 += c6ab_ref[i] * dL_ij_1_part; // accumulate the value of c_ref_dL_ij_1
                 dL_ij_1 += dL_ij_1_part; // accumulate the value of dL_ij_1
             }
+        } else {
+            printf("Warning: no valid C6ab terms found for atom pair (%llu, %llu)\n", atom_1_index, atom_2_index);
         }
 
         real_t L_ij = W;
