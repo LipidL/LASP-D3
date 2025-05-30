@@ -558,11 +558,51 @@ __global__ void coordination_number_kernel(device_data_t *data) {
     const real_t cutoff = data->cutoff;
 
     /* distribute workload to threads */
-    const uint64_t workload_per_thread = (data->num_atoms + blockDim.x - 1) / blockDim.x; // number of atoms per thread
-    const uint64_t start_index = threadIdx.x * workload_per_thread; // start index for this thread
-    const uint64_t end_index = min(start_index + workload_per_thread, data->num_atoms); // end index for this thread
+    uint64_t start_index; // = threadIdx.x * workload_per_thread; // start index for this thread
+    uint64_t end_index; // = min(start_index + workload_per_thread, data->num_atoms); // end index for this thread
+    uint64_t start_bias_index;
+    uint64_t end_bias_index;
+    if (data->num_atoms >= blockDim.x) {
+        /* if the number of atoms exceed number of threads, each thread process an atom, going through all possible bias indicies */
+        uint64_t workload_per_thread = (data->num_atoms + blockDim.x - 1) / blockDim.x; // number of atoms per thread
+        start_index = threadIdx.x * workload_per_thread; // start index for this thread
+        end_index = min(start_index + workload_per_thread, data->num_atoms); // end index for this thread
+        start_bias_index = 0;
+        end_bias_index = total_cell_bias; // each thread is responsible for all cell biases
+    } else {
+        /* If the number of atoms is smaller than number of threads, multiple threads process one atom */
+        /* determine the element assigned and rank within that element's threads */
+        uint64_t threads_per_element_base = blockDim.x / data->num_atoms; // number of threads per atom
+        uint64_t threads_per_element_remainder = blockDim.x % data->num_atoms; // remainder threads
+        uint64_t num_elements_getting_extra_thread = threads_per_element_remainder; // number of threads getting an extra thread
+        uint64_t threads_in_larger_groups_total = num_elements_getting_extra_thread * (threads_per_element_base + 1); // total number of threads in larger groups
+        if (threadIdx.x < threads_in_larger_groups_total) {
+            /* this thread is in a larger group */
+            uint64_t threads_working_on_my_element = threads_per_element_base + 1; // number of threads working on my element would be one more than the base
+            uint64_t current_assigned_element_id = threadIdx.x / threads_working_on_my_element; // which element this thread is assigned to
+            uint64_t rank_in_element_thread_group = threadIdx.x % threads_working_on_my_element; // the rank of this thread within the element's threads
+            start_index = current_assigned_element_id; // start index for this thread
+            end_index = min(current_assigned_element_id + 1, data->num_atoms); // end index for this thread
+            uint64_t bias_per_thread = total_cell_bias / threads_working_on_my_element; // number of biases per thread
+            start_bias_index = rank_in_element_thread_group * bias_per_thread; // start bias index for this thread
+            end_bias_index = min(start_bias_index + bias_per_thread, total_cell_bias); // end bias index for this thread
+            
+        } else {
+            /* this thread falls in later groups that have 'base' threads */
+            uint64_t threads_working_on_my_element = threads_per_element_base; // number of threads working on my element would be the base
+            uint64_t thraeds_already_assigned_to_larger_groups = threads_in_larger_groups_total; // number of threads already assigned to larger groups
+            uint64_t threadIdx_relative_to_smaller_groups = threadIdx.x - thraeds_already_assigned_to_larger_groups; // relative thread index in smaller groups
+            uint64_t current_assigned_element_id = threadIdx_relative_to_smaller_groups / threads_working_on_my_element + num_elements_getting_extra_thread; // which element this thread is assigned to
+            uint64_t rank_in_element_thread_group = threadIdx_relative_to_smaller_groups % threads_working_on_my_element; // the rank of this thread within the element's threads
+            start_index = current_assigned_element_id; // start index for this thread
+            end_index = min(current_assigned_element_id + 1, data->num_atoms); // end index for this thread
+            uint64_t bias_per_thread = total_cell_bias / threads_working_on_my_element; // number of biases per thread
+            start_bias_index = rank_in_element_thread_group * bias_per_thread; // start bias index for this thread
+            end_bias_index = min(start_bias_index + bias_per_thread, total_cell_bias); // end bias index for this thread
+        }
+    }
     for(uint64_t atom_2_index = start_index; atom_2_index < end_index; ++atom_2_index) {
-        for(uint64_t bias_index = 0; bias_index < total_cell_bias; ++bias_index) {
+        for(uint64_t bias_index = start_bias_index; bias_index < end_bias_index; ++bias_index) {
             /* each thread is responsible for one atom pair, so the number of threads should be equal to num_atoms * total_cell_bias */
             int64_t x_bias = (bias_index % mcb0) - (mcb0/2); // x bias
             int64_t y_bias = ((bias_index / mcb0) % mcb1) - (mcb1/2); // y bias
@@ -1134,18 +1174,17 @@ void compute_dispersion_energy_from_handle(
     Device_Buffer *buffer = (Device_Buffer *)handle; // cast the handle to Device_Buffer
     // launch the kernel
     uint64_t length = buffer->get_host_data().num_atoms; // get the number of atoms in the system
-    uint64_t CN_kernel_block_size = (length < MAX_BLOCK_SIZE) ? length : MAX_BLOCK_SIZE; // use 256 threads per block for coordination number kernel if length is larger than MAX_BLOCK_SIZE
-    debug("launching coordination_number_kernel, size: %zu, %zu\n", length, CN_kernel_block_size);
-    coordination_number_kernel<<<length, CN_kernel_block_size>>>(buffer->get_device_data()); // launch the kernel to compute the coordination numbers
+    debug("launching coordination_number_kernel, size: %zu, %zu\n", length, MAX_BLOCK_SIZE);
+    coordination_number_kernel<<<length, MAX_BLOCK_SIZE>>>(buffer->get_device_data()); // launch the kernel to compute the coordination numbers
     CHECK_CUDA(cudaDeviceSynchronize()); // synchronize the device to ensure all threads are finished
     #ifdef DEBUG
     print_coordination_number_kernel<<<1,1>>>(buffer->get_device_data()); // print the coordination numbers for debugging
     CHECK_CUDA(cudaDeviceSynchronize()); // synchronize the device to ensure all threads are finished
     #endif
-    debug("launching two_body_kernel, size: %zu, %zu\n", length, (uint64_t)MAX_BLOCK_SIZE);
+    debug("launching two_body_kernel, size: %zu, %zu\n", length, MAX_BLOCK_SIZE);
     two_body_kernel<<<length, MAX_BLOCK_SIZE, MAX_BLOCK_SIZE * sizeof(real_t)>>>(buffer->get_device_data());
     CHECK_CUDA(cudaDeviceSynchronize()); // synchronize the device to ensure all threads are finished
-    debug("launching three_body_kernel, size: %zu, %zu\n", length, (uint64_t)MAX_BLOCK_SIZE);
+    debug("launching three_body_kernel, size: %zu, %zu\n", length, MAX_BLOCK_SIZE);
     three_body_kernel<<<length, MAX_BLOCK_SIZE>>>(buffer->get_device_data());
     CHECK_CUDA(cudaDeviceSynchronize()); // synchronize the device to ensure all threads are finished
 
