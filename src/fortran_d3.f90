@@ -72,6 +72,17 @@ program test_d3
             
             type(c_ptr), value :: handle
         end subroutine clear_d3_handle
+
+        subroutine compute_dispersion_energy_from_handle(handle, energy, force, stress) &
+            bind(c, name='compute_dispersion_energy_from_handle')
+            use, intrinsic :: iso_c_binding
+            implicit none
+            
+            type(c_ptr), value :: handle
+            real(c_float), intent(out) :: energy
+            real(c_float), intent(out) :: force(*)
+            real(c_float), intent(out) :: stress(9)
+        end subroutine compute_dispersion_energy_from_handle
     end interface
 
     ! Declarations

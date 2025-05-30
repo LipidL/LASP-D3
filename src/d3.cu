@@ -32,7 +32,7 @@
 /* cuda kernel launch parameters */ 
 #define MAX_BLOCK_SIZE 512 // number of threads per block
 #define MAX_ELEMENTS 118
-#define MAX_LOCAL_NEIGHBORS 1000 // the maximum neighbor of one thread, equal to max_supercell_size * (num_atoms / num_threads)
+#define MAX_LOCAL_NEIGHBORS 100 // the maximum neighbor of one thread, equal to max_supercell_size * (num_atoms / num_threads)
 #define FLT_MAX 3.402823466e+38F // maximum float value, used to initialize distances
 
 /* 
@@ -1121,7 +1121,7 @@ D3Handle_t *init_d3_handle(
     uint64_t max_neighbors
 ) {
     real_t *coords = (real_t *)malloc(max_length * 3 * sizeof(real_t)); // allocate memory for coordinates
-    real_t cell[3][3] = {0}; // initialize the cell matrix
+    real_t cell[3][3] = {10}; // initialize the cell matrix
     Device_Buffer *buffer = new Device_Buffer((real_t (*)[3])coords, elements, cell, max_length, cutoff_radius, coordination_number_cutoff, max_neighbors); // create a buffer to hold the data
     return (D3Handle_t *)buffer; // return the handle
 }
@@ -1133,7 +1133,16 @@ D3Handle_t *init_d3_handle(
  */
 void set_atoms(D3Handle_t *handle, real_t *coords, uint16_t *elements, uint64_t length) {
     Device_Buffer *buffer = (Device_Buffer *)handle; // cast the handle to Device_Buffer
-    buffer->set_atoms(elements, (real_t (*)[3])coords, length); // set the atoms in the buffer
+    // Convert coordinates from Angstrom to Bohr
+    real_t angstrom_to_bohr = 1.0f/0.52917726f;
+    real_t (*bohr_coords)[3] = (real_t (*)[3])malloc(length * 3 * sizeof(real_t));
+    for (uint64_t i = 0; i < length; ++i) {
+        bohr_coords[i][0] = coords[i*3] * angstrom_to_bohr;
+        bohr_coords[i][1] = coords[i*3+1] * angstrom_to_bohr;
+        bohr_coords[i][2] = coords[i*3+2] * angstrom_to_bohr;
+    }
+    buffer->set_atoms(elements, bohr_coords, length);
+    free(bohr_coords);
 }
 
 /**
@@ -1141,7 +1150,15 @@ void set_atoms(D3Handle_t *handle, real_t *coords, uint16_t *elements, uint64_t 
  */
 void set_cell(D3Handle_t *handle, real_t cell[3][3]) {
     Device_Buffer *buffer = (Device_Buffer *)handle; // cast the handle to Device_Buffer
-    buffer->set_cell(cell); // set the cell in the buffer
+    // Convert cell from Angstrom to Bohr
+    real_t angstrom_to_bohr = 1.0f/0.52917726f;
+    real_t bohr_cell[3][3];
+    for (int i = 0; i < 3; ++i) {
+        for (int j = 0; j < 3; ++j) {
+            bohr_cell[i][j] = cell[i][j] * angstrom_to_bohr;
+        }
+    }
+    buffer->set_cell(bohr_cell); // set the cell in the buffer
 }
 
 /**
@@ -1174,17 +1191,17 @@ void compute_dispersion_energy_from_handle(
     Device_Buffer *buffer = (Device_Buffer *)handle; // cast the handle to Device_Buffer
     // launch the kernel
     uint64_t length = buffer->get_host_data().num_atoms; // get the number of atoms in the system
-    debug("launching coordination_number_kernel, size: %zu, %zu\n", length, MAX_BLOCK_SIZE);
+    debug("launching coordination_number_kernel, size: %zu, %d\n", length, MAX_BLOCK_SIZE);
     coordination_number_kernel<<<length, MAX_BLOCK_SIZE>>>(buffer->get_device_data()); // launch the kernel to compute the coordination numbers
     CHECK_CUDA(cudaDeviceSynchronize()); // synchronize the device to ensure all threads are finished
     #ifdef DEBUG
     print_coordination_number_kernel<<<1,1>>>(buffer->get_device_data()); // print the coordination numbers for debugging
     CHECK_CUDA(cudaDeviceSynchronize()); // synchronize the device to ensure all threads are finished
     #endif
-    debug("launching two_body_kernel, size: %zu, %zu\n", length, MAX_BLOCK_SIZE);
+    debug("launching two_body_kernel, size: %zu, %d\n", length, MAX_BLOCK_SIZE);
     two_body_kernel<<<length, MAX_BLOCK_SIZE, MAX_BLOCK_SIZE * sizeof(real_t)>>>(buffer->get_device_data());
     CHECK_CUDA(cudaDeviceSynchronize()); // synchronize the device to ensure all threads are finished
-    debug("launching three_body_kernel, size: %zu, %zu\n", length, MAX_BLOCK_SIZE);
+    debug("launching three_body_kernel, size: %zu, %d\n", length, MAX_BLOCK_SIZE);
     three_body_kernel<<<length, MAX_BLOCK_SIZE>>>(buffer->get_device_data());
     CHECK_CUDA(cudaDeviceSynchronize()); // synchronize the device to ensure all threads are finished
 

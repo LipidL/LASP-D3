@@ -66,26 +66,37 @@ enable_language(Fortran)
 find_library(CUDA_RUNTIME_LIBRARY cudart
     HINTS ${CMAKE_CUDA_IMPLICIT_LINK_DIRECTORIES})
 
-# Create Fortran executable
-add_executable(d3_fortran src/fortran_d3.f90)
+# Create Fortran interface library
+add_library(d3_fortran OBJECT src/fortran_d3.f90)
+
+# Set properties for the Fortran interface
+set_target_properties(d3_fortran PROPERTIES
+    POSITION_INDEPENDENT_CODE ON
+)
 
 # Add d3.o as dependency
 add_dependencies(d3_fortran d3_o)
 
+# Custom command to create standalone Fortran .o file
+add_custom_command(
+    OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/d3_fortran.o
+    COMMAND ${CMAKE_Fortran_COMPILER} -c ${CMAKE_CURRENT_SOURCE_DIR}/src/fortran_d3.f90 
+            -o ${CMAKE_CURRENT_BINARY_DIR}/d3_fortran.o
+    DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/src/fortran_d3.f90 ${CMAKE_CURRENT_BINARY_DIR}/d3.o
+    COMMENT "Generating Fortran interface d3_fortran.o file"
+)
+
+# Custom target to ensure Fortran .o file is built
+add_custom_target(d3_fortran_o ALL DEPENDS ${CMAKE_CURRENT_BINARY_DIR}/d3_fortran.o)
+
+# Create benchmark executable
+add_executable(d3_cpp src/main.cpp)
+
+# Add d3.o as dependency
+add_dependencies(d3_cpp d3_o)
+
 # Link with the d3.o file and required libraries
-target_link_libraries(d3_fortran PRIVATE
+target_link_libraries(d3_cpp PRIVATE
     ${CMAKE_CURRENT_BINARY_DIR}/d3.o
     ${CUDA_RUNTIME_LIBRARY}
-    m stdc++ )
-
-    # Create benchmark executable
-    add_executable(d3_cpp src/main.cpp)
-
-    # Add d3.o as dependency
-    add_dependencies(d3_cpp d3_o)
-
-    # Link with the d3.o file and required libraries
-    target_link_libraries(d3_cpp PRIVATE
-        ${CMAKE_CURRENT_BINARY_DIR}/d3.o
-        ${CUDA_RUNTIME_LIBRARY}
-        m stdc++)
+    m stdc++)
