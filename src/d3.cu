@@ -576,30 +576,27 @@ __global__ void coordination_number_kernel(device_data_t *data) {
         uint64_t threads_per_element_remainder = blockDim.x % data->num_atoms; // remainder threads
         uint64_t num_elements_getting_extra_thread = threads_per_element_remainder; // number of threads getting an extra thread
         uint64_t threads_in_larger_groups_total = num_elements_getting_extra_thread * (threads_per_element_base + 1); // total number of threads in larger groups
+        uint64_t current_assigned_element_id;
+        uint64_t threads_working_on_my_element;
+        uint64_t rank_in_element_thread_group;
         if (threadIdx.x < threads_in_larger_groups_total) {
             /* this thread is in a larger group */
-            uint64_t threads_working_on_my_element = threads_per_element_base + 1; // number of threads working on my element would be one more than the base
-            uint64_t current_assigned_element_id = threadIdx.x / threads_working_on_my_element; // which element this thread is assigned to
-            uint64_t rank_in_element_thread_group = threadIdx.x % threads_working_on_my_element; // the rank of this thread within the element's threads
-            start_index = current_assigned_element_id; // start index for this thread
-            end_index = min(current_assigned_element_id + 1, data->num_atoms); // end index for this thread
-            uint64_t bias_per_thread = total_cell_bias / threads_working_on_my_element; // number of biases per thread
-            start_bias_index = rank_in_element_thread_group * bias_per_thread; // start bias index for this thread
-            end_bias_index = min(start_bias_index + bias_per_thread, total_cell_bias); // end bias index for this thread
-            
+            threads_working_on_my_element = threads_per_element_base + 1; // number of threads working on my element would be one more than the base
+            current_assigned_element_id = threadIdx.x / threads_working_on_my_element; // which element this thread is assigned to
+            rank_in_element_thread_group = threadIdx.x % threads_working_on_my_element; // the rank of this thread within the element's threads
         } else {
             /* this thread falls in later groups that have 'base' threads */
-            uint64_t threads_working_on_my_element = threads_per_element_base; // number of threads working on my element would be the base
+           threads_working_on_my_element = threads_per_element_base; // number of threads working on my element would be the base
             uint64_t thraeds_already_assigned_to_larger_groups = threads_in_larger_groups_total; // number of threads already assigned to larger groups
             uint64_t threadIdx_relative_to_smaller_groups = threadIdx.x - thraeds_already_assigned_to_larger_groups; // relative thread index in smaller groups
-            uint64_t current_assigned_element_id = threadIdx_relative_to_smaller_groups / threads_working_on_my_element + num_elements_getting_extra_thread; // which element this thread is assigned to
-            uint64_t rank_in_element_thread_group = threadIdx_relative_to_smaller_groups % threads_working_on_my_element; // the rank of this thread within the element's threads
-            start_index = current_assigned_element_id; // start index for this thread
-            end_index = min(current_assigned_element_id + 1, data->num_atoms); // end index for this thread
-            uint64_t bias_per_thread = total_cell_bias / threads_working_on_my_element; // number of biases per thread
-            start_bias_index = rank_in_element_thread_group * bias_per_thread; // start bias index for this thread
-            end_bias_index = min(start_bias_index + bias_per_thread, total_cell_bias); // end bias index for this thread
+            current_assigned_element_id = threadIdx_relative_to_smaller_groups / threads_working_on_my_element + num_elements_getting_extra_thread; // which element this thread is assigned to
+            rank_in_element_thread_group = threadIdx_relative_to_smaller_groups % threads_working_on_my_element; // the rank of this thread within the element's threads
         }
+        start_index = current_assigned_element_id; // start index for this thread
+        end_index = min(current_assigned_element_id + 1, data->num_atoms); // end index for this thread
+        uint64_t bias_per_thread = total_cell_bias / threads_working_on_my_element; // number of biases per thread
+        start_bias_index = rank_in_element_thread_group * bias_per_thread; // start bias index for this thread
+        end_bias_index = min(start_bias_index + bias_per_thread, total_cell_bias); // end bias index for this thread
     }
     for(uint64_t atom_2_index = start_index; atom_2_index < end_index; ++atom_2_index) {
         for(uint64_t bias_index = start_bias_index; bias_index < end_bias_index; ++bias_index) {
