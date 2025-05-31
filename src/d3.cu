@@ -730,15 +730,12 @@ __global__ void two_body_kernel(device_data_t *data){
     uint64_t num_neighbors = data->num_neighbors[atom_1_index]; // number of neighbors for the central atom
     uint64_t workload_per_thread = (num_neighbors + blockDim.x - 1) / blockDim.x; // number of neighbors per thread
     uint64_t start_index = threadIdx.x * workload_per_thread; // start index for the thread
-    uint64_t end_index = (threadIdx.x + 1) * workload_per_thread; // end index for the thread
+    uint64_t end_index = min((threadIdx.x + 1) * workload_per_thread, num_neighbors); // end index for the thread
     real_t energy_conpensate = 0.0f; // energy compensation to improve numerical stability
     real_t dE_dCN_conpensate = 0.0f; // derivative of energy with respect to coordination number compensation
     real_t force_conpensate[3] = {0.0f, 0.0f, 0.0f}; // force compensation to improve numerical stability
     real_t stress_conpensate[9] = {0.0f}; // stress compensation to improve numerical stability
     for (uint64_t neighbor_index = start_index; neighbor_index < end_index; ++neighbor_index) {
-        if (neighbor_index >= data->num_neighbors[atom_1_index]) {
-            break; // exit the loop if the index is out of bounds
-        }
         neighbor_t neighbor = data->neighbors[atom_1_index * data->max_neighbors + neighbor_index]; // neighbor atom
         uint64_t atom_2_index = neighbor.index; // index of the second atom in the pair
         atom_t atom_2 = neighbor.atom; // surrounding atom
@@ -809,6 +806,7 @@ __global__ void two_body_kernel(device_data_t *data){
             printf("Z: %f, W: %f, c_ref_L_ij: %f, c_ref_dL_ij_1: %f, dL_ij_1: %f\n", Z, W, c_ref_L_ij, c_ref_dL_ij_1, dL_ij_1);
             dC6ab_dCN_1 = 0.0f; // reset to 0.0f if it's NaN or Inf
         }
+
         real_t c6_ab = (W > 0.0f) ? Z / W : 0.0f; // avoid division by zero
         if (isnan(c6_ab) || isinf(c6_ab)) {
             printf("Error: C6_ab is NaN or Inf for atom pair (%llu, %llu)\n", atom_1_index, atom_2_index);
@@ -934,7 +932,6 @@ __global__ void two_body_kernel(device_data_t *data){
     }
 
     dE_dCN_cache[threadIdx.x] = dE_dCN; // store the value in shared memory
-
     /* accumulate energy */
     atomicAdd(data->energy, local_energy); // accumulate the energy for the central atom
 
@@ -976,7 +973,7 @@ __global__ void three_body_kernel(device_data_t *data){
     uint64_t num_neighbors = data->num_CN_neighbors[atom_1_index]; // number of neighbors for the central atom
     uint64_t workload_per_thread = (num_neighbors + blockDim.x - 1) / blockDim.x; // number of neighbors per thread
     uint64_t start_index = threadIdx.x * workload_per_thread; // start index for the thread
-    uint64_t end_index = (threadIdx.x + 1) * workload_per_thread; // end index for the thread
+    uint64_t end_index = min((threadIdx.x + 1) * workload_per_thread, num_neighbors); // end index for the thread
     /* when finding neighbors, each tread is responsible for a neighbor atom and they loop over supercell indicies.
     Therefore, the neighbors list is organized in a atom_index priored way.
     A typical layout is: neighbors[a]: {1,1,1,1,1,2,2,2,2,2,3,3,3,3,3,...} where 1,2,3 represent atom index and different entries have different coordination due to supercell
