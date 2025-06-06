@@ -15,6 +15,18 @@ This implementation supports:
 
 This tool can be used as a standalone calculator or integrated with other computational chemistry software.
 
+## Parameters Management
+
+The project offers two methods for handling the large parameter arrays required for DFT-D3 calculations:
+
+1. **Runtime Loading**: Parameters are loaded at runtime from a binary file (`params.bin`).
+   - Advantage: Keeps source code clean and language server responsive.
+   - Disadvantage: Performance overhead from loading parameters at runtime and requires distributing the params.bin file.
+
+2. **Compile-time Constants**: Parameters are embedded directly into the compiled binary.
+   - Advantage: Faster runtime performance, no need to distribute params.bin separately.
+   - Disadvantage: Large constants in source code (but generated automatically, so language server issues are avoided).
+
 ## Quick start
 
 ### Prerequirements
@@ -29,16 +41,44 @@ This tool can be used as a standalone calculator or integrated with other comput
 
 ### Build
 
-You can quickly build this project using cmake by running the following bash command:
+You can quickly build this project using cmake by running the following commands:
 
-```bash
-cd path/to/dft_d3 # navigate to prject's root path
-mkdir -p build && cd build # create build directory and navigate to it
+#### Basic Build
+
+```powershell
+cd path/to/dft_d3 # navigate to project's root path
+mkdir -p build; cd build # create build directory and navigate to it
 cmake .. # configure the project
 cmake --build . # build both executable and library
 ```
 
-If you prefer building specific targets, you can run `cmake --build . --target d3` or `cmake --build . --target d3_lib` for building executable or library seperately.
+If you prefer building specific targets, you can run `cmake --build . --target d3` or `cmake --build . --target d3_lib` for building executable or library separately.
+
+#### Build with Different Parameter Management Options
+
+##### Using Compile-time Constants (Recommended for Performance)
+
+This approach generates a header file with embedded constants during the build process, avoiding the need for runtime loading:
+
+```powershell
+cd path/to/dft_d3
+mkdir -p build; cd build
+cmake -DUSE_STATIC_CONSTANTS=ON .. # ON by default
+cmake --build .
+```
+
+##### Using Runtime Parameter Loading
+
+If you prefer to load parameters at runtime:
+
+```powershell
+cd path/to/dft_d3
+mkdir -p build; cd build
+cmake -DUSE_STATIC_CONSTANTS=OFF ..
+cmake --build .
+```
+
+Make sure the `params.bin` file is available in the working directory when using runtime loading.
 
 ### Use
 

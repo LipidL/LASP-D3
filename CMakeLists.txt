@@ -8,18 +8,38 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CUDA_STANDARD 17)  # Compatible with CUDA 11.8
 set(CMAKE_CUDA_STANDARD_REQUIRED ON)
 
+# Option to use static constants instead of runtime loading
+option(USE_STATIC_CONSTANTS "Use statically compiled constants instead of runtime loading" ON)
+
 # Source files
 set(SOURCES src/d3.cu)
 set(HEADERS src/constants.h)
 
+# Add custom command to generate constants header at build time
+add_custom_command(
+    OUTPUT ${CMAKE_CURRENT_SOURCE_DIR}/src/gen_constants.h
+    COMMAND python ${CMAKE_CURRENT_SOURCE_DIR}/data/generate_constants.py
+    DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/data/generate_constants.py ${CMAKE_CURRENT_SOURCE_DIR}/data/dftd3_params.npz
+    COMMENT "Generating constants header file"
+)
+
+# Add the generated header to the build dependencies
+add_custom_target(generate_constants ALL DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/src/gen_constants.h)
+
 # Create executable
 add_executable(d3 ${SOURCES} ${HEADERS})
+add_dependencies(d3 generate_constants)
 
 # Set CUDA compilation options
 target_compile_options(d3 PRIVATE $<$<COMPILE_LANGUAGE:CUDA>:
     -Xptxas -O3
     -lineinfo
 >)
+
+# Set define for static constants if enabled
+if(USE_STATIC_CONSTANTS)
+    target_compile_definitions(d3 PRIVATE BUILD_WITH_STATIC_CONSTANTS)
+endif()
 
 # Link math library
 target_link_libraries(d3 PRIVATE m)
@@ -38,6 +58,11 @@ target_compile_options(d3_obj PRIVATE $<$<COMPILE_LANGUAGE:CUDA>:
     -lineinfo
 >)
 
+# Set define for static constants if enabled
+if(USE_STATIC_CONSTANTS)
+    target_compile_definitions(d3_obj PRIVATE BUILD_WITH_STATIC_CONSTANTS)
+endif()
+
 # Set same CUDA properties for object file
 set_target_properties(d3_obj PROPERTIES
     CUDA_SEPARABLE_COMPILATION ON
@@ -51,13 +76,19 @@ target_link_libraries(d3_obj PRIVATE m)
 add_custom_command(
     OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/d3.o
     COMMAND ${CMAKE_CUDA_COMPILER} -c ${CMAKE_CURRENT_SOURCE_DIR}/src/d3.cu -o ${CMAKE_CURRENT_BINARY_DIR}/d3.o
-        -Xptxas -O2 -lineinfo -DBUILD_LIBRARY
-    DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/src/d3.cu ${CMAKE_CURRENT_SOURCE_DIR}/src/constants.h
+        -Xptxas -O2 -lineinfo -DBUILD_LIBRARY $<$<BOOL:${USE_STATIC_CONSTANTS}>:-DBUILD_WITH_STATIC_CONSTANTS>
+    DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/src/d3.cu 
+            ${CMAKE_CURRENT_SOURCE_DIR}/src/constants.h
+            ${CMAKE_CURRENT_SOURCE_DIR}/src/constants_include.h
+            $<$<BOOL:${USE_STATIC_CONSTANTS}>:${CMAKE_CURRENT_SOURCE_DIR}/src/gen_constants.h>
     COMMENT "Generating standalone d3.o file"
 )
 
 # Custom target to ensure .o file is built
 add_custom_target(d3_o ALL DEPENDS ${CMAKE_CURRENT_BINARY_DIR}/d3.o)
+if(USE_STATIC_CONSTANTS)
+    add_dependencies(d3_o generate_constants)
+endif()
 
 # Enable Fortran language
 enable_language(Fortran)
@@ -94,6 +125,11 @@ add_executable(d3_cpp src/main.cpp)
 
 # Add d3.o as dependency
 add_dependencies(d3_cpp d3_o)
+
+# Add static constants dependency if enabled
+if(USE_STATIC_CONSTANTS)
+    add_dependencies(d3_cpp generate_constants)
+endif()
 
 # Link with the d3.o file and required libraries
 target_link_libraries(d3_cpp PRIVATE

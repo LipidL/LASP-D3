@@ -1,4 +1,3 @@
-#include "constants.h"
 #include <stdlib.h>
 #include <stdio.h>
 #include <stdint.h>
@@ -6,6 +5,7 @@
 #include <ctime>
 
 #include "d3.h"
+#include "constants_include.h"
 
 #define CHECK_CUDA(call) do { \
     cudaError_t err = call; \

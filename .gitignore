@@ -4,3 +4,4 @@ data/params.bin
 temp_objs/*
 build/*
 test/*
+src/gen_constants.h
