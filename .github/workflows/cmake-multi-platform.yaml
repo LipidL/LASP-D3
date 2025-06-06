@@ -21,7 +21,7 @@ jobs:
       #
       # To add more build types (Release, Debug, RelWithDebInfo, etc.) customize the build_type list.
       matrix:
-        os: [ubuntu-20.04, windows-2019]
+        os: [ubuntu-22.04, windows-2019]
         build_type: [Release]
         c_compiler: [gcc, clang, cl]
         cpp_compiler: [gcc, clang, cl]
@@ -54,6 +54,7 @@ jobs:
       with:
         cuda: '11.8.0'
         method: network
+        sub-packages: '["nvcc"]'
 
 
     - name: Verify CUDA installation
