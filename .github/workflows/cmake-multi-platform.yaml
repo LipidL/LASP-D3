@@ -21,6 +21,7 @@ jobs:
       #
       # To add more build types (Release, Debug, RelWithDebInfo, etc.) customize the build_type list.
       matrix:
+        os: [ubuntu-22.04, windows-2019]
         build_type: [Release]
         cuda_version: [11.8.0, 12.0.0]
         compiler_config: [msvc, gcc, clang]
