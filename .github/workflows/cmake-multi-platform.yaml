@@ -21,16 +21,11 @@ jobs:
       #
       # To add more build types (Release, Debug, RelWithDebInfo, etc.) customize the build_type list.
       matrix:
-        os: [ubuntu-22.04, windows-2019]
+        os: [ubuntu-22.04]
         build_type: [Release]
         cuda_version: [11.8.0, 12.0.0]
-        compiler_config: [msvc, gcc, clang]
+        compiler_config: [gcc, clang]
         include:
-          - compiler_config: msvc
-            os: windows-2019
-            c_compiler: cl
-            cpp_compiler: cl
-            fortran_compiler: gfortran
           - compiler_config: gcc
             os: ubuntu-22.04
             c_compiler: gcc
@@ -41,13 +36,7 @@ jobs:
             c_compiler: clang
             cpp_compiler: clang++
             fortran_compiler: gfortran
-        exclude:
-          - os: windows-2019
-            compiler_config: gcc
-          - os: windows-2019
-            compiler_config: clang
-          - os: ubuntu-22.04
-            compiler_config: msvc
+
 
     steps:
     - uses: actions/checkout@v4
