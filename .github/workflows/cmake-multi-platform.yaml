@@ -21,11 +21,8 @@ jobs:
       #
       # To add more build types (Release, Debug, RelWithDebInfo, etc.) customize the build_type list.
       matrix:
-        os: [ubuntu-22.04, windows-2019]
         build_type: [Release]
-        c_compiler: [gcc, clang, cl]
-        cpp_compiler: [g++, clang++, cl]
-        fortran_compiler: [gfortran, flang]
+        cuda_version: [11.8.0, 12.0.0]
         include:
           - os: windows-2019
             c_compiler: cl
@@ -39,20 +36,13 @@ jobs:
             c_compiler: clang
             cpp_compiler: clang++
             fortran_compiler: flang
-        exclude:
-          - os: windows-2019
-            c_compiler: gcc
-          - os: windows-2019
-            c_compiler: clang
-          - os: ubuntu-22.04
-            c_compiler: cl
 
     steps:
     - uses: actions/checkout@v4
     - uses: Jimver/cuda-toolkit@v0.2.23
       id: cuda-toolkit
       with:
-        cuda: '11.8.0'
+        cuda: ${{ matrix.cuda_version }}
         method: network
         sub-packages: '["nvcc"]'
 

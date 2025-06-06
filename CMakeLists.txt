@@ -5,7 +5,7 @@ project(d3_project LANGUAGES CXX CUDA)
 # Set C++ standard
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
-set(CMAKE_CUDA_STANDARD 20)
+set(CMAKE_CUDA_STANDARD 17)  # Compatible with CUDA 11.8
 set(CMAKE_CUDA_STANDARD_REQUIRED ON)
 
 # Source files
