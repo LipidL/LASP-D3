@@ -53,6 +53,17 @@ obtained from Grimme et al. 2010, Table SI1
 #define SR_6 1.217f
 #define SR_8 1.0f
 
+typedef struct atom {
+    size_t element; // element type of the atom
+    real_t x, y, z; // coordinates in Cartesian space
+} atom_t;
+
+typedef struct result {
+    real_t energy;
+    real_t force[3];
+} result_t;
+
+
 // Calculate inverse of a 3x3 matrix
 void matrix_inverse(const real_t mat[3][3], real_t inv[3][3]) {
     // Calculate determinant

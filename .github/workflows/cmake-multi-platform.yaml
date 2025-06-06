@@ -21,31 +21,30 @@ jobs:
       #
       # To add more build types (Release, Debug, RelWithDebInfo, etc.) customize the build_type list.
       matrix:
-        os: [ubuntu-latest, windows-latest]
+        os: [ubuntu-20.04, windows-2019]
         build_type: [Release]
         c_compiler: [gcc, clang, cl]
         cpp_compiler: [gcc, clang, cl]
         fortran_compiler: [gfortran, flang]
-        cuda_version: [11.8.0, 12.0.0]
         include:
-          - os: windows-latest
+          - os: windows-2019
             c_compiler: cl
             cpp_compiler: cl
             fortran_compiler: flang
-          - os: ubuntu-latest
+          - os: ubuntu-20.04
             c_compiler: gcc
             cpp_compiler: g++
             fortran_compiler: gfortran
-          - os: ubuntu-latest
+          - os: ubuntu-20.04
             c_compiler: clang
             cpp_compiler: clang++
             fortran_compiler: flang
         exclude:
-          - os: windows-latest
+          - os: windows-2019
             c_compiler: gcc
-          - os: windows-latest
+          - os: windows-2019
             c_compiler: clang
-          - os: ubuntu-latest
+          - os: ubuntu-20.04
             c_compiler: cl
 
     steps:
