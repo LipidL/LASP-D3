@@ -23,19 +23,30 @@ jobs:
       matrix:
         build_type: [Release]
         cuda_version: [11.8.0, 12.0.0]
+        compiler_config: [msvc, gcc, clang]
         include:
-          - os: windows-2019
+          - compiler_config: msvc
+            os: windows-2019
             c_compiler: cl
             cpp_compiler: cl
             fortran_compiler: flang
-          - os: ubuntu-22.04
+          - compiler_config: gcc
+            os: ubuntu-22.04
             c_compiler: gcc
             cpp_compiler: g++
             fortran_compiler: gfortran
-          - os: ubuntu-22.04
+          - compiler_config: clang
+            os: ubuntu-22.04
             c_compiler: clang
             cpp_compiler: clang++
             fortran_compiler: flang
+        exclude:
+          - os: windows-2019
+            compiler_config: gcc
+          - os: windows-2019
+            compiler_config: clang
+          - os: ubuntu-22.04
+            compiler_config: msvc
 
     steps:
     - uses: actions/checkout@v4
