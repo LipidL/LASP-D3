@@ -30,7 +30,7 @@ jobs:
             os: windows-2019
             c_compiler: cl
             cpp_compiler: cl
-            fortran_compiler: flang
+            fortran_compiler: gfortran
           - compiler_config: gcc
             os: ubuntu-22.04
             c_compiler: gcc
@@ -40,7 +40,7 @@ jobs:
             os: ubuntu-22.04
             c_compiler: clang
             cpp_compiler: clang++
-            fortran_compiler: flang
+            fortran_compiler: gfortran
         exclude:
           - os: windows-2019
             compiler_config: gcc
@@ -82,7 +82,7 @@ jobs:
         -DCMAKE_BUILD_TYPE=${{ matrix.build_type }}
         -DCMAKE_Fortran_COMPILER=${{ matrix.fortran_compiler }}
         -DCMAKE_CUDA_COMPILER=${{ steps.cuda-toolkit.outputs.CUDA_PATH }}/bin/nvcc
-        -DCMAKE_CUDA_ARCHITECTURES=60;70;75;80
+        -DCMAKE_CUDA_ARCHITECTURES="60;70;75;80"
         -S ${{ github.workspace }}
     - name: Build
       # Build your program with the given configuration. Note that --config is needed because the default Windows generator is a multi-config generator (Visual Studio generator).
