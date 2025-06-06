@@ -62,7 +62,7 @@ jobs:
       run: |
         echo "CUDA Version: ${{ steps.cuda-toolkit.outputs.cuda }}"
         echo "CUDA Path: ${{ steps.cuda-toolkit.outputs.CUDA_PATH }}"
-        ls -l ${{ steps.cuda-toolkit.outputs.CUDA_PATH }}
+        nvcc --version
 
     - name: Set reusable strings
       # Turn repeated input strings (such as the build output directory) into step outputs. These step outputs can be used throughout the workflow file.
