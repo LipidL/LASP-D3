@@ -19,7 +19,6 @@
     } \
 } while (0)
 // macros for debugging
-#define DEBUG
 #ifdef DEBUG
 #define debug(...) printf(__VA_ARGS__)
 #define assert_(...) assert(__VA_ARGS__)
