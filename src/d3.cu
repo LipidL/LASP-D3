@@ -144,12 +144,10 @@ typedef struct device_data {
     real_t *r0ab; // size: num_elements*num_elements
     real_t *rcov; // size: num_elements
     real_t *r2r4;// size: num_elements
-    // d3_constant_t *constants; // constants for the simulation
     real_t cell[3][3]; // cell matrix, specify the three vectors of the cell
     uint64_t max_cell_bias[3]; // the maximum bias of the cell in each direction, this must be an odd number (because of symmetry)
-    // uint64_t *num_neighbors; // array of number of neighbors for each atom, length: num_atoms.
-    neighbor_t *neighbors; // array of neighbors, size: num_atoms * MAX_NEIGHBORS.
-    neighbor_t *CN_neighbors; //array of neighbors within CN cutoff, size: num_atoms * MAX_NEIGHBORS
+    neighbor_t *neighbors; // array of neighbors, size: num_atoms * max_neigbors
+    neighbor_t *CN_neighbors; //array of neighbors within CN cutoff, size: num_atoms * max_neighbors
     real_t coordination_number_cutoff; // the cutof radius for CN computation
     real_t cutoff; // the cutoff radius for the dispersion energy calculation
     /* some intermediate variables, not initialized but used during computation*/
@@ -498,6 +496,7 @@ public:
             h_atoms[i].z = coords[i][2];
         }
         CHECK_CUDA(cudaMemcpy(this->host_data_.atoms, h_atoms, length * sizeof(atom_t), cudaMemcpyHostToDevice));
+        CHECK_CUDA(cudaDeviceSynchronize());
         free(h_atoms); // free the host atoms array
     } // set atoms
 
@@ -511,6 +510,7 @@ public:
         /* the cell size is changed, so the max_cell_bias will also change */
         calculate_cell_repeats(cell, this->host_data_.cutoff, this->host_data_.max_cell_bias); // calculate the new max_cell_bias
         CHECK_CUDA(cudaMemcpy(this->device_data_, &this->host_data_, sizeof(device_data_t), cudaMemcpyHostToDevice)); // copy the host data to device
+        CHECK_CUDA(cudaDeviceSynchronize()); // synchronize the device
     } // set cell
 
     __host__ void clear() {
@@ -523,6 +523,8 @@ public:
         CHECK_CUDA(cudaMemset(host_data_.stress, 0, 9 * sizeof(real_t))); // clear the stress
         CHECK_CUDA(cudaMemset(host_data_.neighbors, 0, host_data_.num_atoms * host_data_.max_neighbors * sizeof(neighbor_t))); // clear the neighbors
         CHECK_CUDA(cudaMemset(host_data_.CN_neighbors, 0, host_data_.num_atoms * host_data_.max_neighbors * sizeof(neighbor_t))); // clear the CN neighbors
+        CHECK_CUDA(cudaMemcpy(device_data_, &host_data_, sizeof(device_data_t), cudaMemcpyHostToDevice)); // copy the host data to device
+        CHECK_CUDA(cudaDeviceSynchronize()); // synchronize the device
     }
     private:
     device_data_t *device_data_; // pointer to the device data
