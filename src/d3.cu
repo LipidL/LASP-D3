@@ -1199,6 +1199,12 @@ void compute_dispersion_energy_from_handle(
     real_t *stress
 ) {
     Device_Buffer *buffer = (Device_Buffer *)handle; // cast the handle to Device_Buffer
+    /* print debug information about cell */
+    for (int i = 0; i < 3; ++i) {
+        for (int j = 0; j < 3; ++j) {
+            debug("cell[%d][%d] = %f\n", i, j, buffer->get_host_data().cell[i][j]); // print the cell matrix
+        }
+    }
     // launch the kernel
     uint64_t length = buffer->get_host_data().num_atoms; // get the number of atoms in the system
     debug("launching coordination_number_kernel, size: %zu, %d\n", length, MAX_BLOCK_SIZE);
