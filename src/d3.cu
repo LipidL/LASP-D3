@@ -780,7 +780,7 @@ __global__ void two_body_kernel(device_data_t *data){
                 /* these entries could be -1.0f if they are not valid, but at least one should be valid*/
                 real_t coordination_number_ref_1 = data->c6_ab_ref[index + 1];
                 real_t coordination_number_ref_2 = data->c6_ab_ref[index + 2];
-                if (coordination_number_1 - (-1.0f) > 1e-5f && coordination_number_2 - (-1.0f) > 1e-5f) {
+                if (coordination_number_ref_1 - (-1.0f) > 1e-5f && coordination_number_ref_2 - (-1.0f) > 1e-5f) {
                     /* if both coordination numbers are valid, we can use them */
                     exponent_args[valid_term_count] = -K3 * (powf(coordination_number_1 - coordination_number_ref_1, 2) + powf(coordination_number_2 - coordination_number_ref_2, 2));
                     CN_ref_1[valid_term_count] = coordination_number_ref_1; // store the C6ref for atom_1
