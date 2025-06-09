@@ -488,11 +488,13 @@ public:
             fprintf(stderr, "Error: failed to allocate memory for atoms on host");
             exit(EXIT_FAILURE);
         }
+        debug("Setting atoms: \n");
         for (uint64_t i = 0; i < length; ++i) {
             h_atoms[i].element = elements[i];
             h_atoms[i].x = coords[i][0];
             h_atoms[i].y = coords[i][1];
             h_atoms[i].z = coords[i][2];
+            debug("Atom %zu: %d %f %f %f\n", i, h_atoms[i].element, h_atoms[i].x, h_atoms[i].y, h_atoms[i].z);
         }
         CHECK_CUDA(cudaMemcpy(this->host_data_.atoms, h_atoms, length * sizeof(atom_t), cudaMemcpyHostToDevice));
         CHECK_CUDA(cudaDeviceSynchronize());
@@ -501,13 +503,17 @@ public:
 
     __host__ void set_cell(real_t cell[3][3]) {
         /* set the cell in the device data */
+        debug("Setting cell: \n");
         for (uint16_t i = 0; i < 3; ++i) {
             for (uint16_t j = 0; j < 3; ++j) {
                 this->host_data_.cell[i][j] = cell[i][j];
+                debug("%f ", this->host_data_.cell[i][j]); // print the cell matrix
             }
+            debug("\n");
         }
         /* the cell size is changed, so the max_cell_bias will also change */
         calculate_cell_repeats(cell, this->host_data_.cutoff, this->host_data_.max_cell_bias); // calculate the new max_cell_bias
+        debug("max_cell_bias: %zu %zu %zu\n", this->host_data_.max_cell_bias[0], this->host_data_.max_cell_bias[1], this->host_data_.max_cell_bias[2]);
         CHECK_CUDA(cudaMemcpy(this->device_data_, &this->host_data_, sizeof(device_data_t), cudaMemcpyHostToDevice)); // copy the host data to device
         CHECK_CUDA(cudaDeviceSynchronize()); // synchronize the device
     } // set cell
@@ -569,7 +575,18 @@ __global__ void coordination_number_kernel(device_data_t *data) {
     };
     const real_t CN_cutoff = data->coordination_number_cutoff;
     const real_t cutoff = data->cutoff;
-
+    /* print some debug information */
+    if (threadIdx.x == 0 && blockIdx.x == 0) {
+        debug("Coordination number kernel launched with %zu atoms, cell: \n", data->num_atoms);
+        for (int i = 0; i < 3; ++i) {
+            for (int j = 0; j < 3; ++j) {
+                debug("%f ", cell[i][j]);
+            }
+            debug("\n");
+        }
+        debug("max_cell_bias: %zu %zu %zu\n", mcb0, mcb1, mcb2);
+        debug("CN_cutoff: %f, cutoff: %f\n", CN_cutoff, cutoff);
+    }
     /* distribute workload to threads */
     uint64_t start_index; // = threadIdx.x * workload_per_thread; // start index for this thread
     uint64_t end_index; // = min(start_index + workload_per_thread, data->num_atoms); // end index for this thread
