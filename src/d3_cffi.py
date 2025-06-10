@@ -55,10 +55,10 @@ class D3Calculator:
         elements_ptr = ffi.cast("uint16_t*", elements_array.ctypes.data)
 
         # Initialize parameters
-        lib.init_params()
+        lib.init_params()  # type: ignore
         
         # Initialize the handle
-        self.handle = lib.init_d3_handle(
+        self.handle = lib.init_d3_handle( # type: ignore
             elements_ptr, 
             max_length,
             cutoff_radius,
@@ -79,7 +79,7 @@ class D3Calculator:
         elements_ptr = ffi.cast("uint16_t*", elements_array.ctypes.data)
         
         # Call the C function
-        lib.set_atoms(self.handle, coords_ptr, elements_ptr, len(elements_array))
+        lib.set_atoms(self.handle, coords_ptr, elements_ptr, len(elements_array)) # type: ignore
         self.num_atoms = len(elements_array)
 
     def set_cell(self, cell: np.ndarray):
@@ -89,7 +89,7 @@ class D3Calculator:
         cell_ptr = ffi.cast("float (*)[3]", cell_array.ctypes.data)
         
         # Call the C function
-        lib.set_cell(self.handle, cell_ptr)
+        lib.set_cell(self.handle, cell_ptr) # type: ignore
     
     def compute(self):
         """Compute dispersion energy, forces, and stress"""
@@ -106,7 +106,7 @@ class D3Calculator:
         stress_ptr = ffi.cast("float*", stress.ctypes.data)
         
         # Call the C function
-        lib.compute_dispersion_energy_from_handle(
+        lib.compute_dispersion_energy_from_handle( # type: ignore
             self.handle,
             energy,
             forces_ptr,
@@ -117,9 +117,9 @@ class D3Calculator:
     
     def clear(self):
         """Clear the D3 handle data"""
-        lib.clear_d3_handle(self.handle)
+        lib.clear_d3_handle(self.handle) # type: ignore
     
     def __del__(self):
         """Clean up when the object is deleted"""
         if hasattr(self, 'handle'):
-            lib.free_d3_handle(self.handle)
+            lib.free_d3_handle(self.handle) # type: ignore
