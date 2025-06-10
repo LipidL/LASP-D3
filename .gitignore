@@ -5,3 +5,4 @@ temp_objs/*
 build/*
 test/*
 src/gen_constants.h
+*.pyc

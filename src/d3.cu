@@ -19,6 +19,7 @@
     } \
 } while (0)
 // macros for debugging
+#define DEBUG
 #ifdef DEBUG
 #define debug(...) printf(__VA_ARGS__)
 #define assert_(...) assert(__VA_ARGS__)
@@ -577,14 +578,14 @@ __global__ void coordination_number_kernel(device_data_t *data) {
     const real_t cutoff = data->cutoff;
     /* print some debug information */
     if (threadIdx.x == 0 && blockIdx.x == 0) {
-        debug("Coordination number kernel launched with %zu atoms, cell: \n", data->num_atoms);
+        debug("Coordination number kernel launched with %llu atoms, cell: \n", data->num_atoms);
         for (int i = 0; i < 3; ++i) {
             for (int j = 0; j < 3; ++j) {
                 debug("%f ", cell[i][j]);
             }
             debug("\n");
         }
-        debug("max_cell_bias: %zu %zu %zu\n", mcb0, mcb1, mcb2);
+        debug("max_cell_bias: %llu %llu %llu\n", mcb0, mcb1, mcb2);
         debug("CN_cutoff: %f, cutoff: %f\n", CN_cutoff, cutoff);
     }
     /* distribute workload to threads */

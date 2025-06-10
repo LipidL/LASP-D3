@@ -90,6 +90,29 @@ if(USE_STATIC_CONSTANTS)
     add_dependencies(d3_o generate_constants)
 endif()
 
+# Create dynamic shared library
+add_library(d3_shared SHARED $<TARGET_OBJECTS:d3_obj>)
+
+# Add dependency on generated constants if static constants are enabled
+if(USE_STATIC_CONSTANTS)
+    add_dependencies(d3_shared generate_constants)
+endif()
+
+# Set library properties
+set_target_properties(d3_shared PROPERTIES
+    OUTPUT_NAME "d3"
+    VERSION 1.0.0
+    SOVERSION 1
+    POSITION_INDEPENDENT_CODE ON
+    CUDA_SEPARABLE_COMPILATION ON
+)
+
+# Link with required libraries
+target_link_libraries(d3_shared PRIVATE 
+    ${CUDA_RUNTIME_LIBRARY}
+    m
+)
+
 # Enable Fortran language
 enable_language(Fortran)
 
