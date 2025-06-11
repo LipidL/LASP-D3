@@ -19,7 +19,6 @@
     } \
 } while (0)
 // macros for debugging
-#define DEBUG
 #ifdef DEBUG
 #define debug(...) printf(__VA_ARGS__)
 #define assert_(...) assert(__VA_ARGS__)
@@ -537,6 +536,13 @@ public:
     device_data_t host_data_;
 }; // Device_Buffer
 
+__device__ real_t calculate_cell_volume(const real_t cell[3][3]) {
+    // Calculate the volume of the cell using the determinant of the matrix formed by the cell vectors
+    return cell[0][0] * (cell[1][1] * cell[2][2] - cell[1][2] * cell[2][1]) -
+           cell[0][1] * (cell[1][0] * cell[2][2] - cell[1][2] * cell[2][0]) +
+           cell[0][2] * (cell[1][0] * cell[2][1] - cell[1][1] * cell[2][0]);
+}
+
 /**
  * @brief this kernel is used to compute the coordination number of each atom in the system.
  * @note this kernel should be launched with a 1D grid of blocks, each block containing a 1D array of threads.
@@ -765,6 +771,8 @@ __global__ void two_body_kernel(device_data_t *data){
     real_t dE_dCN_conpensate = 0.0f; // derivative of energy with respect to coordination number compensation
     real_t force_conpensate[3] = {0.0f, 0.0f, 0.0f}; // force compensation to improve numerical stability
     real_t stress_conpensate[9] = {0.0f}; // stress compensation to improve numerical stability
+    /* calculate cell volume */
+    real_t cell_volume = calculate_cell_volume(data->cell);
     for (uint64_t neighbor_index = start_index; neighbor_index < end_index; ++neighbor_index) {
         neighbor_t neighbor = data->neighbors[atom_1_index * data->max_neighbors + neighbor_index]; // neighbor atom
         uint64_t atom_2_index = neighbor.index; // index of the second atom in the pair
@@ -774,8 +782,6 @@ __global__ void two_body_kernel(device_data_t *data){
         real_t coordination_number_2 = data->coordination_numbers[atom_2_index];
         uint64_t atom_1_type = data->atom_types[atom_1_index];
         uint64_t atom_2_type = data->atom_types[atom_2_index];
-        /* calculate cell volume */
-        real_t cell_volume = data->cell[0][0] * data->cell[1][1] * data->cell[2][2] - data->cell[0][1] * data->cell[1][0] * data->cell[2][2] - data->cell[0][2] * data->cell[1][1] * data->cell[2][0] + data->cell[0][1] * data->cell[1][2] * data->cell[2][0] + data->cell[0][2] * data->cell[1][0] * data->cell[2][1];
         /* calculate the coordination number based on dispersion coefficient
             formula: $C_6^{ij} = Z/W$ 
             where $Z = \sum_{a,b}C_{6,ref}^{i,j}L_{a,b}$
@@ -996,7 +1002,7 @@ __global__ void two_body_kernel(device_data_t *data){
  * @note the number of threads in each block can be any value, 512 would be a good choice, but it could be smaller if your memory is limited.
  */
 __global__ void three_body_kernel(device_data_t *data){
-    real_t cell_volume = data->cell[0][0] * data->cell[1][1] * data->cell[2][2] - data->cell[0][1] * data->cell[1][0] * data->cell[2][2] - data->cell[0][2] * data->cell[1][1] * data->cell[2][0] + data->cell[0][1] * data->cell[1][2] * data->cell[2][0] + data->cell[0][2] * data->cell[1][0] * data->cell[2][1];
+    real_t cell_volume = calculate_cell_volume(data->cell);
     uint64_t atom_1_index = blockIdx.x; // each block is responsible for one central atom
     atom_t atom_1 = data->atoms[atom_1_index]; // central atom
     real_t dE_dCN = data->dE_dCN[atom_1_index]; // derivative of energy with respect to coordination number
