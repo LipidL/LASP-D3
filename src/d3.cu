@@ -752,6 +752,11 @@ __global__ void print_coordination_number_kernel(device_data_t *data) {
  */
 __global__ void two_body_kernel(device_data_t *data){
     extern __shared__ real_t dE_dCN_cache[]; // shared memory for dE/dCN cache
+    __shared__ real_t energy_cache;
+    if (threadIdx.x == 0) {
+        energy_cache = 0.0f; // initialize the energy cache to 0
+    }
+    __syncthreads(); // synchronize threads in the block
     real_t dE_dCN = 0.0f; // derivative of energy with respect to coordination number
     uint64_t atom_1_index = blockIdx.x; // each block is responsible for one central atom
     atom_t atom_1 = data->atoms[atom_1_index]; // central atom
@@ -968,8 +973,8 @@ __global__ void two_body_kernel(device_data_t *data){
     }
 
     dE_dCN_cache[threadIdx.x] = dE_dCN; // store the value in shared memory
-    /* accumulate energy */
-    atomicAdd(data->energy, local_energy); // accumulate the energy for the central atom
+    /* accumulate energy to shared cache */
+    atomicAdd(&energy_cache, local_energy);
 
     /* accumulate force for the central atom */
     atomicAdd(&data->forces[atom_1_index*3+0], local_force_central[0]);
@@ -983,8 +988,10 @@ __global__ void two_body_kernel(device_data_t *data){
         }
     }
     __syncthreads(); // make sure all threads see the updated dE_dCN_cache
-    /* accumulate dE/dCN in shared memory */
+    /* accumulate dE/dCN and energy_cache in shared memory */
     if (threadIdx.x == 0) {
+        // accumulate energy from shared memory
+        atomicAdd(data->energy, energy_cache);
         real_t dE_dCN_sum = 0.0f;
         for (uint64_t i = 0; i < blockDim.x; ++i) {
             dE_dCN_sum += dE_dCN_cache[i];
