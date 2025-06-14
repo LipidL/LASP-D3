@@ -8,7 +8,6 @@
 namespace parser
 {
     template <typename T>
-    requires std::floating_point<T> // Ensure T is a real number type
     class structureIO
     {
     public:
@@ -73,7 +72,6 @@ namespace parser
     };
 
     template <typename T>
-    requires std::floating_point<T> // Ensure T is a real number type
     class ArcParser : public structureIO<T>
     {
     public:

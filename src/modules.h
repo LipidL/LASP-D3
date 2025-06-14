@@ -5,7 +5,6 @@
 namespace periodic_table
 {
     template <typename T>
-    requires std::floating_point<T> // Ensure T is a real number type
     class Element
     {
         public:
@@ -21,7 +20,6 @@ namespace periodic_table
     };
 
     template <typename T>
-    requires std::floating_point<T> // Ensure T is a real number type
     class PeriodicTable
     {
         public:
@@ -175,7 +173,6 @@ namespace periodic_table
 namespace structures
 {
     template <typename T>
-    requires std::floating_point<T> // Ensure T is a real number type
     struct Coordinate
     {
         T x;
@@ -186,7 +183,6 @@ namespace structures
     };
 
     template <typename T>
-    requires std::floating_point<T> // Ensure T is a real number type
     class Atom {
         public:
         periodic_table::Element<T> element; // Element of the atom
@@ -201,7 +197,6 @@ namespace structures
     };
 
     template <typename T>
-    requires std::floating_point<T> // Ensure T is a real number type
     class Cell {
         public:
         T x;
@@ -240,7 +235,6 @@ namespace structures
     };
 
     template <typename T>
-    requires std::floating_point<T> // Ensure T is a real number type
     class StructureBlock {
         public:
         T energy;
