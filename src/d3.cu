@@ -53,7 +53,7 @@ obtained from Grimme et al. 2010, Table SI1
 #define SR_8 1.0f
 
 typedef struct atom {
-    size_t element; // element type of the atom
+    uint16_t element; // element type of the atom
     real_t x, y, z; // coordinates in Cartesian space
 } atom_t;
 
@@ -636,6 +636,7 @@ __global__ void coordination_number_kernel(device_data_t *data) {
         end_bias_index = min(start_bias_index + bias_per_thread, total_cell_bias); // end bias index for this thread
     }
     for(uint64_t atom_2_index = start_index; atom_2_index < end_index; ++atom_2_index) {
+        atom_t atom_2_original = data->atoms[atom_2_index]; // surrounding atom
         for(uint64_t bias_index = start_bias_index; bias_index < end_bias_index; ++bias_index) {
             /* each thread is responsible for one atom pair, so the number of threads should be equal to num_atoms * total_cell_bias */
             int64_t x_bias = (bias_index % mcb0) - (mcb0/2); // x bias
@@ -643,7 +644,7 @@ __global__ void coordination_number_kernel(device_data_t *data) {
             int64_t z_bias = (bias_index / (mcb0 * mcb1) % mcb2) - (mcb2/2); // z bias
             assert_(atom_2_index < data->num_atoms); // make sure the index is in bounds
 
-            atom_t atom_2 = data->atoms[atom_2_index]; // surrounding atom
+            atom_t atom_2 = atom_2_original;
             /* translate atom_2 due to periodic boundaries */
             atom_2.x += x_bias * cell[0][0] + y_bias * cell[1][0] + z_bias * cell[2][0]; // translate in x direction
             atom_2.y += x_bias * cell[0][1] + y_bias * cell[1][1] + z_bias * cell[2][1]; // translate in y direction
@@ -738,7 +739,7 @@ __global__ void print_coordination_number_kernel(device_data_t *data) {
     if (threadIdx.x == 0) {
         printf("Coordination numbers:\n");
         for (uint64_t i = 0; i < data->num_atoms; ++i) {
-            printf("Atom %llu, element: %llu: %f\n", i, data->atoms[i].element, data->coordination_numbers[i]);
+            printf("Atom %llu, element: %d: %f\n", i, data->atoms[i].element, data->coordination_numbers[i]);
         }
     }
 } // print coordination number kernel
