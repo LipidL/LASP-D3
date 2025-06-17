@@ -1,4 +1,4 @@
-name: CMake on multiple platforms
+name: CMake build
 
 on:
   push:
@@ -8,22 +8,15 @@ on:
 
 jobs:
   build:
-    runs-on: ${{ matrix.os }}
+    runs-on: lasp-base
 
     strategy:
       # Set fail-fast to false to ensure that feedback is delivered for all matrix combinations. Consider changing this to true when your workflow is stable.
       fail-fast: false
 
-      # Set up a matrix to run the following 3 configurations:
-      # 1. <Windows, Release, latest MSVC compiler toolchain on the default runner image, default generator>
-      # 2. <Linux, Release, latest GCC compiler toolchain on the default runner image, default generator>
-      # 3. <Linux, Release, latest Clang compiler toolchain on the default runner image, default generator>
-      #
-      # To add more build types (Release, Debug, RelWithDebInfo, etc.) customize the build_type list.
       matrix:
-        os: [ubuntu-22.04]
         build_type: [Release]
-        cuda_version: [11.8.0, 12.0.0]
+        cuda_version: [11.8.0]
         compiler_config: [gcc, clang]
         include:
           - compiler_config: gcc
@@ -35,25 +28,11 @@ jobs:
             os: ubuntu-22.04
             c_compiler: clang
             cpp_compiler: clang++
-            fortran_compiler: gfortran
+            fortran_compiler: flang
 
 
     steps:
     - uses: actions/checkout@v4
-    - uses: Jimver/cuda-toolkit@v0.2.23
-      id: cuda-toolkit
-      with:
-        cuda: ${{ matrix.cuda_version }}
-        method: network
-        sub-packages: '["nvcc"]'
-
-
-    - name: Verify CUDA installation
-      # Verify that the CUDA toolkit is installed correctly by checking the version.
-      run: |
-        echo "CUDA Version: ${{ steps.cuda-toolkit.outputs.cuda }}"
-        echo "CUDA Path: ${{ steps.cuda-toolkit.outputs.CUDA_PATH }}"
-        nvcc --version
 
     - name: Set reusable strings
       # Turn repeated input strings (such as the build output directory) into step outputs. These step outputs can be used throughout the workflow file.
@@ -61,14 +40,7 @@ jobs:
       shell: bash
       run: |
         echo "build-output-dir=${{ github.workspace }}/build" >> "$GITHUB_OUTPUT"
-    - name: Set up Python
-      # Set up Python to use the `cmake-format` tool for formatting CMake files.
-      uses: actions/setup-python@v4
-      with:
-        python-version: '3.x'
-    - name: Install numpy
-      # Install numpy, which is a dependency of `cmake-format`.
-      run: python -m pip install numpy
+
     - name: Configure CMake
       # Configure CMake in a 'build' subdirectory. `CMAKE_BUILD_TYPE` is only required if you are using a single-configuration generator such as make.
       # See https://cmake.org/cmake/help/latest/variable/CMAKE_BUILD_TYPE.html?highlight=cmake_build_type
@@ -78,7 +50,7 @@ jobs:
         -DCMAKE_C_COMPILER=${{ matrix.c_compiler }}
         -DCMAKE_BUILD_TYPE=${{ matrix.build_type }}
         -DCMAKE_Fortran_COMPILER=${{ matrix.fortran_compiler }}
-        -DCMAKE_CUDA_COMPILER=${{ steps.cuda-toolkit.outputs.CUDA_PATH }}/bin/nvcc
+        -DCMAKE_CUDA_COMPILER=nvcc
         -DCMAKE_CUDA_ARCHITECTURES="60;70;75;80"
         -S ${{ github.workspace }}
     - name: Build
