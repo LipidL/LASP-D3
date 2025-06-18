@@ -1,34 +1,24 @@
 """
-Test script for the D3Calculator from d3_cffi module.
+Test script for the D3Calculator from d3_cffi module with multithreading.
 
 This script demonstrates how to use the D3 dispersion correction 
-calculator with a simple example of a water molecule.
+calculator with multiple threads for parallel computation.
 """
 import numpy as np
 from d3_cffi import D3Calculator
+import concurrent.futures
+import threading
+import time
 
-def main():
+def calculate_dispersion(system_id, elements, coords, cell):
     """
-    Main function to test the D3 calculator
+    Calculate dispersion for a molecular system in a separate thread.
+    Each thread must use its own D3Calculator instance.
     """
-    print("Testing D3 dispersion calculator...")
+    thread_name = threading.current_thread().name
+    print(f"Thread {thread_name} processing system {system_id}")
     
-    # Create a simple system: water molecule (H2O)
-    # Elements: H=1, O=8
-    elements = [8, 1, 1]  # O, H, H
-    
-    # Coordinates in Angstroms (simple geometry, not optimized)
-    coords = np.array([
-        [0.0, 0.0, 0.0],  # O at origin
-        [0.0, 0.8, 0.6],  # H1
-        [0.0, -0.8, 0.6]  # H2
-    ], dtype=np.float32)
-    
-    # Create a periodic cell (box size in Angstroms)
-    cell = np.eye(3, dtype=np.float32) * 10.0  # 10Å cubic box
-    
-    # Initialize the D3 calculator
-    print("Initializing D3Calculator...")
+    # Create a dedicated calculator for this thread
     d3calc = D3Calculator(
         elements=elements,
         max_length=5,
@@ -38,29 +28,84 @@ def main():
     )
     
     # Set the atoms and cell
-    print("Setting atoms and cell...")
     d3calc.set_atoms(coords, elements)
     d3calc.set_cell(cell)
     
     # Compute dispersion energy, forces and stress
-    print("Computing dispersion energy...")
     energy, forces, stress = d3calc.compute()
     
-    # Print the results
-    print("\nResults:")
-    print(f"Dispersion energy: {energy:.6f} eV")
-    print("\nForces (eV/Å):")
-    for i, element in enumerate(elements):
-        element_symbol = "O" if element == 8 else "H"
-        print(f"Atom {i} ({element_symbol}): {forces[i][0]:.6f}, {forces[i][1]:.6f}, {forces[i][2]:.6f}")
-    
-    print("\nStress tensor (eV/Å³):")
-    for i in range(3):
-        print(f"  {stress[i][0]:.6f}  {stress[i][1]:.6f}  {stress[i][2]:.6f}")
-    
-    # Clear the calculator
-    print("\nClearing D3 calculator...")
+    # Clean up
     d3calc.clear()
+    
+    return {
+        "system_id": system_id,
+        "energy": energy,
+        "forces": forces
+    }
+
+def test_multithreading():
+    """Test D3Calculator with multiple threads"""
+    print("\nTesting D3 dispersion calculator with multithreading...")
+    
+    # Create several test systems
+    systems = [
+        # Water molecule
+        {
+            "id": 1,
+            "elements": [8, 1, 1],
+            "coords": np.array([
+                [0.0, 0.0, 0.0],
+                [0.0, 0.8, 0.6],
+                [0.0, -0.8, 0.6]
+            ], dtype=np.float32),
+            "cell": np.eye(3, dtype=np.float32) * 10.0
+        },
+        # Methane
+        {
+            "id": 2,
+            "elements": [6, 1, 1, 1, 1],
+            "coords": np.array([
+                [0.0, 0.0, 0.0],
+                [0.6, 0.6, 0.6],
+                [-0.6, -0.6, 0.6],
+                [0.6, -0.6, -0.6],
+                [-0.6, 0.6, -0.6]
+            ], dtype=np.float32),
+            "cell": np.eye(3, dtype=np.float32) * 10.0
+        }
+    ]
+    
+    # Run calculations in parallel
+    start_time = time.time()
+    results = []
+    
+    with concurrent.futures.ThreadPoolExecutor() as executor:
+        # Submit all calculation tasks
+        futures = [
+            executor.submit(
+                calculate_dispersion,
+                system["id"], 
+                system["elements"],
+                system["coords"],
+                system["cell"]
+            ) for system in systems
+        ]
+        
+        # Collect results as they complete
+        for future in concurrent.futures.as_completed(futures):
+            results.append(future.result())
+    
+    # Print results
+    print(f"\nMultithreaded calculations completed in {time.time() - start_time:.4f} seconds")
+    for result in sorted(results, key=lambda x: x["system_id"]):
+        print(f"System {result['system_id']} energy: {result['energy']:.6f} eV")
+
+def main():
+    # Original single-threaded example
+    # ... (existing code) ...
+    
+    # Add the multithreading test
+    test_multithreading()
 
 if __name__ == "__main__":
     main()

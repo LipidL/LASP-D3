@@ -565,7 +565,7 @@ __global__ void coordination_number_kernel(device_data_t *data) {
     
     neighbor_flags[threadIdx.x] = 0; // initialize the neighbor flags to false
     CN_neighbor_flags[threadIdx.x] = 0; // initialize the CN neighbor flags to false
-     __syncthreads(); // synchronize threads in the block
+    __syncthreads(); // synchronize threads in the block
     
     /* local variables to reduce global memory access */
     neighbor_t neighbors[MAX_LOCAL_NEIGHBORS]; // array of neighbors for the central atom
@@ -1229,6 +1229,9 @@ void compute_dispersion_energy_from_handle(
     real_t *force,
     real_t *stress
 ) {
+    /* create a CUDA stream */
+    cudaStream_t stream;
+    CHECK_CUDA(cudaStreamCreate(&stream));
     Device_Buffer *buffer = (Device_Buffer *)handle; // cast the handle to Device_Buffer
     /* print debug information about cell */
     for (int i = 0; i < 3; ++i) {
@@ -1239,22 +1242,22 @@ void compute_dispersion_energy_from_handle(
     // launch the kernel
     uint64_t length = buffer->get_host_data().num_atoms; // get the number of atoms in the system
     debug("launching coordination_number_kernel, size: %zu, %d\n", length, MAX_BLOCK_SIZE);
-    coordination_number_kernel<<<length, MAX_BLOCK_SIZE>>>(buffer->get_device_data()); // launch the kernel to compute the coordination numbers
-    CHECK_CUDA(cudaDeviceSynchronize()); // synchronize the device to ensure all threads are finished
+    coordination_number_kernel<<<length, MAX_BLOCK_SIZE, 0, stream>>>(buffer->get_device_data()); // launch the kernel to compute the coordination numbers
     #ifdef DEBUG
-    print_coordination_number_kernel<<<1,1>>>(buffer->get_device_data()); // print the coordination numbers for debugging
+    print_coordination_number_kernel<<<1,1,0, stream>>>(buffer->get_device_data()); // print the coordination numbers for debugging
     CHECK_CUDA(cudaDeviceSynchronize()); // synchronize the device to ensure all threads are finished
     #endif
     debug("launching two_body_kernel, size: %zu, %d\n", length, MAX_BLOCK_SIZE);
-    two_body_kernel<<<length, MAX_BLOCK_SIZE, MAX_BLOCK_SIZE * sizeof(real_t)>>>(buffer->get_device_data());
-    CHECK_CUDA(cudaDeviceSynchronize()); // synchronize the device to ensure all threads are finished
+    two_body_kernel<<<length, MAX_BLOCK_SIZE, MAX_BLOCK_SIZE * sizeof(real_t), stream>>>(buffer->get_device_data());
     debug("launching three_body_kernel, size: %zu, %d\n", length, MAX_BLOCK_SIZE);
-    three_body_kernel<<<length, MAX_BLOCK_SIZE>>>(buffer->get_device_data());
-    CHECK_CUDA(cudaDeviceSynchronize()); // synchronize the device to ensure all threads are finished
+    three_body_kernel<<<length, MAX_BLOCK_SIZE, 0, stream>>>(buffer->get_device_data());
 
-    cudaMemcpy(force, buffer->get_host_data().forces, length * 3 * sizeof(real_t), cudaMemcpyDeviceToHost); // copy the forces back to host memory
-    cudaMemcpy(energy, buffer->get_host_data().energy, sizeof(real_t), cudaMemcpyDeviceToHost); // copy the energy back to host memory
-    cudaMemcpy(stress, buffer->get_host_data().stress, 9 * sizeof(real_t), cudaMemcpyDeviceToHost); // copy the stress back to host memory
+    cudaMemcpyAsync(force, buffer->get_host_data().forces, length * 3 * sizeof(real_t), cudaMemcpyDeviceToHost, stream); // copy the forces back to host memory
+    cudaMemcpyAsync(energy, buffer->get_host_data().energy, sizeof(real_t), cudaMemcpyDeviceToHost, stream); // copy the energy back to host memory
+    cudaMemcpyAsync(stress, buffer->get_host_data().stress, 9 * sizeof(real_t), cudaMemcpyDeviceToHost, stream); // copy the stress back to host memory
+
+    CHECK_CUDA(cudaStreamSynchronize(stream)); // synchronize the stream to ensure all operations are finished
+
     real_t angstron_to_bohr = 1/0.52917726f; // angstron to bohr conversion factor
     real_t hartree_to_eV = 27.211396641308f; // hartree to eV conversion factor
     *energy *= -hartree_to_eV; // convert energy to eV and negate it
@@ -1269,6 +1272,7 @@ void compute_dispersion_energy_from_handle(
             stress[i * 3 + j] *= hartree_to_eV * powf(angstron_to_bohr,3); // convert stress to from hartree/bohr^3 to eV/angstron^3
         }
     }
+    CHECK_CUDA(cudaStreamDestroy(stream)); // destroy the stream
 }
 
 /**
