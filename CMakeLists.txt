@@ -18,7 +18,7 @@ set(HEADERS src/constants.h)
 # Add custom command to generate constants header at build time
 add_custom_command(
     OUTPUT ${CMAKE_CURRENT_SOURCE_DIR}/src/gen_constants.h
-    COMMAND python ${CMAKE_CURRENT_SOURCE_DIR}/data/generate_constants.py
+    COMMAND python3 ${CMAKE_CURRENT_SOURCE_DIR}/data/generate_constants.py
     DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/data/generate_constants.py ${CMAKE_CURRENT_SOURCE_DIR}/data/dftd3_params.npz
     COMMENT "Generating constants header file"
 )

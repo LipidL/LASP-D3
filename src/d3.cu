@@ -31,7 +31,7 @@
 /* cuda kernel launch parameters */ 
 #define MAX_BLOCK_SIZE 512 // number of threads per block
 #define MAX_ELEMENTS 118
-#define MAX_LOCAL_NEIGHBORS 100 // the maximum neighbor of one thread, equal to max_supercell_size * (num_atoms / num_threads)
+#define MAX_LOCAL_NEIGHBORS 256 // the maximum neighbor of one thread, equal to max_supercell_size * (num_atoms / num_threads)
 #define FLT_MAX 3.402823466e+38F // maximum float value, used to initialize distances
 
 /* 
