@@ -24,7 +24,7 @@ def calculate_dispersion(system_id, elements, coords, cell):
         max_length=5,
         cutoff_radius=46.475800,
         cn_cutoff_radius=46.475800,
-        max_neighbors=10000
+        max_neighbors=100
     )
     
     # Set the atoms and cell
@@ -32,7 +32,10 @@ def calculate_dispersion(system_id, elements, coords, cell):
     d3calc.set_cell(cell)
     
     # Compute dispersion energy, forces and stress
-    energy, forces, stress = d3calc.compute()
+    try:
+        energy, forces, stress = d3calc.compute()
+    except Exception as e:
+        raise RuntimeError(f"Error in thread {thread_name} for system {system_id}: {e}")
     
     # Clean up
     d3calc.clear()

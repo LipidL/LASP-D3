@@ -10,6 +10,10 @@ typedef float real_t;
 /* define type for d3 handle */
 typedef void D3Handle_t;
 
+/* status code for compute status */
+#define COMPUTE_SUCCESS 0b00
+#define COMPUTE_NEIGHBOR_LIST_OVERFLOW 0b01
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -47,6 +51,13 @@ void free_d3_handle(D3Handle_t *handle);
 void clear_d3_handle(D3Handle_t *handle);
 
 void compute_dispersion_energy_from_handle(
+    D3Handle_t *handle,
+    real_t *energy,
+    real_t *force,
+    real_t *stress
+);
+
+uint16_t compute_dispersion_energy_from_handle_status(
     D3Handle_t *handle,
     real_t *energy,
     real_t *force,

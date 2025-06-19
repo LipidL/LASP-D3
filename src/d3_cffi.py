@@ -35,7 +35,7 @@ void set_atoms(D3Handle_t *handle, float *coords, uint16_t *elements, uint64_t l
 void set_cell(D3Handle_t *handle, float cell[3][3]);
 void free_d3_handle(D3Handle_t *handle);
 void clear_d3_handle(D3Handle_t *handle);
-void compute_dispersion_energy_from_handle(
+uint16_t compute_dispersion_energy_from_handle_status(
     D3Handle_t *handle,
     float *energy,
     float *force,
@@ -106,12 +106,14 @@ class D3Calculator:
         stress_ptr = ffi.cast("float*", stress.ctypes.data)
         
         # Call the C function
-        lib.compute_dispersion_energy_from_handle( # type: ignore
+        result = lib.compute_dispersion_energy_from_handle_status( # type: ignore
             self.handle,
             energy,
             forces_ptr,
             stress_ptr
         )
+        if result == 0b01:
+            raise RuntimeError("Error computing dispersion energy: neighbor list overflow")
         
         return float(energy[0]), forces, stress.reshape(3, 3)
     

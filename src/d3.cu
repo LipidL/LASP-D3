@@ -154,6 +154,7 @@ typedef struct device_data {
     uint64_t *num_neighbors; // array of maximum number of neighbors for each atom, length: num_atoms.
     uint64_t *num_CN_neighbors;
     uint64_t max_neighbors;
+    uint16_t status; // status of the calculation process, 0:normal, 0b01: neighbor list overflow detected
     real_t *dE_dCN; // dE/dCN for each atom, length: num_atoms.
     real_t *energy; // energy of the system, length: 1
     real_t *forces; // forces on each atom, length: 3*num_atoms.
@@ -376,6 +377,7 @@ public:
             CHECK_CUDA(cudaMemset(num_CN_neighbors, 0, length * sizeof(uint64_t)));
             this->host_data_.num_CN_neighbors = num_CN_neighbors;
             this->host_data_.max_neighbors = max_neighbors; 
+            this->host_data_.status = COMPUTE_SUCCESS; // set the status to normal
             real_t *dE_dCN;
             CHECK_CUDA(cudaMalloc((void**)&dE_dCN, length * sizeof(real_t)));
             CHECK_CUDA(cudaMemset(dE_dCN, 0, length * sizeof(real_t)));
@@ -689,6 +691,8 @@ __global__ void coordination_number_kernel(device_data_t *data) {
             CN_neighbor_flags[i] = CN_sum;
             CN_sum += CN_temp;
         }
+        sum = min(sum, data->max_neighbors); // make sure the sum doesn't exceed the maximum number of neighbors
+        CN_sum = min(CN_sum, data->max_neighbors); // make sure the sum doesn't exceed the maximum number of CN neighbors
         data->num_neighbors[atom_1_index] = sum; // set the maximum number of neighbors for the central atom
         data->num_CN_neighbors[atom_1_index] = CN_sum; // set the maximum number of CN neighbors for the central atom
     }
@@ -703,7 +707,10 @@ __global__ void coordination_number_kernel(device_data_t *data) {
         uint64_t atom_2_index = CN_neighbors[i].index; // index of the second atom in the pair
         uint64_t atom_2_type = data->atom_types[atom_2_index]; // type of the surrounding atom
         neighbor_t *data_neighbors = &data->CN_neighbors[atom_1_index * data->max_neighbors]; // pointer to the neighbors array for the central atom
-        assert_(neighbor_index + i < data->max_neighbors); // make sure the index is in bounds
+        if (neighbor_index + i >= data->max_neighbors) {
+            data->status = data->status | COMPUTE_NEIGHBOR_LIST_OVERFLOW; // set the status to indicate that the maximum number of neighbors is exceeded
+            break;
+        }
         assert_(data_neighbors[neighbor_index+i].index == 0); // make sure the index is not already set
         assert_(data_neighbors[neighbor_index+i].distance == 0); // make sure the distance is not already set
         data_neighbors[neighbor_index+i] = CN_neighbors[i];
@@ -728,6 +735,10 @@ __global__ void coordination_number_kernel(device_data_t *data) {
         assert_(neighbors[i].distance <= cutoff);
         /* if the distance is within cutoff range, update neighbors */
         uint64_t neighbor_index = neighbor_flags[threadIdx.x]; // index of the neighbor in the neighbors array
+        if (neighbor_index + i >= data->max_neighbors) {
+            data->status = data->status | COMPUTE_NEIGHBOR_LIST_OVERFLOW; // set the status to indicate that the maximum number of neighbors is exceeded
+            break;
+        }
         neighbor_t *data_neighbors = &data->neighbors[atom_1_index * data->max_neighbors]; // pointer to the neighbors array for the central atom
         assert_(neighbor_index + i < data->max_neighbors); // make sure the index is in bounds
         assert_(data_neighbors[neighbor_index+i].index == 0); // make sure the index is not already set
@@ -1015,8 +1026,12 @@ __global__ void three_body_kernel(device_data_t *data){
     atom_t atom_1 = data->atoms[atom_1_index]; // central atom
     real_t dE_dCN = data->dE_dCN[atom_1_index]; // derivative of energy with respect to coordination number
     uint64_t num_neighbors = data->num_CN_neighbors[atom_1_index]; // number of neighbors for the central atom
+    assert(num_neighbors <= data->max_neighbors);
     uint64_t workload_per_thread = (num_neighbors + blockDim.x - 1) / blockDim.x; // number of neighbors per thread
     uint64_t start_index = threadIdx.x * workload_per_thread; // start index for the thread
+    if (start_index > num_neighbors) {
+        return; // if the start index is out of bounds, return
+    }
     uint64_t end_index = min((threadIdx.x + 1) * workload_per_thread, num_neighbors); // end index for the thread
     /* when finding neighbors, each tread is responsible for a neighbor atom and they loop over supercell indicies.
     Therefore, the neighbors list is organized in a atom_index priored way.
@@ -1144,7 +1159,8 @@ __global__ void three_body_kernel(device_data_t *data){
         for (uint64_t j = 0; j < 3; ++j) {
             atomicAdd(&data->stress[i * 3 + j], stress[i * 3 + j] / cell_volume); // accumulate the stress for the central atom
         }
-    }}
+    }
+}
 
 /**
  * @brief this function is used to init a handle for d3 energy/force/stress calculation.
@@ -1222,8 +1238,13 @@ void free_d3_handle(D3Handle_t *handle) {
 
 /**
  * @brief this function is used to compute the dispersion energy of the system using the D3 potential.
+ * @param handle the handle to the D3 potential.
+ * @param energy pointer to the energy value to be computed.
+ * @param force pointer to the force values to be computed.
+ * @param stress pointer to the stress values to be computed.
+ * @return uint16_t status code indicating the result of the computation.
  */
-void compute_dispersion_energy_from_handle(
+uint16_t compute_dispersion_energy_from_handle_status(
     D3Handle_t *handle,
     real_t *energy,
     real_t *force,
@@ -1255,6 +1276,11 @@ void compute_dispersion_energy_from_handle(
     cudaMemcpyAsync(force, buffer->get_host_data().forces, length * 3 * sizeof(real_t), cudaMemcpyDeviceToHost, stream); // copy the forces back to host memory
     cudaMemcpyAsync(energy, buffer->get_host_data().energy, sizeof(real_t), cudaMemcpyDeviceToHost, stream); // copy the energy back to host memory
     cudaMemcpyAsync(stress, buffer->get_host_data().stress, 9 * sizeof(real_t), cudaMemcpyDeviceToHost, stream); // copy the stress back to host memory
+    
+    uint16_t status;
+    /* check for compute status */
+    device_data_t *device_data = buffer->get_device_data();
+    cudaMemcpyAsync(&status, &(device_data->status), sizeof(uint16_t), cudaMemcpyDeviceToHost, stream); // copy the compute status back to host memory
 
     CHECK_CUDA(cudaStreamSynchronize(stream)); // synchronize the stream to ensure all operations are finished
 
@@ -1273,6 +1299,19 @@ void compute_dispersion_energy_from_handle(
         }
     }
     CHECK_CUDA(cudaStreamDestroy(stream)); // destroy the stream
+    return status;
+}
+
+void compute_dispersion_energy_from_handle(
+    D3Handle_t *handle,
+    real_t *energy,
+    real_t *force,
+    real_t *stress
+) {
+    uint16_t status = compute_dispersion_energy_from_handle_status(handle, energy, force, stress); // compute the dispersion energy from the handle
+    if (status != COMPUTE_SUCCESS) {
+        fprintf(stderr, "Error: compute_dispersion_energy_from_handle failed with status %d\n", status);
+    }
 }
 
 /**
