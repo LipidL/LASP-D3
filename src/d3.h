@@ -3,16 +3,12 @@
 
 #include <stdint.h>
 
-#ifndef real_t
-typedef float real_t;
-#endif
+#include "d3_types.h"
 
 /* define type for d3 handle */
 typedef void D3Handle_t;
 
 /* status code for compute status */
-#define COMPUTE_SUCCESS 0b00
-#define COMPUTE_NEIGHBOR_LIST_OVERFLOW 0b01
 
 #ifdef __cplusplus
 extern "C" {

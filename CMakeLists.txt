@@ -11,9 +11,25 @@ set(CMAKE_CUDA_STANDARD_REQUIRED ON)
 # Option to use static constants instead of runtime loading
 option(USE_STATIC_CONSTANTS "Use statically compiled constants instead of runtime loading" ON)
 
+# Configure build with static constants if enabled
+if(USE_STATIC_CONSTANTS)
+    add_compile_definitions(BUILD_WITH_STATIC_CONSTANTS)
+endif()
+
 # Source files
-set(SOURCES src/d3.cu)
-set(HEADERS src/constants.h)
+set(SOURCES 
+    src/d3.cu
+    src/d3_buffer.cu
+)
+
+set(HEADERS 
+    src/constants.h
+    src/constants_include.h
+    src/d3_buffer.cuh
+    src/d3_internal.h
+    src/d3_types.h
+    src/d3.h
+)
 
 # Add custom command to generate constants header at build time
 add_custom_command(
@@ -74,14 +90,14 @@ target_link_libraries(d3_obj PRIVATE m)
 
 # Custom command to create standalone .o file
 add_custom_command(
-    OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/d3.o
+    OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/d3.o ${CMAKE_CURRENT_BINARY_DIR}/d3_buffer.o
     COMMAND ${CMAKE_CUDA_COMPILER} -c ${CMAKE_CURRENT_SOURCE_DIR}/src/d3.cu -o ${CMAKE_CURRENT_BINARY_DIR}/d3.o
         -Xptxas -O2 -lineinfo -DBUILD_LIBRARY $<$<BOOL:${USE_STATIC_CONSTANTS}>:-DBUILD_WITH_STATIC_CONSTANTS>
-    DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/src/d3.cu 
-            ${CMAKE_CURRENT_SOURCE_DIR}/src/constants.h
-            ${CMAKE_CURRENT_SOURCE_DIR}/src/constants_include.h
+    COMMAND ${CMAKE_CUDA_COMPILER} -c ${CMAKE_CURRENT_SOURCE_DIR}/src/d3_buffer.cu -o ${CMAKE_CURRENT_BINARY_DIR}/d3_buffer.o
+        -Xptxas -O2 -lineinfo -DBUILD_LIBRARY $<$<BOOL:${USE_STATIC_CONSTANTS}>:-DBUILD_WITH_STATIC_CONSTANTS>
+    DEPENDS ${SOURCES} ${HEADERS}
             $<$<BOOL:${USE_STATIC_CONSTANTS}>:${CMAKE_CURRENT_SOURCE_DIR}/src/gen_constants.h>
-    COMMENT "Generating standalone d3.o file"
+    COMMENT "Generating standalone object files"
 )
 
 # Custom target to ensure .o file is built
@@ -129,14 +145,12 @@ set_target_properties(d3_fortran PROPERTIES
 )
 
 # Add d3.o as dependency
-add_dependencies(d3_fortran d3_o)
-
 # Custom command to create standalone Fortran .o file
 add_custom_command(
     OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/d3_fortran.o
     COMMAND ${CMAKE_Fortran_COMPILER} -c ${CMAKE_CURRENT_SOURCE_DIR}/src/fortran_d3.f90 
             -o ${CMAKE_CURRENT_BINARY_DIR}/d3_fortran.o
-    DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/src/fortran_d3.f90 ${CMAKE_CURRENT_BINARY_DIR}/d3.o
+    DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/src/fortran_d3.f90 ${CMAKE_CURRENT_BINARY_DIR}/d3.o ${CMAKE_CURRENT_BINARY_DIR}/d3_buffer.o
     COMMENT "Generating Fortran interface d3_fortran.o file"
 )
 
@@ -154,8 +168,9 @@ if(USE_STATIC_CONSTANTS)
     add_dependencies(d3_cpp generate_constants)
 endif()
 
-# Link with the d3.o file and required libraries
+# Link with the d3.o and d3_buffer.o files and required libraries
 target_link_libraries(d3_cpp PRIVATE
     ${CMAKE_CURRENT_BINARY_DIR}/d3.o
+    ${CMAKE_CURRENT_BINARY_DIR}/d3_buffer.o
     ${CUDA_RUNTIME_LIBRARY}
     m stdc++)

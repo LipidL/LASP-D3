@@ -1,14 +1,11 @@
+#ifndef CONSTANTS_H
+#define CONSTANTS_H
+
 #include <assert.h>
 #include <stddef.h>
 #include <stdlib.h>
 #include <stdio.h>
 #include <stdint.h>
-#include "d3.h"
-
-// d3 system parameters
-#define NUM_ELEMENTS 95
-#define NUM_REF_C6 5 // each element have at most 5 reference points for C6 computation
-#define NUM_C6AB_ENTRIES 3 // first entry: C6; second entry: CN of first element; third entry: CN of second element
 
 // constant values for d3 system
 float c6ab_ref[NUM_ELEMENTS][NUM_ELEMENTS][NUM_REF_C6][NUM_REF_C6][NUM_C6AB_ENTRIES]; // table of reference C6 values, -1 means the entry is invalid
@@ -16,14 +13,11 @@ float r0ab[NUM_ELEMENTS][NUM_ELEMENTS]; // table of reference cutoff radii betwe
 float rcov[NUM_ELEMENTS]; // table of covalent radii of each element
 float r2r4[NUM_ELEMENTS]; // table of r2/r4 values of each element, needed for computing C8 from C6.
 
-// type definitions
-typedef float real_t; // type for real numbers
-
 /**
  * @brief function to initialize the parameters
  * @note this function reads data from params.bin file and initializes the c6ab_ref, r0ab, rcov, and r2r4 arrays
  */
-void init_params() {
+inline void init_params() {
     // construct c6ab_ref, r0ab, rcov and r2r4 arrays
     FILE *file = fopen("params.bin", "rb");
     if (!file) {
@@ -115,3 +109,4 @@ void init_params() {
     fclose(file);
 }
 
+#endif // CONSTANTS_H
