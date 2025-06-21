@@ -20,6 +20,7 @@ endif()
 set(SOURCES 
     src/d3.cu
     src/d3_buffer.cu
+    src/d3_kernel.cu
 )
 
 set(HEADERS 
@@ -28,6 +29,7 @@ set(HEADERS
     src/d3_buffer.cuh
     src/d3_internal.h
     src/d3_types.h
+    src/d3_kernel.cuh
     src/d3.h
 )
 
@@ -94,6 +96,8 @@ add_custom_command(
     COMMAND ${CMAKE_CUDA_COMPILER} -c ${CMAKE_CURRENT_SOURCE_DIR}/src/d3.cu -o ${CMAKE_CURRENT_BINARY_DIR}/d3.o
         -Xptxas -O2 -lineinfo -DBUILD_LIBRARY $<$<BOOL:${USE_STATIC_CONSTANTS}>:-DBUILD_WITH_STATIC_CONSTANTS>
     COMMAND ${CMAKE_CUDA_COMPILER} -c ${CMAKE_CURRENT_SOURCE_DIR}/src/d3_buffer.cu -o ${CMAKE_CURRENT_BINARY_DIR}/d3_buffer.o
+        -Xptxas -O2 -lineinfo -DBUILD_LIBRARY $<$<BOOL:${USE_STATIC_CONSTANTS}>:-DBUILD_WITH_STATIC_CONSTANTS>
+    COMMAND ${CMAKE_CUDA_COMPILER} -c ${CMAKE_CURRENT_SOURCE_DIR}/src/d3_kernel.cu -o ${CMAKE_CURRENT_BINARY_DIR}/d3_kernel.o
         -Xptxas -O2 -lineinfo -DBUILD_LIBRARY $<$<BOOL:${USE_STATIC_CONSTANTS}>:-DBUILD_WITH_STATIC_CONSTANTS>
     DEPENDS ${SOURCES} ${HEADERS}
             $<$<BOOL:${USE_STATIC_CONSTANTS}>:${CMAKE_CURRENT_SOURCE_DIR}/src/gen_constants.h>
@@ -172,5 +176,6 @@ endif()
 target_link_libraries(d3_cpp PRIVATE
     ${CMAKE_CURRENT_BINARY_DIR}/d3.o
     ${CMAKE_CURRENT_BINARY_DIR}/d3_buffer.o
+    ${CMAKE_CURRENT_BINARY_DIR}/d3_kernel.o
     ${CUDA_RUNTIME_LIBRARY}
     m stdc++)
