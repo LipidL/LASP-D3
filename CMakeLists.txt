@@ -91,14 +91,20 @@ set_target_properties(d3_obj PROPERTIES
 target_link_libraries(d3_obj PRIVATE m)
 
 # Custom command to create standalone .o file
+# Generate output object filenames based on source files
+set(OUTPUT_OBJECTS "")
+set(COMPILE_COMMANDS "")
+foreach(SOURCE_FILE ${SOURCES})
+    get_filename_component(FILE_NAME ${SOURCE_FILE} NAME_WE)
+    list(APPEND OUTPUT_OBJECTS ${CMAKE_CURRENT_BINARY_DIR}/${FILE_NAME}.o)
+    list(APPEND COMPILE_COMMANDS 
+        COMMAND ${CMAKE_CUDA_COMPILER} -c ${CMAKE_CURRENT_SOURCE_DIR}/${SOURCE_FILE} -o ${CMAKE_CURRENT_BINARY_DIR}/${FILE_NAME}.o
+        -Xptxas -O2 -lineinfo -DBUILD_LIBRARY $<$<BOOL:${USE_STATIC_CONSTANTS}>:-DBUILD_WITH_STATIC_CONSTANTS>)
+endforeach()
+
 add_custom_command(
-    OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/d3.o ${CMAKE_CURRENT_BINARY_DIR}/d3_buffer.o
-    COMMAND ${CMAKE_CUDA_COMPILER} -c ${CMAKE_CURRENT_SOURCE_DIR}/src/d3.cu -o ${CMAKE_CURRENT_BINARY_DIR}/d3.o
-        -Xptxas -O2 -lineinfo -DBUILD_LIBRARY $<$<BOOL:${USE_STATIC_CONSTANTS}>:-DBUILD_WITH_STATIC_CONSTANTS>
-    COMMAND ${CMAKE_CUDA_COMPILER} -c ${CMAKE_CURRENT_SOURCE_DIR}/src/d3_buffer.cu -o ${CMAKE_CURRENT_BINARY_DIR}/d3_buffer.o
-        -Xptxas -O2 -lineinfo -DBUILD_LIBRARY $<$<BOOL:${USE_STATIC_CONSTANTS}>:-DBUILD_WITH_STATIC_CONSTANTS>
-    COMMAND ${CMAKE_CUDA_COMPILER} -c ${CMAKE_CURRENT_SOURCE_DIR}/src/d3_kernel.cu -o ${CMAKE_CURRENT_BINARY_DIR}/d3_kernel.o
-        -Xptxas -O2 -lineinfo -DBUILD_LIBRARY $<$<BOOL:${USE_STATIC_CONSTANTS}>:-DBUILD_WITH_STATIC_CONSTANTS>
+    OUTPUT ${OUTPUT_OBJECTS}
+    ${COMPILE_COMMANDS}
     DEPENDS ${SOURCES} ${HEADERS}
             $<$<BOOL:${USE_STATIC_CONSTANTS}>:${CMAKE_CURRENT_SOURCE_DIR}/src/gen_constants.h>
     COMMENT "Generating standalone object files"
