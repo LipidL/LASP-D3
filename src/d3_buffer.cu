@@ -1,8 +1,8 @@
-#include <cmath>
-
 #include "d3_buffer.cuh"
 #include "d3_internal.h"
 
+#include <cmath>
+#include <assert.h>
 // Calculate inverse of a 3x3 matrix
 void matrix_inverse(const real_t mat[3][3], real_t inv[3][3]) {
     // Calculate determinant

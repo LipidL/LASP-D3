@@ -1,5 +1,7 @@
 #include "d3_kernel.cuh"
 
+#include <assert.h>
+
 __device__ real_t calculate_cell_volume(const real_t cell[3][3]) {
     // Calculate the volume of the cell using the determinant of the matrix formed by the cell vectors
     return cell[0][0] * (cell[1][1] * cell[2][2] - cell[1][2] * cell[2][1]) -

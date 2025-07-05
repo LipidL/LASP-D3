@@ -170,3 +170,34 @@ target_link_libraries(d3_cpp PRIVATE
     m 
     stdc++
 )
+
+# Include FetchContent for downloading GoogleTest
+include(FetchContent)
+FetchContent_Declare(
+    googletest
+    GIT_REPOSITORY https://github.com/google/googletest.git
+    GIT_TAG v1.17.0
+)
+
+# For Windows: Prevent overriding the parent project's compiler/linker settings
+set(gtest_force_shared_crt ON CACHE BOOL "" FORCE)
+FetchContent_MakeAvailable(googletest)
+
+# Enable testing
+include(CTest)
+enable_testing()
+
+# Add the test executable
+add_executable(d3_test test/d3_test.cpp)
+
+# Link against GoogleTest
+target_link_libraries(d3_test PRIVATE
+    ${CMAKE_CURRENT_BINARY_DIR}/libd3.a
+    GTest::gtest_main
+    ${CUDA_RUNTIME_LIBRARY}
+    m
+)
+
+# Register the test
+include(GoogleTest)
+gtest_discover_tests(d3_test)
