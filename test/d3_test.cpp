@@ -63,3 +63,73 @@ TEST_F(D3TestSmall, EnergyNegativeTest) {
     compute_dispersion_energy((real_t (*)[3])atoms, elements, max_length, cell, cutoff_radius, coordination_number_cutoff, max_neighbors, &energy, force, stress);
     ASSERT_LT(energy, 0.0f) << "Expected negative energy, got " << energy;
 }
+
+TEST_F(D3TestSmall, ResultStableTest) {
+    // Run the dispersion energy calculation multiple times and verify stability
+    const int num_runs = 64; // Number of runs to check stability
+    real_t energies[num_runs];
+    real_t forces[num_runs][30]; // 10 atoms * 3 components
+    real_t stresses[num_runs][9]; // 3x3 stress tensor
+    real_t energy_tolerance = 1e-5; // Tolerance for energy comparison
+    real_t force_tolerance = 1e-5; // Tolerance for force comparison
+    real_t stress_tolerance = 1e-5; // Tolerance for stress comparison
+    
+    // Perform multiple runs
+    for (int run = 0; run < num_runs; ++run) {
+        real_t force[30] = {0};
+        real_t stress[9] = {0};
+        real_t energy = 0.0f;
+        
+        compute_dispersion_energy((real_t (*)[3])atoms, elements, max_length, cell, 
+                                 cutoff_radius, coordination_number_cutoff, max_neighbors, 
+                                 &energy, force, stress);
+        
+        // Store results
+        energies[run] = energy;
+        for (int i = 0; i < 30; ++i) {
+            forces[run][i] = force[i];
+        }
+        for (int i = 0; i < 9; ++i) {
+            stresses[run][i] = stress[i];
+        }
+    }
+    
+    // Check that energies are consistent across runs
+    for (int run = 1; run < num_runs; ++run) {
+        ASSERT_NEAR(energies[run], energies[0], energy_tolerance) 
+            << "Energy not stable between run 0 and run " << run;
+    }
+    
+    // Check that forces are consistent
+    for (int run = 1; run < num_runs; ++run) {
+        for (int i = 0; i < 30; ++i) {
+            ASSERT_NEAR(forces[run][i], forces[0][i], force_tolerance) 
+                << "Force component " << i << " not stable between run 0 and run " << run;
+        }
+    }
+    
+    // Check that stresses are consistent
+    for (int run = 1; run < num_runs; ++run) {
+        for (int i = 0; i < 9; ++i) {
+            ASSERT_NEAR(stresses[run][i], stresses[0][i], stress_tolerance) 
+                << "Stress component " << i << " not stable between run 0 and run " << run;
+        }
+    }
+}
+
+TEST_F(D3TestSmall, ForceSumToZeroTest) {
+    real_t energy = 0.0f;
+    real_t force[30] = {0}; // 10 atoms * 3 components
+    real_t stress[9] = {0}; // 3x3 stress tensor
+    compute_dispersion_energy((real_t (*)[3])atoms, elements, max_length, cell, cutoff_radius, coordination_number_cutoff, max_neighbors, &energy, force, stress);
+    real_t force_sum[3] = {0.0f, 0.0f, 0.0f};
+    for (size_t i = 0; i < max_length; ++i) {
+        force_sum[0] += force[i * 3];
+        force_sum[1] += force[i * 3 + 1];
+        force_sum[2] += force[i * 3 + 2];
+    }
+    for (size_t i = 0; i < 3; ++i) {
+        ASSERT_NEAR(force_sum[i], 0.0f, 1e-5) << "Force sum component " << i << " is not close to zero: " << force_sum[i];
+    }
+}
+
