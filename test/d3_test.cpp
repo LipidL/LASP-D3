@@ -133,3 +133,72 @@ TEST_F(D3TestSmall, ForceSumToZeroTest) {
     }
 }
 
+TEST_F(D3TestSmall, StressSymmetryTest) {
+    real_t energy = 0.0f;
+    real_t force[30] = {0}; // 10 atoms * 3 components
+    real_t stress[9] = {0}; // 3x3 stress tensor
+    compute_dispersion_energy((real_t (*)[3])atoms, elements, max_length, cell, cutoff_radius, coordination_number_cutoff, max_neighbors, &energy, force, stress);
+    
+    // Check stress tensor symmetry: S_ij should equal S_ji
+    ASSERT_NEAR(stress[1], stress[3], 1e-5) << "Stress tensor is not symmetric: S_12 != S_21";
+    ASSERT_NEAR(stress[2], stress[6], 1e-5) << "Stress tensor is not symmetric: S_13 != S_31";
+    ASSERT_NEAR(stress[5], stress[7], 1e-5) << "Stress tensor is not symmetric: S_23 != S_32";
+}
+
+TEST_F(D3TestSmall, ForceDifferentialTest) {
+    // Test to verify forces by differentiating energy
+    real_t energy = 0.0f;
+    real_t analytical_force[30] = {0}; // 10 atoms * 3 components
+    real_t stress[9] = {0}; // 3x3 stress tensor
+    compute_dispersion_energy((real_t (*)[3])atoms, elements, max_length, cell, 
+                             cutoff_radius, coordination_number_cutoff, max_neighbors, 
+                             &energy, analytical_force, stress);
+
+    // Calculate forces by finite difference
+    real_t numerical_force[30] = {0};
+    real_t delta = 1e-4f; // Small displacement for finite difference
+    real_t tmp_atoms[10][3]; // Copy of atom positions for modification
+    // Copy original positions
+    for (size_t i = 0; i < max_length; ++i) {
+        for (size_t j = 0; j < 3; ++j) {
+            tmp_atoms[i][j] = atoms[i][j];
+        }
+    }
+    printf("Calculating forces using finite difference method...\n");
+    
+    // For each atom and each direction
+    for (size_t atom_idx = 0; atom_idx < max_length; ++atom_idx) {
+        for (size_t dir = 0; dir < 3; ++dir) {
+            // Dummy force and stress arrays for energy calculation
+            real_t dummy_force[30] = {0};
+            real_t dummy_stress[9] = {0};
+            // Forward displacement
+            tmp_atoms[atom_idx][dir] += delta;
+            real_t energy_plus = 0.0f;
+            compute_dispersion_energy((real_t (*)[3])tmp_atoms, elements, max_length, cell,
+                                     cutoff_radius, coordination_number_cutoff, max_neighbors,
+                                     &energy_plus, dummy_force, dummy_stress);
+            
+            // Backward displacement
+            tmp_atoms[atom_idx][dir] = atoms[atom_idx][dir] - delta;
+            real_t energy_minus = 0.0f;
+            compute_dispersion_energy((real_t (*)[3])tmp_atoms, elements, max_length, cell,
+                                     cutoff_radius, coordination_number_cutoff, max_neighbors,
+                                     &energy_minus, dummy_force, dummy_stress);
+            
+            // Restore original position
+            tmp_atoms[atom_idx][dir] = atoms[atom_idx][dir];
+            
+            // Central difference formula for the derivative: f'(x) ≈ [f(x+h) - f(x-h)] / (2h)
+            // Force is negative gradient of energy
+            numerical_force[atom_idx * 3 + dir] = -(energy_plus - energy_minus) / (2.0f * delta);
+        }
+    }
+    // Compare numerical and analytical forces
+    real_t force_tolerance = 1e-3f; // Tolerance for finite difference approximation
+    for (size_t i = 0; i < max_length * 3; ++i) {
+        ASSERT_NEAR(numerical_force[i], analytical_force[i], force_tolerance)
+            << "Force mismatch at component " << i << ": numerical = " << numerical_force[i]
+            << ", analytical = " << analytical_force[i];
+    }
+}
