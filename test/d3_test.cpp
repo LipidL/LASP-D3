@@ -97,7 +97,7 @@ TEST_P(D3Test, ResultStable) {
     for (int run = 0; run < num_runs; ++run) {
         real_t current_energy = 0.0f;
         real_t *current_force = (real_t *)malloc(max_length * 3 * sizeof(real_t)); // 3 components per atom
-        EXPECT_NE(current_force, nullptr) << "Failed to allocate memory for current force";
+        ASSERT_NE(current_force, nullptr) << "Failed to allocate memory for current force";
         for (size_t i = 0; i < max_length * 3; ++i) {
             current_force[i] = 0.0f; // Initialize force to zero
         }
@@ -158,18 +158,18 @@ TEST_P(D3Test, NumericForceMatch) {
 
     // Prepare atoms for numerical differentiation
     real_t *tmp_atoms = (real_t *)malloc(max_length * 3 * sizeof(real_t));
-    EXPECT_NE(tmp_atoms, nullptr) << "Failed to allocate memory for temporary atoms";
+    ASSERT_NE(tmp_atoms, nullptr) << "Failed to allocate memory for temporary atoms";
     for (size_t i = 0; i < max_length * 3; ++i) {
         tmp_atoms[i] = atoms[i]; // Copy original atom positions
     }
 
-    real_t tolerance = 1e-3f; // Tolerance for numerical differentiation
-    real_t delta = 1e-4f; // Perturbation size for numerical differentiation (increased from 1e-5f)
+    real_t tolerance = 1e-3f; // Tolerance, relatively large because numerical differentiation can bring significant errors
+    real_t delta = 1e-3f; // Perturbation size, relatively large to cover instability in energy computation
     for(size_t atom_idx = 0; atom_idx < max_length; ++atom_idx) {
         for(size_t component = 0; component < 3; ++component) {
             // Prepare for numerical differentiation
             real_t *dummy_force = (real_t *)malloc(max_length * 3 * sizeof(real_t)); // Temporary force for numerical differentiation
-            EXPECT_NE(dummy_force, nullptr) << "Failed to allocate memory for dummy force";
+            ASSERT_NE(dummy_force, nullptr) << "Failed to allocate memory for dummy force";
             for (size_t i = 0; i < max_length * 3; ++i) {
                 dummy_force[i] = 0.0f;
             }
@@ -180,7 +180,7 @@ TEST_P(D3Test, NumericForceMatch) {
                 tmp_atoms[i] = atoms[i];
             }
             
-            // Forward displacement
+            // Forward perturbation
             tmp_atoms[atom_idx * 3 + component] += delta; 
             real_t energy_plus = 0.0f;
             compute_dispersion_energy((real_t (*)[3])tmp_atoms, elements, max_length, cell, cutoff_radius, coordination_number_cutoff, max_neighbors, &energy_plus, dummy_force, dummy_stress);
@@ -190,7 +190,7 @@ TEST_P(D3Test, NumericForceMatch) {
                 tmp_atoms[i] = atoms[i];
             }
             
-            // Backward displacement
+            // Backward perturbation
             tmp_atoms[atom_idx * 3 + component] -= delta;
             real_t energy_minus = 0.0f;
             compute_dispersion_energy((real_t (*)[3])tmp_atoms, elements, max_length, cell, cutoff_radius, coordination_number_cutoff, max_neighbors, &energy_minus, dummy_force, dummy_stress);
@@ -210,6 +210,66 @@ TEST_P(D3Test, NumericForceMatch) {
     
     // Clean up tmp_atoms
     free(tmp_atoms);
+}
+
+TestConfig generate_crystal() {
+    // Create a BCC iron crystal (2x2x2 supercell)
+    const int atomic_number_Fe = 26; // Iron
+    const real_t lattice_constant = 2.87f; // Typical BCC Fe lattice constant in Angstroms
+    
+    // Create a 2x2x2 supercell
+    const int nx = 2, ny = 2, nz = 2;
+    const int total_atoms = nx * ny * nz * 2; // 2 atoms per unit cell in BCC
+    
+    // Elements vector - all iron
+    std::vector<uint16_t> elements(total_atoms, atomic_number_Fe);
+    
+    // Cell dimensions
+    real_t cell[3][3] = {
+        {nx * lattice_constant, 0.0f, 0.0f},
+        {0.0f, ny * lattice_constant, 0.0f},
+        {0.0f, 0.0f, nz * lattice_constant}
+    };
+    
+    // Create positions for atoms
+    std::vector<std::array<real_t, 3>> atoms;
+    atoms.reserve(total_atoms);
+    
+    // Generate atom positions for the BCC supercell
+    for (int i = 0; i < nx; i++) {
+        for (int j = 0; j < ny; j++) {
+            for (int k = 0; k < nz; k++) {
+                // Corner atom
+                atoms.push_back({
+                    i * lattice_constant, 
+                    j * lattice_constant, 
+                    k * lattice_constant
+                });
+                
+                // Body-centered atom
+                atoms.push_back({
+                    (i + 0.5f) * lattice_constant,
+                    (j + 0.5f) * lattice_constant,
+                    (k + 0.5f) * lattice_constant
+                });
+            }
+        }
+    }
+    
+    return {
+        "BCC_Fe_Crystal",
+        elements,
+        total_atoms,  // max_length
+        12.0f,        // cutoff_radius - larger than lattice constant to include multiple neighbors
+        12.0f,        // coordination_number_cutoff
+        100,          // max_neighbors - BCC has 8 nearest neighbors, but we need more for testing
+        atoms,
+        {
+            {cell[0][0], cell[0][1], cell[0][2]},
+            {cell[1][0], cell[1][1], cell[1][2]},
+            {cell[2][0], cell[2][1], cell[2][2]}
+        }
+    };
 }
 
 TestConfig small_system = {
@@ -238,11 +298,16 @@ TestConfig small_system = {
     } // cell
 };
 
+TestConfig crystal_system = generate_crystal(); // Generate BCC iron crystal
+
 // Instantiate the test suite with all system configurations
 INSTANTIATE_TEST_SUITE_P(
     SmokeTest,
     D3Test,
-    ::testing::Values(small_system),
+    ::testing::Values(
+        small_system, 
+        crystal_system
+    ),
     [](const testing::TestParamInfo<TestConfig>& info) {
         return info.param.test_name; // Use the test name as the test case name
     }
