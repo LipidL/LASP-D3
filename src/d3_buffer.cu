@@ -242,27 +242,10 @@ __host__ Device_Buffer::Device_Buffer(real_t coords[][3], uint16_t *elements, re
     } // cupercell information
     {
         /* construct other fields */
-        neighbor_t *neighbors;
-        CHECK_CUDA(cudaMalloc((void**)&neighbors, length * max_neighbors * sizeof(neighbor_t)));
-        CHECK_CUDA(cudaMemset(neighbors, 0, length * max_neighbors * sizeof(neighbor_t)));
-        this->host_data_.neighbors = neighbors;
-        neighbor_t *CN_neighbors;
-        CHECK_CUDA(cudaMalloc((void**)&CN_neighbors, length * max_neighbors * sizeof(neighbor_t)));
-        CHECK_CUDA(cudaMemset(CN_neighbors, 0, length * max_neighbors * sizeof(neighbor_t)));
-        this->host_data_.CN_neighbors = CN_neighbors;
         real_t *coordination_numbers;
         CHECK_CUDA(cudaMalloc((void**)&coordination_numbers, length * sizeof(real_t)));
         CHECK_CUDA(cudaMemset(coordination_numbers, 0, length * sizeof(real_t)));
         this->host_data_.coordination_numbers = coordination_numbers;
-        uint64_t *num_neighbors;
-        CHECK_CUDA(cudaMalloc((void**)&num_neighbors, length * sizeof(uint64_t)));
-        CHECK_CUDA(cudaMemset(num_neighbors, 0, length * sizeof(uint64_t)));
-        this->host_data_.num_neighbors = num_neighbors;
-        uint64_t *num_CN_neighbors;
-        CHECK_CUDA(cudaMalloc((void**)&num_CN_neighbors, length * sizeof(uint64_t)));
-        CHECK_CUDA(cudaMemset(num_CN_neighbors, 0, length * sizeof(uint64_t)));
-        this->host_data_.num_CN_neighbors = num_CN_neighbors;
-        this->host_data_.max_neighbors = max_neighbors; 
         this->host_data_.status = COMPUTE_SUCCESS; // set the status to normal
         real_t *dE_dCN;
         CHECK_CUDA(cudaMalloc((void**)&dE_dCN, length * sizeof(real_t)));
@@ -294,11 +277,7 @@ __host__ Device_Buffer::~Device_Buffer() {
     CHECK_CUDA(cudaFree(this->host_data_.r0ab)); // free the r0ab array
     CHECK_CUDA(cudaFree(this->host_data_.rcov)); // free the rcov array
     CHECK_CUDA(cudaFree(this->host_data_.r2r4)); // free the r2r4 array
-    CHECK_CUDA(cudaFree(this->host_data_.neighbors)); // free the neighbors array
-    CHECK_CUDA(cudaFree(this->host_data_.CN_neighbors)); // free the CN neighbors array
     CHECK_CUDA(cudaFree(this->host_data_.coordination_numbers)); // free the coordination numbers array
-    CHECK_CUDA(cudaFree(this->host_data_.num_neighbors)); // free the number of neighbors array
-    CHECK_CUDA(cudaFree(this->host_data_.num_CN_neighbors)); // free the number of CN neighbors array
     CHECK_CUDA(cudaFree(this->host_data_.dE_dCN)); // free the dE/dCN array
     CHECK_CUDA(cudaFree(this->host_data_.energy)); // free the energy array
     CHECK_CUDA(cudaFree(this->host_data_.forces)); // free the forces array
@@ -319,11 +298,7 @@ __host__ Device_Buffer& Device_Buffer::operator=(Device_Buffer&& other) noexcept
         CHECK_CUDA(cudaFree(this->host_data_.r0ab));
         CHECK_CUDA(cudaFree(this->host_data_.rcov));
         CHECK_CUDA(cudaFree(this->host_data_.r2r4));
-        CHECK_CUDA(cudaFree(this->host_data_.neighbors));
-        CHECK_CUDA(cudaFree(this->host_data_.CN_neighbors));
         CHECK_CUDA(cudaFree(this->host_data_.coordination_numbers));
-        CHECK_CUDA(cudaFree(this->host_data_.num_neighbors));
-        CHECK_CUDA(cudaFree(this->host_data_.num_CN_neighbors));
         CHECK_CUDA(cudaFree(this->host_data_.dE_dCN));
         CHECK_CUDA(cudaFree(this->host_data_.energy));
         CHECK_CUDA(cudaFree(this->host_data_.forces));
@@ -393,14 +368,10 @@ __host__ void Device_Buffer::set_cell(real_t cell[3][3]) {
 } // set cell
 __host__ void Device_Buffer::clear() {
     CHECK_CUDA(cudaMemset(host_data_.coordination_numbers, 0, host_data_.num_atoms * sizeof(real_t))); // clear the coordination numbers
-    CHECK_CUDA(cudaMemset(host_data_.num_neighbors, 0, host_data_.num_atoms * sizeof(uint64_t))); // clear the number of neighbors
-    CHECK_CUDA(cudaMemset(host_data_.num_CN_neighbors, 0, host_data_.num_atoms * sizeof(uint64_t))); // clear the number of CN neighbors
     CHECK_CUDA(cudaMemset(host_data_.dE_dCN, 0, host_data_.num_atoms * sizeof(real_t))); // clear the dE/dCN
     CHECK_CUDA(cudaMemset(host_data_.energy, 0, sizeof(real_t))); // clear the energy
     CHECK_CUDA(cudaMemset(host_data_.forces, 0, host_data_.num_atoms * 3 * sizeof(real_t))); // clear the forces
     CHECK_CUDA(cudaMemset(host_data_.stress, 0, 9 * sizeof(real_t))); // clear the stress
-    CHECK_CUDA(cudaMemset(host_data_.neighbors, 0, host_data_.num_atoms * host_data_.max_neighbors * sizeof(neighbor_t))); // clear the neighbors
-    CHECK_CUDA(cudaMemset(host_data_.CN_neighbors, 0, host_data_.num_atoms * host_data_.max_neighbors * sizeof(neighbor_t))); // clear the CN neighbors
     CHECK_CUDA(cudaMemcpy(device_data_, &host_data_, sizeof(device_data_t), cudaMemcpyHostToDevice)); // copy the host data to device
     CHECK_CUDA(cudaDeviceSynchronize()); // synchronize the device
 } // clear the device buffer
