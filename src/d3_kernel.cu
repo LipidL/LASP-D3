@@ -467,8 +467,13 @@ __global__ void three_body_kernel(device_data_t *data) {
     real_t cell_volume = calculate_cell_volume(data->cell);
     uint64_t atom_1_index = blockIdx.x; // each block is responsible for one central atom
     atom_t atom_1 = data->atoms[atom_1_index]; // central atom
-    real_t covalent_radii_1 = data->rcov[atom_1_index]; // covalent radius of the central atom
+    uint64_t atom_1_type = data->atom_types[atom_1_index]; // type of the central atom
+    real_t covalent_radii_1 = data->rcov[atom_1_type]; // covalent radius of the central atom
     real_t dE_dCN = data->dE_dCN[atom_1_index]; // derivative of energy with respect to coordination number
+    if (threadIdx.x == 0) {
+        printf("dE/dCN: %f for atom %llu\n", dE_dCN, atom_1_index);
+    }
+
 
     /* when finding neighbors, each tread is responsible for a neighbor atom and they loop over supercell indicies.
     Therefore, the neighbors list is organized in a atom_index priored way.
@@ -560,11 +565,13 @@ __global__ void three_body_kernel(device_data_t *data) {
             real_t distance = sqrtf(powf(atom_1.x - atom_2.x, 2) + powf(atom_1.y - atom_2.y, 2) + powf(atom_1.z - atom_2.z, 2));
             /* if the distance is within cutoff range, update neighbor_flags */
             if (distance <= CN_cutoff && distance > 0.0f) {
+                /* eq 15 in Grimme et al. 2010
+                $CN^A = \sum_{B \neq A}^{N} \sqrt{1}{1+exp(-k_1(k_2(R_{A,cov}+R_{B,cov})/r_{AB}-1))}$ */
                 real_t exp = expf(-K1*((covalent_radii_1 + covalent_radii_2)/distance - 1.0f)); // $\exp(-k_1*(\frac{R_A+R_b}{r_{ab}}-1))$
                 real_t tanh_value = tanhf(CN_cutoff - distance); // $\tanh(CN_cutoff - r_{ab})$
                 real_t smooth_cutoff = powf(tanh_value, 3); // $\tanh^3(CN_cutoff- r_{ab}))$, this is a smooth cutoff function added in LASP code.
-                real_t d_smooth_cutoff = 3.0f * powf(tanh_value, 2) * (1.0f - powf(tanh_value, 2)) * (-1.0f); // derivative of the smooth cutoff function with respect to distance
-                real_t dCN_datom = powf(1.0f+exp, -2.0f) * (-K1) * exp * (covalent_radii_1 + covalent_radii_2) * powf(distance, -3.0f) * smooth_cutoff + d_smooth_cutoff * 1.0f / (1.0f + exp) / distance; // dCN_ij/dr_ij * 1/r_ij
+                real_t d_smooth_cutoff_dr = 3.0f * powf(tanh_value, 2) * (1.0f - powf(tanh_value,2)) * (-1.0f); // derivative of the smooth cutoff function with respect to distance       
+                real_t dCN_datom = powf(1.0f+exp,-2.0f)*(-K1)*exp*(covalent_radii_1 + covalent_radii_2)*powf(distance, -3.0f) * smooth_cutoff + d_smooth_cutoff_dr * 1.0f/(1.0f+exp) / distance; // dCN_ij/dr_ij * 1/r_ij
                 real_t dE_drik = dE_dCN * dCN_datom; // dE/drik = dE/dCN * dCN/drik
                 /* accumulate force for the central atom */
                 // force_central[0] += dE_drik * (atom_1.x - atom_k.x);
@@ -663,7 +670,7 @@ __global__ void three_body_kernel(device_data_t *data) {
     /* accumulate stress */
     for (uint64_t i = 0; i < 3; ++i) {
         for (uint64_t j = 0; j < 3; ++j) {
-            atomicAdd(&data->stress[i * 3 + j], stress[i * 3 + j]); // accumulate the stress for the central atom
+            atomicAdd(&data->stress[i * 3 + j], stress[i * 3 + j] / cell_volume); // accumulate the stress for the central atom
         }
     }
 }
