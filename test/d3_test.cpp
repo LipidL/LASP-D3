@@ -212,6 +212,149 @@ TEST_P(D3Test, NumericForceMatch) {
     free(tmp_atoms);
 }
 
+TEST_P(D3Test, SupercellConsistency) {
+    // Define supercell dimensions (nx, ny, nz)
+    int supercell_dims[3] = {2, 2, 2};
+    int supercell_volume = supercell_dims[0] * supercell_dims[1] * supercell_dims[2];
+    
+    // Calculate energy, force, and stress for the original system
+    real_t original_energy = 0.0f;
+    real_t *original_force = (real_t *)malloc(max_length * 3 * sizeof(real_t));
+    ASSERT_NE(original_force, nullptr);
+    for (size_t i = 0; i < max_length * 3; ++i) {
+        original_force[i] = 0.0f;
+    }
+    real_t original_stress[9] = {0.0f};
+    
+    compute_dispersion_energy(
+        (real_t (*)[3])atoms, 
+        elements, 
+        max_length, 
+        cell, 
+        cutoff_radius, 
+        coordination_number_cutoff, 
+        max_neighbors, 
+        &original_energy, 
+        original_force, 
+        original_stress
+    );
+    
+    // Create a supercell with dimensions defined by supercell_dims
+    uint64_t supercell_length = max_length * supercell_volume;
+    uint16_t *supercell_elements = (uint16_t *)malloc(supercell_length * sizeof(uint16_t));
+    real_t *supercell_atoms = (real_t *)malloc(supercell_length * 3 * sizeof(real_t));
+    real_t *supercell_force = (real_t *)malloc(supercell_length * 3 * sizeof(real_t));
+    real_t supercell_cell[3][3];
+    real_t supercell_energy = 0.0f;
+    real_t supercell_stress[9] = {0.0f};
+    
+    ASSERT_NE(supercell_elements, nullptr);
+    ASSERT_NE(supercell_atoms, nullptr);
+    ASSERT_NE(supercell_force, nullptr);
+    
+    // Copy original atoms and create duplicated atoms with shifted positions
+    size_t atom_index = 0;
+    for (int x = 0; x < supercell_dims[0]; ++x) {
+        for (int y = 0; y < supercell_dims[1]; ++y) {
+            for (int z = 0; z < supercell_dims[2]; ++z) {
+                for (size_t i = 0; i < max_length; ++i) {
+                    supercell_elements[atom_index] = elements[i];
+                    // Position = original position + x*cell[0] + y*cell[1] + z*cell[2]
+                    supercell_atoms[atom_index * 3 + 0] = atoms[i * 3 + 0] + 
+                                                          x * cell[0][0] + 
+                                                          y * cell[1][0] + 
+                                                          z * cell[2][0];
+                    supercell_atoms[atom_index * 3 + 1] = atoms[i * 3 + 1] + 
+                                                          x * cell[0][1] + 
+                                                          y * cell[1][1] + 
+                                                          z * cell[2][1];
+                    supercell_atoms[atom_index * 3 + 2] = atoms[i * 3 + 2] + 
+                                                          x * cell[0][2] + 
+                                                          y * cell[1][2] + 
+                                                          z * cell[2][2];
+                    atom_index++;
+                }
+            }
+        }
+    }
+    
+    // Initialize forces to zero
+    for (size_t i = 0; i < supercell_length * 3; ++i) {
+        supercell_force[i] = 0.0f;
+    }
+    
+    // Create the supercell lattice vectors
+    for (int i = 0; i < 3; ++i) {
+        for (int j = 0; j < 3; ++j) {
+            supercell_cell[i][j] = cell[i][j] * supercell_dims[i];
+        }
+    }
+    
+    // Calculate energy, force, and stress for the supercell
+    compute_dispersion_energy(
+        (real_t (*)[3])supercell_atoms, 
+        supercell_elements, 
+        supercell_length, 
+        supercell_cell, 
+        cutoff_radius, 
+        coordination_number_cutoff, 
+        max_neighbors, 
+        &supercell_energy, 
+        supercell_force, 
+        supercell_stress
+    );
+    
+    // Check if energy scales with system size
+    // For a NxNxN supercell, we expect energy to be roughly N^3 times the original
+    real_t expected_energy_ratio = static_cast<real_t>(supercell_volume);
+    real_t energy_ratio = supercell_energy / original_energy;
+    EXPECT_NEAR(energy_ratio, expected_energy_ratio, 0.2f * expected_energy_ratio) 
+        << "Energy doesn't scale properly with supercell size. "
+        << "Original: " << original_energy << ", Supercell: " << supercell_energy;
+    
+    // Check if forces on equivalent atoms are similar
+    // Compare atoms at the same relative positions in different unit cells
+    real_t force_tolerance = 1e-4f;
+    for (int x = 0; x < supercell_dims[0]; ++x) {
+        for (int y = 0; y < supercell_dims[1]; ++y) {
+            for (int z = 0; z < supercell_dims[2]; ++z) {
+                if (x == 0 && y == 0 && z == 0) continue; // Skip first unit cell (reference)
+                
+                for (size_t i = 0; i < max_length; ++i) {
+                    size_t ref_idx = i;
+                    size_t test_idx = i + (x * supercell_dims[1] * supercell_dims[2] + 
+                                          y * supercell_dims[2] + z) * max_length;
+                    
+                    for (size_t j = 0; j < 3; ++j) {
+                        EXPECT_NEAR(
+                            supercell_force[ref_idx * 3 + j], 
+                            supercell_force[test_idx * 3 + j], 
+                            force_tolerance
+                        ) << "Force mismatch on equivalent atoms: ref atom " << ref_idx 
+                          << ", test atom " << test_idx << ", component " << j;
+                    }
+                }
+            }
+        }
+    }
+    
+    // Check if stress tensor components scale appropriately
+    real_t stress_tolerance = 0.1f;
+    for (size_t i = 0; i < 9; ++i) {
+        EXPECT_NEAR(
+            supercell_stress[i], 
+            original_stress[i], 
+            stress_tolerance
+        ) << "Stress component mismatch at index " << i;
+    }
+    
+    // Clean up
+    free(supercell_elements);
+    free(supercell_atoms);
+    free(supercell_force);
+    free(original_force);
+}
+
 TestConfig generate_crystal() {
     // Create a BCC iron crystal (2x2x2 supercell)
     const int atomic_number_Fe = 26; // Iron
@@ -260,9 +403,9 @@ TestConfig generate_crystal() {
         "BCC_Fe_Crystal",
         elements,
         total_atoms,  // max_length
-        12.0f,        // cutoff_radius - larger than lattice constant to include multiple neighbors
-        12.0f,        // coordination_number_cutoff
-        100,          // max_neighbors - BCC has 8 nearest neighbors, but we need more for testing
+        40.0f,        // cutoff_radius
+        40.0f,        // coordination_number_cutoff
+        30000,       // max_neighbors
         atoms,
         {
             {cell[0][0], cell[0][1], cell[0][2]},
