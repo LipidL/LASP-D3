@@ -136,8 +136,12 @@ __global__ void print_coordination_number_kernel(device_data_t *data) {
 __global__ void two_body_kernel(device_data_t *data) {
     extern __shared__ real_t dE_dCN_cache[]; // shared memory for dE/dCN cache
     __shared__ real_t energy_cache;
+    __shared__ real_t stress_cache[9]; // shared memory for stress cache
     if (threadIdx.x == 0) {
         energy_cache = 0.0f; // initialize the energy cache to 0
+        for (int i = 0; i < 9; ++i) {
+            stress_cache[i] = 0.0f; // initialize the stress cache to 0
+        }
     }
     __syncthreads(); // synchronize threads in the block
     real_t dE_dCN = 0.0f; // derivative of energy with respect to coordination number
@@ -435,10 +439,10 @@ __global__ void two_body_kernel(device_data_t *data) {
         atomicAdd(&data->forces[atom_1_index*3+1], local_force_central[1]);
         atomicAdd(&data->forces[atom_1_index*3+2], local_force_central[2]);
 
-        /* accumulate local stress to global stress */
+        /* accumulate local stress to shared cache */
         for (uint64_t i = 0; i < 3; ++i) {
             for (uint64_t j = 0; j < 3; ++j) {
-                atomicAdd(&data->stress[i*3+j], local_stress[i*3+j]);
+                atomicAdd(&stress_cache[i*3+j], local_stress[i*3+j]);
             }
         }
         __syncthreads(); // make sure all threads see the updated dE_dCN_cache
@@ -446,11 +450,16 @@ __global__ void two_body_kernel(device_data_t *data) {
         if (threadIdx.x == 0) {
             // accumulate energy from shared memory
             atomicAdd(data->energy, energy_cache);
+            // accumulate dE/dCN from shared memory
             real_t dE_dCN_sum = 0.0f;
             for (uint64_t i = 0; i < blockDim.x; ++i) {
                 dE_dCN_sum += dE_dCN_cache[i];
             }
             data->dE_dCN[atom_1_index] = dE_dCN_sum; // store the value in global memory
+            // accumulate stress from shared memory
+            for (uint64_t i = 0; i < 9; ++i) {
+                atomicAdd(&data->stress[i], stress_cache[i]);
+            }
         }
     }
 }
@@ -470,10 +479,6 @@ __global__ void three_body_kernel(device_data_t *data) {
     uint64_t atom_1_type = data->atom_types[atom_1_index]; // type of the central atom
     real_t covalent_radii_1 = data->rcov[atom_1_type]; // covalent radius of the central atom
     real_t dE_dCN = data->dE_dCN[atom_1_index]; // derivative of energy with respect to coordination number
-    if (threadIdx.x == 0) {
-        printf("dE/dCN: %f for atom %llu\n", dE_dCN, atom_1_index);
-    }
-
 
     /* when finding neighbors, each tread is responsible for a neighbor atom and they loop over supercell indicies.
     Therefore, the neighbors list is organized in a atom_index priored way.
