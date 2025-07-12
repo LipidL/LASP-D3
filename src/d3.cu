@@ -115,7 +115,7 @@ uint16_t compute_dispersion_energy_from_handle_status(
     CHECK_CUDA(cudaDeviceSynchronize()); // synchronize the device to ensure all threads are finished
     #endif
     debug("launching two_body_kernel, size: %zu, %d\n", length, MAX_BLOCK_SIZE);
-    two_body_kernel<<<length, MAX_BLOCK_SIZE, MAX_BLOCK_SIZE * sizeof(real_t), stream>>>(buffer->get_device_data());
+    two_body_kernel<<<length, MAX_BLOCK_SIZE, 0, stream>>>(buffer->get_device_data());
     debug("launching three_body_kernel, size: %zu, %d\n", length, MAX_BLOCK_SIZE);
     three_body_kernel<<<length, MAX_BLOCK_SIZE, 0, stream>>>(buffer->get_device_data());
 

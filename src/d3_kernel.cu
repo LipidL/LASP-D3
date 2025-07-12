@@ -2,11 +2,37 @@
 
 #include <assert.h>
 
-__device__ real_t calculate_cell_volume(const real_t cell[3][3]) {
+__inline__ __device__ real_t calculate_cell_volume(const real_t cell[3][3]) {
     // Calculate the volume of the cell using the determinant of the matrix formed by the cell vectors
     return cell[0][0] * (cell[1][1] * cell[2][2] - cell[1][2] * cell[2][1]) -
            cell[0][1] * (cell[1][0] * cell[2][2] - cell[1][2] * cell[2][0]) +
            cell[0][2] * (cell[1][0] * cell[2][1] - cell[1][1] * cell[2][0]);
+}
+
+__inline__ __device__ real_t warpReduceSum(real_t val) {
+    for (int offset = warpSize / 2; offset > 0; offset /= 2) {
+        val += __shfl_down_sync(0xFFFFFFFF, val, offset);
+    }
+    return val;
+}
+
+__inline__ __device__ real_t blockReduceSum(real_t val) {
+    static __shared__ real_t shared[32];
+    int lane = threadIdx.x % warpSize;
+    int warp_id = threadIdx.x / warpSize;
+
+    val = warpReduceSum(val); // reduce within the warp
+
+    if (lane == 0) {
+        shared[warp_id] = val; // store the result in shared memory
+    }
+    __syncthreads(); // synchronize threads in the block
+
+    if (warp_id == 0) {
+        val = (threadIdx.x < blockDim.x / warpSize) ? shared[lane] : 0.0f; // only the first warp writes to shared memory
+        val = warpReduceSum(val); // final reduction across warps
+    }
+    return val;
 }
 
 /**
@@ -134,21 +160,11 @@ __global__ void print_coordination_number_kernel(device_data_t *data) {
  * @note the number of threads in each block can be any value, but it's better to set a value smaller than the number of neighbors.
  */
 __global__ void two_body_kernel(device_data_t *data) {
-    extern __shared__ real_t dE_dCN_cache[]; // shared memory for dE/dCN cache
-    __shared__ real_t energy_cache;
-    __shared__ real_t stress_cache[9]; // shared memory for stress cache
-    if (threadIdx.x == 0) {
-        energy_cache = 0.0f; // initialize the energy cache to 0
-        for (int i = 0; i < 9; ++i) {
-            stress_cache[i] = 0.0f; // initialize the stress cache to 0
-        }
-    }
-    __syncthreads(); // synchronize threads in the block
     real_t dE_dCN = 0.0f; // derivative of energy with respect to coordination number
-    uint64_t atom_1_index = blockIdx.x; // each block is responsible for one central atom
-    uint64_t atom_1_type = data->atom_types[atom_1_index]; // type of the central atom
-    atom_t atom_1 = data->atoms[atom_1_index]; // central atom
-    real_t coordination_number_1 = data->coordination_numbers[atom_1_index]; // coordination number of the central atom
+    const uint64_t atom_1_index = blockIdx.x; // each block is responsible for one central atom
+    const uint64_t atom_1_type = data->atom_types[atom_1_index]; // type of the central atom
+    const atom_t atom_1 = data->atoms[atom_1_index]; // central atom
+    const real_t coordination_number_1 = data->coordination_numbers[atom_1_index]; // coordination number of the central atom
 
     /* local variables to reduce calls to `atomicAdd` */
     real_t local_energy = 0.0f; // local energy for the central atom
@@ -160,9 +176,9 @@ __global__ void two_body_kernel(device_data_t *data) {
     real_t force_conpensate[3] = {0.0f, 0.0f, 0.0f}; // force compensation to improve numerical stability
     real_t stress_conpensate[9] = {0.0f}; // stress compensation to improve numerical stability
     /* calculate cell volume */
-    real_t cell_volume = calculate_cell_volume(data->cell);
+    const real_t cell_volume = calculate_cell_volume(data->cell);
 
-    uint64_t total_cell_bias = data->max_cell_bias[0] * data->max_cell_bias[1] * data->max_cell_bias[2]; // total number of cell bias
+    const uint64_t total_cell_bias = data->max_cell_bias[0] * data->max_cell_bias[1] * data->max_cell_bias[2]; // total number of cell bias
     
     const uint64_t mcb0 = data->max_cell_bias[0]; // maximum cell bias in x direction
     const uint64_t mcb1 = data->max_cell_bias[1]; // maximum cell bias in y direction
@@ -191,7 +207,7 @@ __global__ void two_body_kernel(device_data_t *data) {
     uint64_t end_bias_index;
     if (data->num_atoms >= blockDim.x) {
         /* if the number of atoms exceed number of threads, each thread process an atom, going through all possible bias indicies */
-        uint64_t workload_per_thread = (data->num_atoms + blockDim.x - 1) / blockDim.x; // number of atoms per thread
+        const uint64_t workload_per_thread = (data->num_atoms + blockDim.x - 1) / blockDim.x; // number of atoms per thread
         start_index = threadIdx.x * workload_per_thread; // start index for this thread
         end_index = min(start_index + workload_per_thread, data->num_atoms); // end index for this thread
         start_bias_index = 0;
@@ -199,10 +215,10 @@ __global__ void two_body_kernel(device_data_t *data) {
     } else {
         /* If the number of atoms is smaller than number of threads, multiple threads process one atom */
         /* determine the element assigned and rank within that element's threads */
-        uint64_t threads_per_element_base = blockDim.x / data->num_atoms; // number of threads per atom
-        uint64_t threads_per_element_remainder = blockDim.x % data->num_atoms; // remainder threads
-        uint64_t num_elements_getting_extra_thread = threads_per_element_remainder; // number of threads getting an extra thread
-        uint64_t threads_in_larger_groups_total = num_elements_getting_extra_thread * (threads_per_element_base + 1); // total number of threads in larger groups
+        const uint64_t threads_per_element_base = blockDim.x / data->num_atoms; // number of threads per atom
+        const uint64_t threads_per_element_remainder = blockDim.x % data->num_atoms; // remainder threads
+        const uint64_t num_elements_getting_extra_thread = threads_per_element_remainder; // number of threads getting an extra thread
+        const uint64_t threads_in_larger_groups_total = num_elements_getting_extra_thread * (threads_per_element_base + 1); // total number of threads in larger groups
         uint64_t current_assigned_element_id;
         uint64_t threads_working_on_my_element;
         uint64_t rank_in_element_thread_group;
@@ -214,21 +230,21 @@ __global__ void two_body_kernel(device_data_t *data) {
         } else {
             /* this thread falls in later groups that have 'base' threads */
            threads_working_on_my_element = threads_per_element_base; // number of threads working on my element would be the base
-            uint64_t thraeds_already_assigned_to_larger_groups = threads_in_larger_groups_total; // number of threads already assigned to larger groups
-            uint64_t threadIdx_relative_to_smaller_groups = threadIdx.x - thraeds_already_assigned_to_larger_groups; // relative thread index in smaller groups
+            const uint64_t thraeds_already_assigned_to_larger_groups = threads_in_larger_groups_total; // number of threads already assigned to larger groups
+            const uint64_t threadIdx_relative_to_smaller_groups = threadIdx.x - thraeds_already_assigned_to_larger_groups; // relative thread index in smaller groups
             current_assigned_element_id = threadIdx_relative_to_smaller_groups / threads_working_on_my_element + num_elements_getting_extra_thread; // which element this thread is assigned to
             rank_in_element_thread_group = threadIdx_relative_to_smaller_groups % threads_working_on_my_element; // the rank of this thread within the element's threads
         }
         start_index = current_assigned_element_id; // start index for this thread
         end_index = min(current_assigned_element_id + 1, data->num_atoms); // end index for this thread
-        uint64_t bias_per_thread = total_cell_bias / threads_working_on_my_element; // number of biases per thread
+        const uint64_t bias_per_thread = total_cell_bias / threads_working_on_my_element; // number of biases per thread
         start_bias_index = rank_in_element_thread_group * bias_per_thread; // start bias index for this thread
         end_bias_index = min(start_bias_index + bias_per_thread, total_cell_bias); // end bias index for this thread
     }
     for (uint64_t atom_2_index = start_index; atom_2_index < end_index; ++atom_2_index) {
-        atom_t atom_2_original = data->atoms[atom_2_index]; // surrounding atom
-        uint64_t atom_2_type = data->atom_types[atom_2_index]; // type of the surrounding atom
-        real_t coordination_number_2 = data->coordination_numbers[atom_2_index]; // coordination number of the surrounding atom
+        const atom_t atom_2_original = data->atoms[atom_2_index]; // surrounding atom
+        const uint64_t atom_2_type = data->atom_types[atom_2_index]; // type of the surrounding atom
+        const real_t coordination_number_2 = data->coordination_numbers[atom_2_index]; // coordination number of the surrounding atom
         /* calculate the coordination number based on dispersion coefficient
             formula: $C_6^{ij} = Z/W$ 
             where $Z = \sum_{a,b}C_{6,ref}^{i,j}L_{a,b}$
@@ -282,7 +298,7 @@ __global__ void two_body_kernel(device_data_t *data) {
             printf("Warning: no valid C6ab terms found for atom pair (%llu, %llu)\n", atom_1_index, atom_2_index);
         }
 
-        real_t L_ij = W;
+        const real_t L_ij = W;
         real_t dC6ab_dCN_1 = (L_ij * L_ij > 0.0f) ? (c_ref_dL_ij_1*L_ij - c_ref_L_ij * dL_ij_1) / powf(L_ij,2.0f) : 0.0f; // avoid division by zero
         if (isnan(dC6ab_dCN_1) || isinf(dC6ab_dCN_1)) {
             printf("Error: dC6ab/dCN_1 is NaN or Inf for atom pair (%llu, %llu)\n", atom_1_index, atom_2_index);
@@ -297,17 +313,17 @@ __global__ void two_body_kernel(device_data_t *data) {
             c6_ab = 0.0f; // reset to 0.0f if it's NaN or Inf
         }
         /* calculate c8_ab by $C_8^{AB} = 3C_6^{AB}\sqrt{Q^AQ^B}$*/
-        real_t r2r4_1 = data->r2r4[atom_1_type];
-        real_t r2r4_2 = data->r2r4[atom_2_type];
-        real_t c8_ab = 3.0f * c6_ab * r2r4_1 * r2r4_2; // the value in r2r4 is already squared
-        real_t dC8ab_dCN_1 = 3.0f * dC6ab_dCN_1 * r2r4_1 * r2r4_2; // dC8ab/dCN_1
+        const real_t r2r4_1 = data->r2r4[atom_1_type];
+        const real_t r2r4_2 = data->r2r4[atom_2_type];
+        const real_t c8_ab = 3.0f * c6_ab * r2r4_1 * r2r4_2; // the value in r2r4 is already squared
+        const real_t dC8ab_dCN_1 = 3.0f * dC6ab_dCN_1 * r2r4_1 * r2r4_2; // dC8ab/dCN_1
         /* acquire the cutoff radius between the two atoms */
-        real_t cutoff_radius = data->r0ab[atom_1_type*data->num_elements + atom_2_type];
+        const real_t cutoff_radius = data->r0ab[atom_1_type*data->num_elements + atom_2_type];
         for(uint64_t bias_index = start_bias_index; bias_index < end_bias_index; ++bias_index) {
             /* each thread is responsible for one atom pair, so the number of threads should be equal to num_atoms * total_cell_bias */
-            int64_t x_bias = (bias_index % mcb0) - (mcb0/2); // x bias
-            int64_t y_bias = ((bias_index / mcb0) % mcb1) - (mcb1/2); // y bias
-            int64_t z_bias = (bias_index / (mcb0 * mcb1) % mcb2) - (mcb2/2); // z bias
+            const int64_t x_bias = (bias_index % mcb0) - (mcb0/2); // x bias
+            const int64_t y_bias = ((bias_index / mcb0) % mcb1) - (mcb1/2); // y bias
+            const int64_t z_bias = (bias_index / (mcb0 * mcb1) % mcb2) - (mcb2/2); // z bias
             assert_(atom_2_index < data->num_atoms); // make sure the index is in bounds
 
             atom_t atom_2 = atom_2_original;
@@ -316,28 +332,27 @@ __global__ void two_body_kernel(device_data_t *data) {
             atom_2.y += x_bias * cell[0][1] + y_bias * cell[1][1] + z_bias * cell[2][1]; // translate in y direction
             atom_2.z += x_bias * cell[0][2] + y_bias * cell[1][2] + z_bias * cell[2][2]; // translate in z direction
             /* calculate the distance between the two atoms */
-            real_t distance = sqrtf(powf(atom_1.x - atom_2.x, 2) + powf(atom_1.y - atom_2.y, 2) + powf(atom_1.z - atom_2.z, 2));
+            const real_t distance = sqrtf(powf(atom_1.x - atom_2.x, 2) + powf(atom_1.y - atom_2.y, 2) + powf(atom_1.z - atom_2.z, 2));
             if (distance <= cutoff && distance > 0.0f) {
                 /* calculate distance^6 and distance^8 using fast power algorithm*/
-                real_t distance_2 = distance * distance; // distance^2
-                real_t distance_3 = distance_2 * distance; // distance^3
-                real_t distance_4 = distance_2 * distance_2; // distance^4
-                real_t distance_6 = distance_3 * distance_3; // distance^6
-                real_t distance_8 = distance_4 * distance_4; // distance^8
-                real_t distance_10 = distance_6 * distance_4; // distance^10
+                const real_t distance_2 = distance * distance; // distance^2
+                const real_t distance_3 = distance_2 * distance; // distance^3
+                const real_t distance_4 = distance_2 * distance_2; // distance^4
+                const real_t distance_6 = distance_3 * distance_3; // distance^6
+                const real_t distance_8 = distance_4 * distance_4; // distance^8
+                const real_t distance_10 = distance_6 * distance_4; // distance^10
                 /* calculate the dampling function as Grimme et al. 2010, eq4 */
-                real_t f_dn_6 = 1/(1+6.0f*powf(distance/(SR_6*cutoff_radius), -ALPHA_N(6.0f)));
-                real_t f_dn_8 = 1/(1+6.0f*powf(distance/(SR_8*cutoff_radius), -ALPHA_N(8.0f)));
+                const real_t f_dn_6 = 1/(1+6.0f*powf(distance/(SR_6*cutoff_radius), -ALPHA_N(6.0f)));
+                const real_t f_dn_8 = 1/(1+6.0f*powf(distance/(SR_8*cutoff_radius), -ALPHA_N(8.0f)));
                 /* calculate the dispersion enegry as Grimme et al. 2010, eq3 */
-                real_t dispersion_energy_6 = S6*(c6_ab/distance_6)*f_dn_6;
-                real_t dispersion_energy_8 = S8*(c8_ab/distance_8)*f_dn_8;
+                const real_t dispersion_energy_6 = S6*(c6_ab/distance_6)*f_dn_6;
+                const real_t dispersion_energy_8 = S8*(c8_ab/distance_8)*f_dn_8;
                 // printf("dispersion energy between atoms (%llu,%llu): %f\n",atom_1_index,atom_2_index,dispersion_energy_6 + dispersion_energy_8);
-                real_t dispersion_energy = dispersion_energy_6 + dispersion_energy_8;
-                dispersion_energy /= 2.0f; // divide by 2 because each pair is counted twice (once for each atom)
+                const real_t dispersion_energy = (dispersion_energy_6 + dispersion_energy_8) / 2.0f; // divide by 2 because each atom pair is counted twice
                 /* add the energy back to results, use Kahan summation for higher accuracy */
                 {
-                    real_t y = dispersion_energy - energy_conpensate; // calculate the difference
-                    real_t t = local_energy + y; // add the difference to the local energy
+                    const real_t y = dispersion_energy - energy_conpensate; // calculate the difference
+                    const real_t t = local_energy + y; // add the difference to the local energy
                     energy_conpensate = (t - local_energy) - y; // calculate the compensation for the next iteration
                     local_energy = t; // update the local energy
                 }
@@ -345,8 +360,8 @@ __global__ void two_body_kernel(device_data_t *data) {
                 /* accumulate dEij/dCNi to local variable, use Kagan summation for better accuracy */
                 {
                     // real_t y = S6 * (f_dn_6 / distance_6) * dC6ab_dCN_1 + S8 * (f_dn_8 / distance_8) * dC8ab_dCN_1 - dE_dCN_conpensate; // calculate the difference
-                    real_t y = ((S6 * f_dn_6 * distance_2 * dC6ab_dCN_1 + S8 * f_dn_8 * dC8ab_dCN_1) / distance_8) - dE_dCN_conpensate; // calculate the difference
-                    real_t t = dE_dCN + y; // add the difference to the local dE/dCN
+                    const real_t y = ((S6 * f_dn_6 * distance_2 * dC6ab_dCN_1 + S8 * f_dn_8 * dC8ab_dCN_1) / distance_8) - dE_dCN_conpensate; // calculate the difference
+                    const real_t t = dE_dCN + y; // add the difference to the local dE/dCN
                     dE_dCN_conpensate = (t - dE_dCN) - y; // calculate the compensation for the next iteration
                     dE_dCN = t; // update the local dE/dCN
                 }
@@ -364,101 +379,94 @@ __global__ void two_body_kernel(device_data_t *data) {
                 force += S8 * c8_ab / distance_8 * (-f_dn_8 * f_dn_8) * (6.0f * (-ALPHA_N(8.0f))* powf(distance/(SR_8*cutoff_radius), -ALPHA_N(8.0f) - 1.0f) / (SR_8*cutoff_radius)) / distance; // dE_8/dr * 1/r
                 /* accumulate force for the central atom, use Kahan summation for better accuracy */
                 {
-                    real_t y0 = force * (atom_1.x - atom_2.x) - force_conpensate[0]; // calculate the difference for x component
-                    real_t t0 = local_force_central[0] + y0; // add the difference to the local force
+                    const real_t y0 = force * (atom_1.x - atom_2.x) - force_conpensate[0]; // calculate the difference for x component
+                    const real_t t0 = local_force_central[0] + y0; // add the difference to the local force
                     force_conpensate[0] = (t0 - local_force_central[0]) - y0; // calculate the compensation for the next iteration
                     local_force_central[0] = t0; // update the local force for x component
 
-                    real_t y1 = force * (atom_1.y - atom_2.y) - force_conpensate[1]; // calculate the difference for y component
-                    real_t t1 = local_force_central[1] + y1; // add the difference to the local force
+                    const real_t y1 = force * (atom_1.y - atom_2.y) - force_conpensate[1]; // calculate the difference for y component
+                    const real_t t1 = local_force_central[1] + y1; // add the difference to the local force
                     force_conpensate[1] = (t1 - local_force_central[1]) - y1; // calculate the compensation for the next iteration
                     local_force_central[1] = t1; // update the local force for y component
 
-                    real_t y2 = force * (atom_1.z - atom_2.z) - force_conpensate[2]; // calculate the difference for z component
-                    real_t t2 = local_force_central[2] + y2; // add the difference to the local force
+                    const real_t y2 = force * (atom_1.z - atom_2.z) - force_conpensate[2]; // calculate the difference for z component
+                    const real_t t2 = local_force_central[2] + y2; // add the difference to the local force
                     force_conpensate[2] = (t2 - local_force_central[2]) - y2; // calculate the compensation for the next iteration
                     local_force_central[2] = t2; // update the local force for z component
                 }
 
                 /* accumulate stress to local matrix instead of directly using atomicAdd, divide by 2 becuase the same entry will be calculated twice (when atom_2 is the central atom), use Kahan summation for better accuracy */
                 {
-                    real_t y0 = -1.0f * (atom_1.x - atom_2.x) * force * (atom_1.x - atom_2.x)/2.0f / cell_volume - stress_conpensate[0]; // calculate the difference for stress_xx
-                    real_t t0 = local_stress[0*3+0] + y0; // add the difference to the local stress
+                    const real_t y0 = -1.0f * (atom_1.x - atom_2.x) * force * (atom_1.x - atom_2.x)/2.0f / cell_volume - stress_conpensate[0]; // calculate the difference for stress_xx
+                    const real_t t0 = local_stress[0*3+0] + y0; // add the difference to the local stress
                     stress_conpensate[0] = (t0 - local_stress[0*3+0]) - y0; // calculate the compensation for the next iteration
                     local_stress[0*3+0] = t0; // update the local stress for stress_xx
 
-                    real_t y1 = -1.0f * (atom_1.x - atom_2.x) * force * (atom_1.y - atom_2.y)/2.0f / cell_volume - stress_conpensate[1]; // calculate the difference for stress_xy
-                    real_t t1 = local_stress[0*3+1] + y1; // add the difference to the local stress
+                    const real_t y1 = -1.0f * (atom_1.x - atom_2.x) * force * (atom_1.y - atom_2.y)/2.0f / cell_volume - stress_conpensate[1]; // calculate the difference for stress_xy
+                    const real_t t1 = local_stress[0*3+1] + y1; // add the difference to the local stress
                     stress_conpensate[1] = (t1 - local_stress[0*3+1]) - y1; // calculate the compensation for the next iteration
                     local_stress[0*3+1] = t1; // update the local stress for stress_xy
 
-                    real_t y2 = -1.0f * (atom_1.x - atom_2.x) * force * (atom_1.z - atom_2.z)/2.0f / cell_volume - stress_conpensate[2]; // calculate the difference for stress_xz
-                    real_t t2 = local_stress[0*3+2] + y2; // add the difference to the local stress
+                    const real_t y2 = -1.0f * (atom_1.x - atom_2.x) * force * (atom_1.z - atom_2.z)/2.0f / cell_volume - stress_conpensate[2]; // calculate the difference for stress_xz
+                    const real_t t2 = local_stress[0*3+2] + y2; // add the difference to the local stress
                     stress_conpensate[2] = (t2 - local_stress[0*3+2]) - y2; // calculate the compensation for the next iteration
                     local_stress[0*3+2] = t2; // update the local stress for stress_xz
 
-                    real_t y3 = -1.0f * (atom_1.y - atom_2.y) * force * (atom_1.x - atom_2.x)/2.0f / cell_volume - stress_conpensate[3]; // calculate the difference for stress_yx
-                    real_t t3 = local_stress[1*3+0] + y3; // add the difference to the local stress
+                    const real_t y3 = -1.0f * (atom_1.y - atom_2.y) * force * (atom_1.x - atom_2.x)/2.0f / cell_volume - stress_conpensate[3]; // calculate the difference for stress_yx
+                    const real_t t3 = local_stress[1*3+0] + y3; // add the difference to the local stress
                     stress_conpensate[3] = (t3 - local_stress[1*3+0]) - y3; // calculate the compensation for the next iteration
                     local_stress[1*3+0] = t3; // update the local stress for stress_yx
 
-                    real_t y4 = -1.0f * (atom_1.y - atom_2.y) * force * (atom_1.y - atom_2.y)/2.0f / cell_volume - stress_conpensate[4]; // calculate the difference for stress_yy
-                    real_t t4 = local_stress[1*3+1] + y4; // add the difference to the local stress
+                    const real_t y4 = -1.0f * (atom_1.y - atom_2.y) * force * (atom_1.y - atom_2.y)/2.0f / cell_volume - stress_conpensate[4]; // calculate the difference for stress_yy
+                    const real_t t4 = local_stress[1*3+1] + y4; // add the difference to the local stress
                     stress_conpensate[4] = (t4 - local_stress[1*3+1]) - y4; // calculate the compensation for the next iteration
                     local_stress[1*3+1] = t4; // update the local stress for stress_yy
 
-                    real_t y5 = -1.0f * (atom_1.y - atom_2.y) * force * (atom_1.z - atom_2.z)/2.0f / cell_volume - stress_conpensate[5]; // calculate the difference for stress_yz
-                    real_t t5 = local_stress[1*3+2] + y5; // add the difference to the local stress
+                    const real_t y5 = -1.0f * (atom_1.y - atom_2.y) * force * (atom_1.z - atom_2.z)/2.0f / cell_volume - stress_conpensate[5]; // calculate the difference for stress_yz
+                    const real_t t5 = local_stress[1*3+2] + y5; // add the difference to the local stress
                     stress_conpensate[5] = (t5 - local_stress[1*3+2]) - y5; // calculate the compensation for the next iteration
                     local_stress[1*3+2] = t5; // update the local stress for stress_yz
 
-                    real_t y6 = -1.0f * (atom_1.z - atom_2.z) * force * (atom_1.x - atom_2.x)/2.0f / cell_volume - stress_conpensate[6]; // calculate the difference for stress_zx
-                    real_t t6 = local_stress[2*3+0] + y6; // add the difference to the local stress
+                    const real_t y6 = -1.0f * (atom_1.z - atom_2.z) * force * (atom_1.x - atom_2.x)/2.0f / cell_volume - stress_conpensate[6]; // calculate the difference for stress_zx
+                    const real_t t6 = local_stress[2*3+0] + y6; // add the difference to the local stress
                     stress_conpensate[6] = (t6 - local_stress[2*3+0]) - y6; // calculate the compensation for the next iteration
                     local_stress[2*3+0] = t6; // update the local stress for stress_zx
 
-                    real_t y7 = -1.0f * (atom_1.z - atom_2.z) * force * (atom_1.y - atom_2.y)/2.0f / cell_volume - stress_conpensate[7]; // calculate the difference for stress_zy
-                    real_t t7 = local_stress[2*3+1] + y7; // add the difference to the local stress
+                    const real_t y7 = -1.0f * (atom_1.z - atom_2.z) * force * (atom_1.y - atom_2.y)/2.0f / cell_volume - stress_conpensate[7]; // calculate the difference for stress_zy
+                    const real_t t7 = local_stress[2*3+1] + y7; // add the difference to the local stress
                     stress_conpensate[7] = (t7 - local_stress[2*3+1]) - y7; // calculate the compensation for the next iteration
                     local_stress[2*3+1] = t7; // update the local stress for stress_zy
 
-                    real_t y8 = -1.0f * (atom_1.z - atom_2.z) * force * (atom_1.z - atom_2.z)/2.0f / cell_volume - stress_conpensate[8]; // calculate the difference for stress_zz
-                    real_t t8 = local_stress[2*3+2] + y8; // add the difference to the local stress
+                    const real_t y8 = -1.0f * (atom_1.z - atom_2.z) * force * (atom_1.z - atom_2.z)/2.0f / cell_volume - stress_conpensate[8]; // calculate the difference for stress_zz
+                    const real_t t8 = local_stress[2*3+2] + y8; // add the difference to the local stress
                     stress_conpensate[8] = (t8 - local_stress[2*3+2]) - y8; // calculate the compensation for the next iteration
                     local_stress[2*3+2] = t8; // update the local stress for stress_zz
                 }
             }
         }
 
-        dE_dCN_cache[threadIdx.x] = dE_dCN; // store the value in shared memory
-        /* accumulate energy to shared cache */
-        atomicAdd(&energy_cache, local_energy);
-
-        /* accumulate force for the central atom */
-        atomicAdd(&data->forces[atom_1_index*3+0], local_force_central[0]);
-        atomicAdd(&data->forces[atom_1_index*3+1], local_force_central[1]);
-        atomicAdd(&data->forces[atom_1_index*3+2], local_force_central[2]);
-
-        /* accumulate local stress to shared cache */
-        for (uint64_t i = 0; i < 3; ++i) {
-            for (uint64_t j = 0; j < 3; ++j) {
-                atomicAdd(&stress_cache[i*3+j], local_stress[i*3+j]);
-            }
+        const real_t dE_dCN_sum = blockReduceSum(dE_dCN); // reduce dE/dCN across the block
+        const real_t energy_sum = blockReduceSum(local_energy); // reduce energy across the block
+        real_t force_central_sum[3] = {0.0f, 0.0f, 0.0f}; // force cache for the central atom across the block
+        for (uint16_t i = 0; i < 3; ++i) {
+            force_central_sum[i] = blockReduceSum(local_force_central[i]); // reduce force across the block
         }
-        __syncthreads(); // make sure all threads see the updated dE_dCN_cache
-        /* accumulate dE/dCN and energy_cache in shared memory */
+        real_t stress_sum[9] = {0.0f}; // stress cache for
+        for (uint16_t i = 0; i < 9; ++i) {
+            stress_sum[i] = blockReduceSum(local_stress[i]); // reduce stress across the block
+        }
         if (threadIdx.x == 0) {
-            // accumulate energy from shared memory
-            atomicAdd(data->energy, energy_cache);
-            // accumulate dE/dCN from shared memory
-            real_t dE_dCN_sum = 0.0f;
-            for (uint64_t i = 0; i < blockDim.x; ++i) {
-                dE_dCN_sum += dE_dCN_cache[i];
-            }
-            data->dE_dCN[atom_1_index] = dE_dCN_sum; // store the value in global memory
-            // accumulate stress from shared memory
-            for (uint64_t i = 0; i < 9; ++i) {
-                atomicAdd(&data->stress[i], stress_cache[i]);
+            /* only the first thread in the block will write the results back to global memory */
+            data->dE_dCN[atom_1_index] = dE_dCN_sum; // accumulate dE/dCN for the central atom
+            atomicAdd(data->energy, energy_sum); // accumulate energy for the central atom
+            /* accumulate force for the central atom */
+            atomicAdd(&data->forces[atom_1_index*3+0], force_central_sum[0]);
+            atomicAdd(&data->forces[atom_1_index*3+1], force_central_sum[1]);
+            atomicAdd(&data->forces[atom_1_index*3+2], force_central_sum[2]);
+            /* accumulate stress for the central atom */
+            #pragma unroll
+            for (uint16_t i = 0; i < 9; ++i) {
+                atomicAdd(&data->stress[i], stress_sum[i]);
             }
         }
     }
