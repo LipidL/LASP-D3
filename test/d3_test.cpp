@@ -415,6 +415,14 @@ TestConfig generate_crystal() {
     };
 }
 
+TestConfig generate_surface() {
+    TestConfig crystal = generate_crystal();
+    // Lengthen the cell to create a surface
+    crystal.cell[2][2] *= 2.0f; // Double the z dimension to create a surface
+    crystal.test_name = "BCC_Fe_Surface";
+    return crystal;
+}
+
 TestConfig small_system = {
     "SmallSystem",
     {6, 6, 6, 8, 1, 1, 1, 1, 1, 1}, // C, O, H
@@ -442,6 +450,7 @@ TestConfig small_system = {
 };
 
 TestConfig crystal_system = generate_crystal(); // Generate BCC iron crystal
+TestConfig surface_system = generate_surface(); // Generate surface from the crystal
 
 // Instantiate the test suite with all system configurations
 INSTANTIATE_TEST_SUITE_P(
@@ -449,7 +458,8 @@ INSTANTIATE_TEST_SUITE_P(
     D3Test,
     ::testing::Values(
         small_system, 
-        crystal_system
+        crystal_system,
+        surface_system
     ),
     [](const testing::TestParamInfo<TestConfig>& info) {
         return info.param.test_name; // Use the test name as the test case name
