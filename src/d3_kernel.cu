@@ -676,15 +676,24 @@ __global__ void three_body_kernel(device_data_t *data) {
         atomicAdd(&data->forces[atom_2_index * 3 + 1], force_neighbor_a[1]); // accumulate the force for the neighbor atom
         atomicAdd(&data->forces[atom_2_index * 3 + 2], force_neighbor_a[2]); // accumulate the force for the neighbor atom
     }
-    /* accumulate the force of central atom */
-    atomicAdd(&data->forces[atom_1_index * 3 + 0], force_central[0]); // accumulate the force for the central atom
-    atomicAdd(&data->forces[atom_1_index * 3 + 1], force_central[1]); // accumulate the force for the central atom
-    atomicAdd(&data->forces[atom_1_index * 3 + 2], force_central[2]); // accumulate the force for the central atom
+    /* accumulate force of central atom */
+    real_t central_force[3] = {0.0f, 0.0f, 0.0f}; // force cache for the central atom
+    for (uint16_t i = 0; i < 3; ++i) {
+        central_force[i] = blockReduceSum(force_central[i]); // reduce the force across the block
+    }
+    /* accumulate the stress */
+    real_t stress_sum[9] = {0.0f}; // stress cache for the central atom across the block
+    for (uint16_t i = 0; i < 9; ++i) {
+        stress_sum[i] = blockReduceSum(stress[i]); // reduce the stress across the block
+    }
 
-    /* accumulate stress */
-    for (uint64_t i = 0; i < 3; ++i) {
-        for (uint64_t j = 0; j < 3; ++j) {
-            atomicAdd(&data->stress[i * 3 + j], stress[i * 3 + j] / cell_volume); // accumulate the stress for the central atom
+    /* store the results back to global memory */
+    if (threadIdx.x == 0) {
+        for (uint16_t i = 0; i < 3; ++i) {
+            atomicAdd(&data->forces[atom_1_index * 3 + i], central_force[i]); // accumulate the force for the central atom
+        }
+        for (uint16_t i = 0; i < 9; ++i) {
+            atomicAdd(&data->stress[i], stress_sum[i] / cell_volume); // accumulate the stress for the central atom
         }
     }
 }
