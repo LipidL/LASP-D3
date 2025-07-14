@@ -458,7 +458,8 @@ __global__ void two_body_kernel(device_data_t *data) {
         if (threadIdx.x == 0) {
             /* only the first thread in the block will write the results back to global memory */
             data->dE_dCN[atom_1_index] = dE_dCN_sum; // accumulate dE/dCN for the central atom
-            atomicAdd(data->energy, energy_sum); // accumulate energy for the central atom
+            // atomicAdd(data->energy, energy_sum); // accumulate energy for the central atom
+            data->energy[atom_1_index] = energy_sum; // store the energy for the central atom
             /* accumulate force for the central atom */
             atomicAdd(&data->forces[atom_1_index*3+0], force_central_sum[0]);
             atomicAdd(&data->forces[atom_1_index*3+1], force_central_sum[1]);

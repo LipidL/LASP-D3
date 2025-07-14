@@ -116,11 +116,21 @@ uint16_t compute_dispersion_energy_from_handle_status(
     #endif
     debug("launching two_body_kernel, size: %zu, %d\n", length, MAX_BLOCK_SIZE);
     two_body_kernel<<<length, MAX_BLOCK_SIZE, 0, stream>>>(buffer->get_device_data());
+    real_t *atomic_energy = (real_t *)malloc(length * sizeof(real_t)); // allocate memory for atomic energy
+    CHECK_CUDA(cudaMemcpyAsync(atomic_energy, buffer->get_host_data().energy, length * sizeof(real_t), cudaMemcpyDeviceToHost, stream)); // copy the energy from device to host memory
+    CHECK_CUDA(cudaStreamSynchronize(stream)); // synchronize the stream to ensure the first two kernels are finished
     debug("launching three_body_kernel, size: %zu, %d\n", length, MAX_BLOCK_SIZE);
     three_body_kernel<<<length, MAX_BLOCK_SIZE, 0, stream>>>(buffer->get_device_data());
+    double energy_sum = 0.0; // use high precision at CPU side
+    /* perform reduction to get the total energy */
+    for (uint64_t i = 0; i < length; ++i) {
+        energy_sum += atomic_energy[i];
+    }
+    *energy = energy_sum; // set the energy value
+    free(atomic_energy); // free the atomic energy array
 
     cudaMemcpyAsync(force, buffer->get_host_data().forces, length * 3 * sizeof(real_t), cudaMemcpyDeviceToHost, stream); // copy the forces back to host memory
-    cudaMemcpyAsync(energy, buffer->get_host_data().energy, sizeof(real_t), cudaMemcpyDeviceToHost, stream); // copy the energy back to host memory
+    // cudaMemcpyAsync(energy, buffer->get_host_data().energy, sizeof(real_t), cudaMemcpyDeviceToHost, stream); // copy the energy back to host memory
     cudaMemcpyAsync(stress, buffer->get_host_data().stress, 9 * sizeof(real_t), cudaMemcpyDeviceToHost, stream); // copy the stress back to host memory
     
     uint16_t status;

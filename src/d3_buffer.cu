@@ -252,8 +252,8 @@ __host__ Device_Buffer::Device_Buffer(real_t coords[][3], uint16_t *elements, re
         CHECK_CUDA(cudaMemset(dE_dCN, 0, length * sizeof(real_t)));
         this->host_data_.dE_dCN = dE_dCN;
         real_t *energy;
-        CHECK_CUDA(cudaMalloc((void**)&energy, sizeof(real_t)));
-        CHECK_CUDA(cudaMemset(energy, 0, sizeof(real_t)));
+        CHECK_CUDA(cudaMalloc((void**)&energy, length * sizeof(real_t)));
+        CHECK_CUDA(cudaMemset(energy, 0, length * sizeof(real_t)));
         this->host_data_.energy = energy;
         real_t *forces;
         CHECK_CUDA(cudaMalloc((void**)&forces, length * 3 * sizeof(real_t)));
