@@ -460,10 +460,11 @@ __global__ void two_body_kernel(device_data_t *data) {
             data->dE_dCN[atom_1_index] = dE_dCN_sum; // accumulate dE/dCN for the central atom
             // atomicAdd(data->energy, energy_sum); // accumulate energy for the central atom
             data->energy[atom_1_index] = energy_sum; // store the energy for the central atom
-            /* accumulate force for the central atom */
-            atomicAdd(&data->forces[atom_1_index*3+0], force_central_sum[0]);
-            atomicAdd(&data->forces[atom_1_index*3+1], force_central_sum[1]);
-            atomicAdd(&data->forces[atom_1_index*3+2], force_central_sum[2]);
+            /* accumulate force for the central atom
+                there is only one thread accessing this memory, so no atomic operation is needed :) */
+            data->forces[atom_1_index*3+0] = force_central_sum[0];
+            data->forces[atom_1_index*3+1] = force_central_sum[1];
+            data->forces[atom_1_index*3+2] = force_central_sum[2];
             /* accumulate stress for the central atom */
             #pragma unroll
             for (uint16_t i = 0; i < 9; ++i) {
