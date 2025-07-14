@@ -16,23 +16,98 @@ __inline__ __device__ real_t warpReduceSum(real_t val) {
     return val;
 }
 
-__inline__ __device__ real_t blockReduceSum(real_t val) {
-    static __shared__ real_t shared[32];
+/**
+ * @brief blockReduceSum for two_body_kernel. the entries that need to be added are: dE_dCN, energy, force, stress
+ */
+__inline__ __device__ void blockReduceTwoBodyKernel(
+    real_t dE_dCN, real_t energy, real_t force[3], real_t stress[9], 
+    real_t *dE_dCN_sum, real_t *energy_sum, real_t force_central_sum[3], real_t stress_central_sum[9]) {
+    static __shared__ real_t shared_dE_dCN[32];
+    static __shared__ real_t shared_energy[32];
+    static __shared__ real_t shared_force[32 * 3]; // 3 components for force
+    static __shared__ real_t shared_stress[32 * 9]; // 9 components for stress
+
     int lane = threadIdx.x % warpSize;
     int warp_id = threadIdx.x / warpSize;
 
-    val = warpReduceSum(val); // reduce within the warp
+    dE_dCN = warpReduceSum(dE_dCN); // reduce dE_dCN within the warp
+    energy = warpReduceSum(energy); // reduce energy within the warp
+    for (int i = 0; i < 3; ++i) {
+        force[i] = warpReduceSum(force[i]); // reduce force components within the warp
+    }
+    for (int i = 0; i < 9; ++i) {
+        stress[i] = warpReduceSum(stress[i]); // reduce stress components within the warp
+    }
 
     if (lane == 0) {
-        shared[warp_id] = val; // store the result in shared memory
+        shared_dE_dCN[warp_id] = dE_dCN; // store dE_dCN in shared memory
+        shared_energy[warp_id] = energy; // store energy in shared memory
+        for (int i = 0; i < 3; ++i) {
+            shared_force[warp_id * 3 + i] = force[i]; // store force components in shared memory
+        }
+        for (int i = 0; i < 9; ++i) {
+            shared_stress[warp_id * 9 + i] = stress[i]; // store stress components in shared memory
+        }
     }
     __syncthreads(); // synchronize threads in the block
-
     if (warp_id == 0) {
-        val = (threadIdx.x < blockDim.x / warpSize) ? shared[lane] : 0.0f; // only the first warp writes to shared memory
-        val = warpReduceSum(val); // final reduction across warps
+        dE_dCN = (threadIdx.x < blockDim.x / warpSize) ? shared_dE_dCN[lane] : 0.0f; // only the first warp writes to shared memory
+        energy = (threadIdx.x < blockDim.x / warpSize) ? shared_energy[lane] : 0.0f; // only the first warp writes to shared memory
+        for (int i = 0; i < 3; ++i) {
+            force[i] = (threadIdx.x < blockDim.x / warpSize) ? shared_force[lane * 3 + i] : 0.0f; // only the first warp writes to shared memory
+        }
+        for (int i = 0; i < 9; ++i) {
+            stress[i] = (threadIdx.x < blockDim.x / warpSize) ? shared_stress[lane * 9 + i] : 0.0f; // only the first warp writes to shared memory
+        }
+        *dE_dCN_sum = warpReduceSum(dE_dCN);
+        *energy_sum = warpReduceSum(energy);
+        for (int i = 0; i < 3; ++i) {
+            force_central_sum[i] = warpReduceSum(force[i]);
+        }
+        for (int i = 0; i < 9; ++i) {
+            stress_central_sum[i] = warpReduceSum(stress[i]);
+        }
     }
-    return val;
+}
+
+__inline__ __device__ void blockReduceSumThreeBodyKernel(
+    real_t force[3], real_t stress[9],
+    real_t *force_central_sum, real_t *stress_central_sum
+) {
+    static __shared__ real_t shared_force[32 * 3]; // 3 components for force
+    static __shared__ real_t shared_stress[32 * 9]; // 9 components for stress
+    int lane = threadIdx.x % warpSize;
+    int warp_id = threadIdx.x / warpSize;
+
+    for (int i = 0; i < 3; ++i) {
+        force[i] = warpReduceSum(force[i]); // reduce force components within the warp
+    }
+    for (int i = 0; i < 9; ++i) {
+        stress[i] = warpReduceSum(stress[i]); // reduce stress components within the warp
+    }
+    if (lane == 0) {
+        for (int i = 0; i < 3; ++i) {
+            shared_force[warp_id * 3 + i] = force[i]; // store force components in shared memory
+        }
+        for (int i = 0; i < 9; ++i) {
+            shared_stress[warp_id * 9 + i] = stress[i]; // store stress components in shared memory
+        }
+    }
+    __syncthreads(); // synchronize threads in the block
+    if (warp_id == 0) {
+        for (int i = 0; i < 3; ++i) {
+            force[i] = (threadIdx.x < blockDim.x / warpSize) ? shared_force[lane * 3 + i] : 0.0f; // only the first warp writes to shared memory
+        }
+        for (int i = 0; i < 9; ++i) {
+            stress[i] = (threadIdx.x < blockDim.x / warpSize) ? shared_stress[lane * 9 + i] : 0.0f; // only the first warp writes to shared memory
+        }
+        for (int i = 0; i < 3; ++i) {
+            force_central_sum[i] = warpReduceSum(force[i]); // final reduction across warps
+        }
+        for (int i = 0; i < 9; ++i) {
+            stress_central_sum[i] = warpReduceSum(stress[i]); // final reduction across warps
+        }
+    }
 }
 
 /**
@@ -445,16 +520,16 @@ __global__ void two_body_kernel(device_data_t *data) {
             }
         }
 
-        const real_t dE_dCN_sum = blockReduceSum(dE_dCN); // reduce dE/dCN across the block
-        const real_t energy_sum = blockReduceSum(local_energy); // reduce energy across the block
+        real_t dE_dCN_sum = 0; // reduce dE/dCN across the block
+        real_t energy_sum = 0; // reduce energy across the block
         real_t force_central_sum[3] = {0.0f, 0.0f, 0.0f}; // force cache for the central atom across the block
-        for (uint16_t i = 0; i < 3; ++i) {
-            force_central_sum[i] = blockReduceSum(local_force_central[i]); // reduce force across the block
-        }
-        real_t stress_sum[9] = {0.0f}; // stress cache for
-        for (uint16_t i = 0; i < 9; ++i) {
-            stress_sum[i] = blockReduceSum(local_stress[i]); // reduce stress across the block
-        }
+        real_t stress_sum[9] = {0.0f}; // stress cache for the central atom across the block
+        /* accumulate the results across the block */
+        blockReduceTwoBodyKernel(
+            dE_dCN, local_energy, local_force_central, local_stress,
+            &dE_dCN_sum, &energy_sum, force_central_sum, stress_sum
+        );
+        
         if (threadIdx.x == 0) {
             /* only the first thread in the block will write the results back to global memory */
             data->dE_dCN[atom_1_index] = dE_dCN_sum; // accumulate dE/dCN for the central atom
@@ -677,21 +752,15 @@ __global__ void three_body_kernel(device_data_t *data) {
         atomicAdd(&data->forces[atom_2_index * 3 + 1], force_neighbor_a[1]); // accumulate the force for the neighbor atom
         atomicAdd(&data->forces[atom_2_index * 3 + 2], force_neighbor_a[2]); // accumulate the force for the neighbor atom
     }
-    /* accumulate force of central atom */
-    real_t central_force[3] = {0.0f, 0.0f, 0.0f}; // force cache for the central atom
-    for (uint16_t i = 0; i < 3; ++i) {
-        central_force[i] = blockReduceSum(force_central[i]); // reduce the force across the block
-    }
-    /* accumulate the stress */
+    /* accumulate force of central atom and stress */
+    real_t force_central_sum[3] = {0.0f, 0.0f, 0.0f}; // force cache for the central atom
     real_t stress_sum[9] = {0.0f}; // stress cache for the central atom across the block
-    for (uint16_t i = 0; i < 9; ++i) {
-        stress_sum[i] = blockReduceSum(stress[i]); // reduce the stress across the block
-    }
+    blockReduceSumThreeBodyKernel(force_central, stress, force_central_sum, stress_sum);
 
     /* store the results back to global memory */
     if (threadIdx.x == 0) {
         for (uint16_t i = 0; i < 3; ++i) {
-            atomicAdd(&data->forces[atom_1_index * 3 + i], central_force[i]); // accumulate the force for the central atom
+            atomicAdd(&data->forces[atom_1_index * 3 + i], force_central_sum[i]); // accumulate the force for the central atom
         }
         for (uint16_t i = 0; i < 9; ++i) {
             atomicAdd(&data->stress[i], stress_sum[i] / cell_volume); // accumulate the stress for the central atom
