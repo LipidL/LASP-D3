@@ -1,4 +1,4 @@
-#include "grand_test.h"
+#include "full_test.h"
 #include "../src/d3.h"
 
 #include <gtest/gtest.h>
