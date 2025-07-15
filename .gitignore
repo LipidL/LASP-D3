@@ -1,7 +1,4 @@
-data/parameters.o
-data/parameters.h
-data/params.bin
-temp_objs/*
 build/*
 src/gen_constants.h
 *.pyc
+test/standard_results
