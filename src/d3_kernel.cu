@@ -519,32 +519,32 @@ __global__ void two_body_kernel(device_data_t *data) {
                 }
             }
         }
+    }
 
-        real_t dE_dCN_sum = 0; // reduce dE/dCN across the block
-        real_t energy_sum = 0; // reduce energy across the block
-        real_t force_central_sum[3] = {0.0f, 0.0f, 0.0f}; // force cache for the central atom across the block
-        real_t stress_sum[9] = {0.0f}; // stress cache for the central atom across the block
-        /* accumulate the results across the block */
-        blockReduceTwoBodyKernel(
-            dE_dCN, local_energy, local_force_central, local_stress,
-            &dE_dCN_sum, &energy_sum, force_central_sum, stress_sum
-        );
-        
-        if (threadIdx.x == 0) {
-            /* only the first thread in the block will write the results back to global memory */
-            data->dE_dCN[atom_1_index] = dE_dCN_sum; // accumulate dE/dCN for the central atom
-            // atomicAdd(data->energy, energy_sum); // accumulate energy for the central atom
-            data->energy[atom_1_index] = energy_sum; // store the energy for the central atom
-            /* accumulate force for the central atom
-                there is only one thread accessing this memory, so no atomic operation is needed :) */
-            data->forces[atom_1_index*3+0] = force_central_sum[0];
-            data->forces[atom_1_index*3+1] = force_central_sum[1];
-            data->forces[atom_1_index*3+2] = force_central_sum[2];
-            /* accumulate stress for the central atom */
-            #pragma unroll
-            for (uint16_t i = 0; i < 9; ++i) {
-                atomicAdd(&data->stress[i], stress_sum[i]);
-            }
+    real_t dE_dCN_sum = 0; // reduce dE/dCN across the block
+    real_t energy_sum = 0; // reduce energy across the block
+    real_t force_central_sum[3] = {0.0f, 0.0f, 0.0f}; // force cache for the central atom across the block
+    real_t stress_sum[9] = {0.0f}; // stress cache for the central atom across the block
+    /* accumulate the results across the block */
+    blockReduceTwoBodyKernel(
+        dE_dCN, local_energy, local_force_central, local_stress,
+        &dE_dCN_sum, &energy_sum, force_central_sum, stress_sum
+    );
+    
+    if (threadIdx.x == 0) {
+        /* only the first thread in the block will write the results back to global memory */
+        data->dE_dCN[atom_1_index] = dE_dCN_sum; // accumulate dE/dCN for the central atom
+        // atomicAdd(data->energy, energy_sum); // accumulate energy for the central atom
+        data->energy[atom_1_index] = energy_sum; // store the energy for the central atom
+        /* accumulate force for the central atom
+            there is only one thread accessing this memory, so no atomic operation is needed :) */
+        data->forces[atom_1_index*3+0] = force_central_sum[0];
+        data->forces[atom_1_index*3+1] = force_central_sum[1];
+        data->forces[atom_1_index*3+2] = force_central_sum[2];
+        /* accumulate stress for the central atom */
+        #pragma unroll
+        for (uint16_t i = 0; i < 9; ++i) {
+            atomicAdd(&data->stress[i], stress_sum[i]);
         }
     }
 }

@@ -1,4 +1,3 @@
 build/*
 src/gen_constants.h
 *.pyc
-test/standard_results
