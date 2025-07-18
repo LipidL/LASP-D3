@@ -531,8 +531,7 @@ __global__ void two_body_kernel(device_data_t *data) {
                 }
                 batch_count++; // increment the count of interactions for the central atom
                 if (batch_count >= batch_size) {
-                    printf("accumulation start\n");
-                    /* acuumulate the batch variables to local variables */
+                    /* accumulate the batch variables to local variables */
                     {
                         const real_t y = batch_dE_dCN - local_dE_dCN_compensate; // calculate the difference
                         const real_t t = local_dE_dCN + y; // add the difference to the local dE/dCN
@@ -721,6 +720,7 @@ __global__ void three_body_kernel(device_data_t *data) {
     }
     for(uint64_t atom_2_index = start_index; atom_2_index < end_index; ++atom_2_index) {
         real_t force_neighbor_a[3] = {0.0f, 0.0f, 0.0f}; // force cache for the neighbor atom during the following loop
+        real_t force_compensate_neighbor[3] = {0.0f, 0.0f, 0.0f}; // force compensation for the neighbor atom to improve numerical stability
         atom_t atom_2_original = data->atoms[atom_2_index]; // surrounding atom
         real_t covalent_radii_2 = data->rcov[data->atom_types[atom_2_index]]; // covalent radii of the surrounding atom
         for(uint64_t bias_index = start_bias_index; bias_index < end_bias_index; ++bias_index) {
@@ -769,9 +769,22 @@ __global__ void three_body_kernel(device_data_t *data) {
                     force_central[2] = t2; // update the local force for z component
                 }
                 /* accumulate force for the neighbor atom */
-                force_neighbor_a[0] += -dE_drik * (atom_1.x - atom_2.x);
-                force_neighbor_a[1] += -dE_drik * (atom_1.y - atom_2.y);
-                force_neighbor_a[2] += -dE_drik * (atom_1.z - atom_2.z);
+                {
+                    real_t y0 = -dE_drik * (atom_1.x - atom_2.x) - force_compensate_neighbor[0]; // calculate the difference for x component
+                    real_t t0 = force_neighbor_a[0] + y0; // add the difference to the local force
+                    force_compensate_neighbor[0] = (t0 - force_neighbor_a[0]) - y0; // calculate the compensation for the next iteration
+                    force_neighbor_a[0] = t0; // update the local force for x component
+
+                    real_t y1 = -dE_drik * (atom_1.y - atom_2.y) - force_compensate_neighbor[1]; // calculate the difference for y component
+                    real_t t1 = force_neighbor_a[1] + y1; // add the difference to the local force
+                    force_compensate_neighbor[1] = (t1 - force_neighbor_a[1]) - y1; // calculate the compensation for the next iteration
+                    force_neighbor_a[1] = t1; // update the local force for y component
+
+                    real_t y2 = -dE_drik * (atom_1.z - atom_2.z) - force_compensate_neighbor[2]; // calculate the difference for z component
+                    real_t t2 = force_neighbor_a[2] + y2; // add the difference to the local force
+                    force_compensate_neighbor[2] = (t2 - force_neighbor_a[2]) - y2; // calculate the compensation for the next iteration
+                    force_neighbor_a[2] = t2; // update the local force for z component
+                }
                 /* accumulate stress */
                 // stress[0 * 3 + 0] += -1.0f * (atom_1.x - atom_k.x) * dE_drik * (atom_1.x - atom_k.x); // stress_xx
                 // stress[0 * 3 + 1] += -1.0f * (atom_1.x - atom_k.x) * dE_drik * (atom_1.y - atom_k.y); // stress_xy
