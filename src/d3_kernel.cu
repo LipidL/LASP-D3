@@ -235,24 +235,36 @@ __global__ void print_coordination_number_kernel(device_data_t *data) {
  * @note the number of threads in each block can be any value, but it's better to set a value smaller than the number of neighbors.
  */
 __global__ void two_body_kernel(device_data_t *data) {
-    real_t dE_dCN = 0.0f; // derivative of energy with respect to coordination number
     const uint64_t atom_1_index = blockIdx.x; // each block is responsible for one central atom
     const uint64_t atom_1_type = data->atom_types[atom_1_index]; // type of the central atom
     const atom_t atom_1 = data->atoms[atom_1_index]; // central atom
     const real_t coordination_number_1 = data->coordination_numbers[atom_1_index]; // coordination number of the central atom
 
-    /* local variables to reduce calls to `atomicAdd` */
-    real_t local_energy = 0.0f; // local energy for the central atom
-    real_t local_force_central[3] = {0.0f, 0.0f, 0.0f}; // local force for the central atom
+    /* batch variables for energy, force and stress accumulation to reduce numeric error */
+    real_t batch_energy = 0.0f; // local energy for the central atom
+    real_t batch_force[3] = {0.0f, 0.0f, 0.0f}; // local force for the central atom
+    real_t batch_stress[9] = {0.0f}; // local stress matrix
+    real_t batch_dE_dCN = 0.0f; // derivative of energy with respect to coordination number
+    /* variables to perform Kahan addition to avoid numeric error */ 
+    real_t batch_energy_conpensate = 0.0f; // energy compensation to improve numerical stability
+    real_t batch_dE_dCN_conpensate = 0.0f; // derivative of energy with respect to coordination number compensation
+    real_t batch_force_conpensate[3] = {0.0f, 0.0f, 0.0f}; // force compensation to improve numerical stability
+    real_t batch_stress_conpensate[9] = {0.0f}; // stress compensation to improve numerical stability
+    const uint32_t batch_size = 1024;
+    uint32_t batch_count = 0;
+
+    /* local variables */
+    real_t local_energy = 0.0f;
+    real_t local_dE_dCN = 0.0f; // local derivative of energy with respect to coordination number
+    real_t local_force[3] = {0.0f, 0.0f, 0.0f}; // local force for the central atom
     real_t local_stress[9] = {0.0f}; // local stress matrix
-    
-    real_t energy_conpensate = 0.0f; // energy compensation to improve numerical stability
-    real_t dE_dCN_conpensate = 0.0f; // derivative of energy with respect to coordination number compensation
-    real_t force_conpensate[3] = {0.0f, 0.0f, 0.0f}; // force compensation to improve numerical stability
-    real_t stress_conpensate[9] = {0.0f}; // stress compensation to improve numerical stability
+    real_t local_energy_compensate = 0.0f; // local energy compensation to improve numerical stability
+    real_t local_dE_dCN_compensate = 0.0f; // local derivative of energy with respect to coordination number compensation
+    real_t local_force_compensate[3] = {0.0f, 0.0f, 0.0f}; // local force compensation to improve numerical stability
+    real_t local_stress_compensate[9] = {0.0f}; // local stress compensation to improve numerical stability
+
     /* calculate cell volume */
     const real_t cell_volume = calculate_cell_volume(data->cell);
-
     const uint64_t total_cell_bias = data->max_cell_bias[0] * data->max_cell_bias[1] * data->max_cell_bias[2]; // total number of cell bias
     
     const uint64_t mcb0 = data->max_cell_bias[0]; // maximum cell bias in x direction
@@ -426,19 +438,19 @@ __global__ void two_body_kernel(device_data_t *data) {
                 const real_t dispersion_energy = (dispersion_energy_6 + dispersion_energy_8) / 2.0f; // divide by 2 because each atom pair is counted twice
                 /* add the energy back to results, use Kahan summation for higher accuracy */
                 {
-                    const real_t y = dispersion_energy - energy_conpensate; // calculate the difference
-                    const real_t t = local_energy + y; // add the difference to the local energy
-                    energy_conpensate = (t - local_energy) - y; // calculate the compensation for the next iteration
-                    local_energy = t; // update the local energy
+                    const real_t y = dispersion_energy - batch_energy_conpensate; // calculate the difference
+                    const real_t t = batch_energy + y; // add the difference to the local energy
+                    batch_energy_conpensate = (t - batch_energy) - y; // calculate the compensation for the next iteration
+                    batch_energy = t; // update the local energy
                 }
                 
                 /* accumulate dEij/dCNi to local variable, use Kagan summation for better accuracy */
                 {
                     // real_t y = S6 * (f_dn_6 / distance_6) * dC6ab_dCN_1 + S8 * (f_dn_8 / distance_8) * dC8ab_dCN_1 - dE_dCN_conpensate; // calculate the difference
-                    const real_t y = ((S6 * f_dn_6 * distance_2 * dC6ab_dCN_1 + S8 * f_dn_8 * dC8ab_dCN_1) / distance_8) - dE_dCN_conpensate; // calculate the difference
-                    const real_t t = dE_dCN + y; // add the difference to the local dE/dCN
-                    dE_dCN_conpensate = (t - dE_dCN) - y; // calculate the compensation for the next iteration
-                    dE_dCN = t; // update the local dE/dCN
+                    const real_t y = ((S6 * f_dn_6 * distance_2 * dC6ab_dCN_1 + S8 * f_dn_8 * dC8ab_dCN_1) / distance_8) - batch_dE_dCN_conpensate; // calculate the difference
+                    const real_t t = batch_dE_dCN + y; // add the difference to the local dE/dCN
+                    batch_dE_dCN_conpensate = (t - batch_dE_dCN) - y; // calculate the compensation for the next iteration
+                    batch_dE_dCN = t; // update the local dE/dCN
                 }
             
                 /* the first entry of two-body force
@@ -454,70 +466,142 @@ __global__ void two_body_kernel(device_data_t *data) {
                 force += S8 * c8_ab / distance_8 * (-f_dn_8 * f_dn_8) * (6.0f * (-ALPHA_N(8.0f))* powf(distance/(SR_8*cutoff_radius), -ALPHA_N(8.0f) - 1.0f) / (SR_8*cutoff_radius)) / distance; // dE_8/dr * 1/r
                 /* accumulate force for the central atom, use Kahan summation for better accuracy */
                 {
-                    const real_t y0 = force * (atom_1.x - atom_2.x) - force_conpensate[0]; // calculate the difference for x component
-                    const real_t t0 = local_force_central[0] + y0; // add the difference to the local force
-                    force_conpensate[0] = (t0 - local_force_central[0]) - y0; // calculate the compensation for the next iteration
-                    local_force_central[0] = t0; // update the local force for x component
+                    const real_t y0 = force * (atom_1.x - atom_2.x) - batch_force_conpensate[0]; // calculate the difference for x component
+                    const real_t t0 = batch_force[0] + y0; // add the difference to the local force
+                    batch_force_conpensate[0] = (t0 - batch_force[0]) - y0; // calculate the compensation for the next iteration
+                    batch_force[0] = t0; // update the local force for x component
 
-                    const real_t y1 = force * (atom_1.y - atom_2.y) - force_conpensate[1]; // calculate the difference for y component
-                    const real_t t1 = local_force_central[1] + y1; // add the difference to the local force
-                    force_conpensate[1] = (t1 - local_force_central[1]) - y1; // calculate the compensation for the next iteration
-                    local_force_central[1] = t1; // update the local force for y component
+                    const real_t y1 = force * (atom_1.y - atom_2.y) - batch_force_conpensate[1]; // calculate the difference for y component
+                    const real_t t1 = batch_force[1] + y1; // add the difference to the local force
+                    batch_force_conpensate[1] = (t1 - batch_force[1]) - y1; // calculate the compensation for the next iteration
+                    batch_force[1] = t1; // update the local force for y component
 
-                    const real_t y2 = force * (atom_1.z - atom_2.z) - force_conpensate[2]; // calculate the difference for z component
-                    const real_t t2 = local_force_central[2] + y2; // add the difference to the local force
-                    force_conpensate[2] = (t2 - local_force_central[2]) - y2; // calculate the compensation for the next iteration
-                    local_force_central[2] = t2; // update the local force for z component
+                    const real_t y2 = force * (atom_1.z - atom_2.z) - batch_force_conpensate[2]; // calculate the difference for z component
+                    const real_t t2 = batch_force[2] + y2; // add the difference to the local force
+                    batch_force_conpensate[2] = (t2 - batch_force[2]) - y2; // calculate the compensation for the next iteration
+                    batch_force[2] = t2; // update the local force for z component
                 }
 
                 /* accumulate stress to local matrix instead of directly using atomicAdd, divide by 2 becuase the same entry will be calculated twice (when atom_2 is the central atom), use Kahan summation for better accuracy */
                 {
-                    const real_t y0 = -1.0f * (atom_1.x - atom_2.x) * force * (atom_1.x - atom_2.x)/2.0f / cell_volume - stress_conpensate[0]; // calculate the difference for stress_xx
-                    const real_t t0 = local_stress[0*3+0] + y0; // add the difference to the local stress
-                    stress_conpensate[0] = (t0 - local_stress[0*3+0]) - y0; // calculate the compensation for the next iteration
-                    local_stress[0*3+0] = t0; // update the local stress for stress_xx
+                    const real_t y0 = -1.0f * (atom_1.x - atom_2.x) * force * (atom_1.x - atom_2.x)/2.0f / cell_volume - batch_stress_conpensate[0]; // calculate the difference for stress_xx
+                    const real_t t0 = batch_stress[0*3+0] + y0; // add the difference to the local stress
+                    batch_stress_conpensate[0] = (t0 - batch_stress[0*3+0]) - y0; // calculate the compensation for the next iteration
+                    batch_stress[0*3+0] = t0; // update the local stress for stress_xx
 
-                    const real_t y1 = -1.0f * (atom_1.x - atom_2.x) * force * (atom_1.y - atom_2.y)/2.0f / cell_volume - stress_conpensate[1]; // calculate the difference for stress_xy
-                    const real_t t1 = local_stress[0*3+1] + y1; // add the difference to the local stress
-                    stress_conpensate[1] = (t1 - local_stress[0*3+1]) - y1; // calculate the compensation for the next iteration
-                    local_stress[0*3+1] = t1; // update the local stress for stress_xy
+                    const real_t y1 = -1.0f * (atom_1.x - atom_2.x) * force * (atom_1.y - atom_2.y)/2.0f / cell_volume - batch_stress_conpensate[1]; // calculate the difference for stress_xy
+                    const real_t t1 = batch_stress[0*3+1] + y1; // add the difference to the local stress
+                    batch_stress_conpensate[1] = (t1 - batch_stress[0*3+1]) - y1; // calculate the compensation for the next iteration
+                    batch_stress[0*3+1] = t1; // update the local stress for stress_xy
 
-                    const real_t y2 = -1.0f * (atom_1.x - atom_2.x) * force * (atom_1.z - atom_2.z)/2.0f / cell_volume - stress_conpensate[2]; // calculate the difference for stress_xz
-                    const real_t t2 = local_stress[0*3+2] + y2; // add the difference to the local stress
-                    stress_conpensate[2] = (t2 - local_stress[0*3+2]) - y2; // calculate the compensation for the next iteration
-                    local_stress[0*3+2] = t2; // update the local stress for stress_xz
+                    const real_t y2 = -1.0f * (atom_1.x - atom_2.x) * force * (atom_1.z - atom_2.z)/2.0f / cell_volume - batch_stress_conpensate[2]; // calculate the difference for stress_xz
+                    const real_t t2 = batch_stress[0*3+2] + y2; // add the difference to the local stress
+                    batch_stress_conpensate[2] = (t2 - batch_stress[0*3+2]) - y2; // calculate the compensation for the next iteration
+                    batch_stress[0*3+2] = t2; // update the local stress for stress_xz
 
-                    const real_t y3 = -1.0f * (atom_1.y - atom_2.y) * force * (atom_1.x - atom_2.x)/2.0f / cell_volume - stress_conpensate[3]; // calculate the difference for stress_yx
-                    const real_t t3 = local_stress[1*3+0] + y3; // add the difference to the local stress
-                    stress_conpensate[3] = (t3 - local_stress[1*3+0]) - y3; // calculate the compensation for the next iteration
-                    local_stress[1*3+0] = t3; // update the local stress for stress_yx
+                    const real_t y3 = -1.0f * (atom_1.y - atom_2.y) * force * (atom_1.x - atom_2.x)/2.0f / cell_volume - batch_stress_conpensate[3]; // calculate the difference for stress_yx
+                    const real_t t3 = batch_stress[1*3+0] + y3; // add the difference to the local stress
+                    batch_stress_conpensate[3] = (t3 - batch_stress[1*3+0]) - y3; // calculate the compensation for the next iteration
+                    batch_stress[1*3+0] = t3; // update the local stress for stress_yx
 
-                    const real_t y4 = -1.0f * (atom_1.y - atom_2.y) * force * (atom_1.y - atom_2.y)/2.0f / cell_volume - stress_conpensate[4]; // calculate the difference for stress_yy
-                    const real_t t4 = local_stress[1*3+1] + y4; // add the difference to the local stress
-                    stress_conpensate[4] = (t4 - local_stress[1*3+1]) - y4; // calculate the compensation for the next iteration
-                    local_stress[1*3+1] = t4; // update the local stress for stress_yy
+                    const real_t y4 = -1.0f * (atom_1.y - atom_2.y) * force * (atom_1.y - atom_2.y)/2.0f / cell_volume - batch_stress_conpensate[4]; // calculate the difference for stress_yy
+                    const real_t t4 = batch_stress[1*3+1] + y4; // add the difference to the local stress
+                    batch_stress_conpensate[4] = (t4 - batch_stress[1*3+1]) - y4; // calculate the compensation for the next iteration
+                    batch_stress[1*3+1] = t4; // update the local stress for stress_yy
 
-                    const real_t y5 = -1.0f * (atom_1.y - atom_2.y) * force * (atom_1.z - atom_2.z)/2.0f / cell_volume - stress_conpensate[5]; // calculate the difference for stress_yz
-                    const real_t t5 = local_stress[1*3+2] + y5; // add the difference to the local stress
-                    stress_conpensate[5] = (t5 - local_stress[1*3+2]) - y5; // calculate the compensation for the next iteration
-                    local_stress[1*3+2] = t5; // update the local stress for stress_yz
+                    const real_t y5 = -1.0f * (atom_1.y - atom_2.y) * force * (atom_1.z - atom_2.z)/2.0f / cell_volume - batch_stress_conpensate[5]; // calculate the difference for stress_yz
+                    const real_t t5 = batch_stress[1*3+2] + y5; // add the difference to the local stress
+                    batch_stress_conpensate[5] = (t5 - batch_stress[1*3+2]) - y5; // calculate the compensation for the next iteration
+                    batch_stress[1*3+2] = t5; // update the local stress for stress_yz
 
-                    const real_t y6 = -1.0f * (atom_1.z - atom_2.z) * force * (atom_1.x - atom_2.x)/2.0f / cell_volume - stress_conpensate[6]; // calculate the difference for stress_zx
-                    const real_t t6 = local_stress[2*3+0] + y6; // add the difference to the local stress
-                    stress_conpensate[6] = (t6 - local_stress[2*3+0]) - y6; // calculate the compensation for the next iteration
-                    local_stress[2*3+0] = t6; // update the local stress for stress_zx
+                    const real_t y6 = -1.0f * (atom_1.z - atom_2.z) * force * (atom_1.x - atom_2.x)/2.0f / cell_volume - batch_stress_conpensate[6]; // calculate the difference for stress_zx
+                    const real_t t6 = batch_stress[2*3+0] + y6; // add the difference to the local stress
+                    batch_stress_conpensate[6] = (t6 - batch_stress[2*3+0]) - y6; // calculate the compensation for the next iteration
+                    batch_stress[2*3+0] = t6; // update the local stress for stress_zx
 
-                    const real_t y7 = -1.0f * (atom_1.z - atom_2.z) * force * (atom_1.y - atom_2.y)/2.0f / cell_volume - stress_conpensate[7]; // calculate the difference for stress_zy
-                    const real_t t7 = local_stress[2*3+1] + y7; // add the difference to the local stress
-                    stress_conpensate[7] = (t7 - local_stress[2*3+1]) - y7; // calculate the compensation for the next iteration
-                    local_stress[2*3+1] = t7; // update the local stress for stress_zy
+                    const real_t y7 = -1.0f * (atom_1.z - atom_2.z) * force * (atom_1.y - atom_2.y)/2.0f / cell_volume - batch_stress_conpensate[7]; // calculate the difference for stress_zy
+                    const real_t t7 = batch_stress[2*3+1] + y7; // add the difference to the local stress
+                    batch_stress_conpensate[7] = (t7 - batch_stress[2*3+1]) - y7; // calculate the compensation for the next iteration
+                    batch_stress[2*3+1] = t7; // update the local stress for stress_zy
 
-                    const real_t y8 = -1.0f * (atom_1.z - atom_2.z) * force * (atom_1.z - atom_2.z)/2.0f / cell_volume - stress_conpensate[8]; // calculate the difference for stress_zz
-                    const real_t t8 = local_stress[2*3+2] + y8; // add the difference to the local stress
-                    stress_conpensate[8] = (t8 - local_stress[2*3+2]) - y8; // calculate the compensation for the next iteration
-                    local_stress[2*3+2] = t8; // update the local stress for stress_zz
+                    const real_t y8 = -1.0f * (atom_1.z - atom_2.z) * force * (atom_1.z - atom_2.z)/2.0f / cell_volume - batch_stress_conpensate[8]; // calculate the difference for stress_zz
+                    const real_t t8 = batch_stress[2*3+2] + y8; // add the difference to the local stress
+                    batch_stress_conpensate[8] = (t8 - batch_stress[2*3+2]) - y8; // calculate the compensation for the next iteration
+                    batch_stress[2*3+2] = t8; // update the local stress for stress_zz
+                }
+                batch_count++; // increment the count of interactions for the central atom
+                if (batch_count >= batch_size) {
+                    printf("accumulation start\n");
+                    /* acuumulate the batch variables to local variables */
+                    {
+                        const real_t y = batch_dE_dCN - local_dE_dCN_compensate; // calculate the difference
+                        const real_t t = local_dE_dCN + y; // add the difference to the local dE/dCN
+                        local_dE_dCN_compensate = (t - local_dE_dCN) - y; // calculate the compensation for the next iteration
+                        local_dE_dCN = t; // update the local dE/dCN
+                    }
+                    {
+                        const real_t y = batch_energy - local_energy_compensate; // calculate the difference
+                        const real_t t = local_energy + y; // add the difference to the local energy
+                        local_energy_compensate = (t - local_energy) - y; // calculate the compensation for the next iteration
+                        local_energy = t; // update the local energy
+                    }
+                    {
+                        for (uint16_t i = 0; i < 3; ++i) {
+                            const real_t y = batch_force[i] - local_force_compensate[i]; // calculate the difference for each component
+                            const real_t t = local_force[i] + y; // add the difference to the local force
+                            local_force_compensate[i] = (t - local_force[i]) - y; // calculate the compensation for the next iteration
+                            local_force[i] = t; // update the local force for each component
+                        }
+                    }
+                    {
+                        for (uint16_t i = 0; i < 9; ++i) {
+                            const real_t y = batch_stress[i] - local_stress_compensate[i]; // calculate the difference for each component
+                            const real_t t = local_stress[i] + y; // add the difference to the local stress
+                            local_stress_compensate[i] = (t - local_stress[i]) - y; // calculate the compensation for the next iteration
+                            local_stress[i] = t; // update the local stress for each component
+                        }
+                    }
+                    /* reset the batch variables */
+                    batch_dE_dCN = 0.0f; // reset the batch dE/dCN
+                    batch_energy = 0.0f; // reset the batch energy
+                    for (uint16_t i = 0; i < 3; ++i) {
+                        batch_force[i] = 0.0f; // reset the batch force for each component
+                    }
+                    for (uint16_t i = 0; i < 9; ++i) {
+                        batch_stress[i] = 0.0f; // reset the batch stress for each component
+                    }
+                    batch_count = 0; // reset the batch count
                 }
             }
+        }
+    }
+    /* accumulate the remaining batch variables */
+    {
+        const real_t y = batch_dE_dCN - local_dE_dCN_compensate; // calculate the difference
+        const real_t t = local_dE_dCN + y; // add the difference to the local dE/dCN
+        local_dE_dCN_compensate = (t - local_dE_dCN) - y; // calculate the compensation for the next iteration
+        local_dE_dCN = t; // update the local dE/dCN
+    }
+    {
+        const real_t y = batch_energy - local_energy_compensate; // calculate the difference
+        const real_t t = local_energy + y; // add the difference to the local energy
+        local_energy_compensate = (t - local_energy) - y; // calculate the compensation for the next iteration
+        local_energy = t; // update the local energy
+    }
+    {
+        for (uint16_t i = 0; i < 3; ++i) {
+            const real_t y = batch_force[i] - local_force_compensate[i]; // calculate the difference for each component
+            const real_t t = local_force[i] + y; // add the difference to the local force
+            local_force_compensate[i] = (t - local_force[i]) - y; // calculate the compensation for the next iteration
+            local_force[i] = t; // update the local force for each component
+        }
+    }
+    {
+        for (uint16_t i = 0; i < 9; ++i) {
+            const real_t y = batch_stress[i] - local_stress_compensate[i]; // calculate the difference for each component
+            const real_t t = local_stress[i] + y; // add the difference to the local stress
+            local_stress_compensate[i] = (t - local_stress[i]) - y; // calculate the compensation for the next iteration
+            local_stress[i] = t; // update the local stress for each component
         }
     }
 
@@ -527,7 +611,7 @@ __global__ void two_body_kernel(device_data_t *data) {
     real_t stress_sum[9] = {0.0f}; // stress cache for the central atom across the block
     /* accumulate the results across the block */
     blockReduceTwoBodyKernel(
-        dE_dCN, local_energy, local_force_central, local_stress,
+        local_dE_dCN, local_energy, local_force, local_stress,
         &dE_dCN_sum, &energy_sum, force_central_sum, stress_sum
     );
     
