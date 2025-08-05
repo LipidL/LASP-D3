@@ -110,6 +110,30 @@ __inline__ __device__ void blockReduceSumThreeBodyKernel(
     }
 }
 
+template <DampingType damping_type>
+__device__ void damping(real_t distance, real_t cutoff_radius, real_t *damping_6, real_t *damping_8, real_t *d_damping_6, real_t *d_damping_8){
+    if constexpr (damping_type == ZERO_DAMPING) {
+        const real_t relative_distance = distance/(cutoff_radius);
+        // fast powering
+        const real_t relative_distance_2 = relative_distance * relative_distance;
+        const real_t relative_distance_4 = relative_distance_2 * relative_distance_2;
+        const real_t relative_distance_8 = relative_distance_4 * relative_distance_4;
+        const real_t relative_distance_14 = relative_distance_8 * relative_distance_4 * relative_distance_2;
+        const real_t relative_distance_15 = relative_distance_14 * relative_distance;
+        const real_t relative_distance_16 = relative_distance_8 * relative_distance_8;
+        const real_t relative_distance_17 = relative_distance_16 * relative_distance;
+        const real_t f_dn_6 = 1/(1+6.0f*(1/relative_distance_14)*powf(SR_6, 14.0f)); // alpha_n = 14
+        const real_t f_dn_8 = 1/(1+6.0f*(1/relative_distance_16)*powf(SR_8, 16.0f)); // alpha_n = 16
+        const real_t d_f_dn_6 = 6.0f * 14.0f * f_dn_6 * f_dn_6 * (1/relative_distance_15) * (1/(SR_6*cutoff_radius));
+        const real_t d_f_dn_8 = 6.0f * 16.0f * f_dn_8 * f_dn_8 * (1/relative_distance_17) * (1/(SR_8*cutoff_radius));
+        // write the result back
+        *damping_6 = f_dn_6;
+        *damping_8 = f_dn_8;
+        *d_damping_6 = d_f_dn_6;
+        *d_damping_8 = d_f_dn_8;
+    }
+}
+
 /**
  * @brief this kernel is used to compute the coordination number of each atom in the system.
  * @note this kernel should be launched with a 1D grid of blocks, each block containing a 1D array of threads.
@@ -429,8 +453,8 @@ __global__ void two_body_kernel(device_data_t *data) {
                 const real_t distance_8 = distance_4 * distance_4; // distance^8
                 const real_t distance_10 = distance_6 * distance_4; // distance^10
                 /* calculate the dampling function as Grimme et al. 2010, eq4 */
-                const real_t f_dn_6 = 1/(1+6.0f*powf(distance/(SR_6*cutoff_radius), -ALPHA_N(6.0f)));
-                const real_t f_dn_8 = 1/(1+6.0f*powf(distance/(SR_8*cutoff_radius), -ALPHA_N(8.0f)));
+                real_t f_dn_6, f_dn_8, d_f_dn_6, d_f_dn_8;
+                damping<ZERO_DAMPING>(distance, cutoff_radius, &f_dn_6, &f_dn_8, &d_f_dn_6, &d_f_dn_8);
                 /* calculate the dispersion enegry as Grimme et al. 2010, eq3 */
                 const real_t dispersion_energy_6 = S6*(c6_ab/distance_6)*f_dn_6;
                 const real_t dispersion_energy_8 = S8*(c8_ab/distance_8)*f_dn_8;
@@ -462,8 +486,8 @@ __global__ void two_body_kernel(device_data_t *data) {
                 /* the second entry of two-body force 
                 $F_a = S_n C_n^{ab} r_{ab}^{-n} \frac{\partial}{\partial r_a} f_{d,n}(r_{ab})$
                 $F_a = S_n C_n^{ab} r_{ab}^{-n} -f_{d,n}^2 * (6*(-\alpha_n)*(r_{ab}/{S_{r,n}R_0^{AB}})^(-\alpha_n - 1) * 1/(S_{r,n}R_0^{AB}})) / r_ab \uparrow{r_{ab}}$*/
-                force += S6 * c6_ab / distance_6 * (-f_dn_6 * f_dn_6) * (6.0f * (-ALPHA_N(6.0f))* powf(distance/(SR_6*cutoff_radius), -ALPHA_N(6.0f) - 1.0f) / (SR_6*cutoff_radius)) / distance; // dE_6/dr * 1/r
-                force += S8 * c8_ab / distance_8 * (-f_dn_8 * f_dn_8) * (6.0f * (-ALPHA_N(8.0f))* powf(distance/(SR_8*cutoff_radius), -ALPHA_N(8.0f) - 1.0f) / (SR_8*cutoff_radius)) / distance; // dE_8/dr * 1/r
+                force += S6 * c6_ab / distance_6 * d_f_dn_6 / distance; // dE_6/dr * 1/r
+                force += S8 * c8_ab / distance_8 * d_f_dn_8 / distance; // dE_8/dr * 1/r
                 /* accumulate force for the central atom, use Kahan summation for better accuracy */
                 {
                     const real_t y0 = force * (atom_1.x - atom_2.x) - batch_force_conpensate[0]; // calculate the difference for x component

@@ -34,4 +34,9 @@ typedef struct device_data {
     real_t *stress; // stress tensor, length: 9
 } device_data_t;
 
+enum DampingType {
+    ZERO_DAMPING = 0, // original DFT-D3 damping
+    BJ_DAMPING = 1, // Becke-Johnson damping
+};
+
 #endif // D3_TYPES_H
