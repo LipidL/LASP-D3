@@ -9,7 +9,8 @@ struct TestConfig {
     uint64_t max_length;
     real_t cutoff_radius;
     real_t coordination_number_cutoff;
-    uint64_t max_neighbors;
+    DampingType damping_type;
+    FunctionalType functional_type;
     std::vector<std::array<real_t, 3>> atoms;
     real_t cell[3][3];
 };
@@ -18,7 +19,7 @@ void PrintTo(const TestConfig &config, std::ostream *os) {
     *os << "TestConfig: " << config.test_name << ", max_length: " << config.max_length
         << ", cutoff_radius: " << config.cutoff_radius
         << ", coordination_number_cutoff: " << config.coordination_number_cutoff
-        << ", max_neighbors: " << config.max_neighbors;
+        << ", damping_type: " << config.damping_type;
 } // PrintTo
 
 class D3Test : public testing::TestWithParam<TestConfig> {
@@ -46,7 +47,8 @@ class D3Test : public testing::TestWithParam<TestConfig> {
         max_length = config.max_length;
         cutoff_radius = config.cutoff_radius;
         coordination_number_cutoff = config.coordination_number_cutoff;
-        max_neighbors = config.max_neighbors;
+        damping_type = config.damping_type;
+        functional_type = config.functional_type;
     } // D3Test
 
     ~D3Test() {
@@ -60,7 +62,8 @@ class D3Test : public testing::TestWithParam<TestConfig> {
     uint64_t max_length;
     real_t cutoff_radius;
     real_t coordination_number_cutoff;
-    uint64_t max_neighbors;
+    DampingType damping_type;
+    FunctionalType functional_type;
     real_t cell[3][3];
     real_t energy;
     real_t *force;
@@ -69,7 +72,7 @@ class D3Test : public testing::TestWithParam<TestConfig> {
 };
 
 TEST_P(D3Test, HandleOperations) {
-    D3Handle_t *handle = init_d3_handle(elements, max_length, cutoff_radius, coordination_number_cutoff, max_neighbors);
+    D3Handle_t *handle = init_d3_handle(elements, max_length, cutoff_radius, coordination_number_cutoff, damping_type, functional_type);
     EXPECT_NE(handle, nullptr) << "Failed to initialize D3 handle";
     set_atoms(handle, atoms, elements, max_length);
     set_cell(handle, cell);
@@ -78,7 +81,7 @@ TEST_P(D3Test, HandleOperations) {
 } // HandleOperations
 
 TEST_P(D3Test, EnergyNegative) {
-    compute_dispersion_energy((real_t (*)[3])atoms, elements, max_length, cell, cutoff_radius, coordination_number_cutoff, max_neighbors, &energy, force, stress);
+    compute_dispersion_energy((real_t (*)[3])atoms, elements, max_length, cell, cutoff_radius, coordination_number_cutoff, damping_type, functional_type, &energy, force, stress);
     EXPECT_LT(energy, 0.0f) << "Expected negative energy, got " << energy;
 } // EnergyNegative
 
@@ -91,7 +94,7 @@ TEST_P(D3Test, ResultStable) {
     real_t stress_tolerance = 1e-3; // Tolerance for stress comparison
     
     // Perform initial run
-    compute_dispersion_energy((real_t (*)[3])atoms, elements, max_length, cell, cutoff_radius, coordination_number_cutoff, max_neighbors, &energy, force, stress);
+    compute_dispersion_energy((real_t (*)[3])atoms, elements, max_length, cell, cutoff_radius, coordination_number_cutoff, damping_type, functional_type, &energy, force, stress);
 
     // Perform multiple runs
     for (int run = 0; run < num_runs; ++run) {
@@ -102,7 +105,7 @@ TEST_P(D3Test, ResultStable) {
             current_force[i] = 0.0f; // Initialize force to zero
         }
         real_t current_stress[9] = {0}; // 3x3 stress tensor
-        compute_dispersion_energy((real_t (*)[3])atoms, elements, max_length, cell, cutoff_radius, coordination_number_cutoff, max_neighbors, &current_energy, current_force, current_stress);
+        compute_dispersion_energy((real_t (*)[3])atoms, elements, max_length, cell, cutoff_radius, coordination_number_cutoff, damping_type, functional_type, &current_energy, current_force, current_stress);
 
         // Check stability of results
         EXPECT_NEAR(current_energy, energy, -(energy_tolerance * energy)) 
@@ -124,7 +127,7 @@ TEST_P(D3Test, ResultStable) {
 
 TEST_P(D3Test, TestSumToZero) {
     real_t tolerance = 1e-5; // Tolerance for sum to zero check
-    compute_dispersion_energy((real_t (*)[3])atoms, elements, max_length, cell, cutoff_radius, coordination_number_cutoff, max_neighbors, &energy, force, stress);
+    compute_dispersion_energy((real_t (*)[3])atoms, elements, max_length, cell, cutoff_radius, coordination_number_cutoff, damping_type, functional_type, &energy, force, stress);
     real_t force_sum[3] = {0.0f};
     // Perform sum over forces
     for (size_t i = 0; i < max_length; ++i) {
@@ -141,7 +144,7 @@ TEST_P(D3Test, TestSumToZero) {
 
 TEST_P(D3Test, StressSymmetry) {
     real_t tolerance = 1e-5; // Tolerance for stress symmetry check
-    compute_dispersion_energy((real_t (*)[3])atoms, elements, max_length, cell, cutoff_radius, coordination_number_cutoff, max_neighbors, &energy, force, stress);
+    compute_dispersion_energy((real_t (*)[3])atoms, elements, max_length, cell, cutoff_radius, coordination_number_cutoff, damping_type, functional_type, &energy, force, stress);
     
     // Check stress symmetry: stress[i][j] should equal stress[j][i]
     for (size_t i = 0; i < 3; ++i) {
@@ -154,7 +157,7 @@ TEST_P(D3Test, StressSymmetry) {
 
 TEST_P(D3Test, NumericForceMatch) {
     // Perform the dispersion energy calculation
-    compute_dispersion_energy((real_t (*)[3])atoms, elements, max_length, cell, cutoff_radius, coordination_number_cutoff, max_neighbors, &energy, force, stress);
+    compute_dispersion_energy((real_t (*)[3])atoms, elements, max_length, cell, cutoff_radius, coordination_number_cutoff, damping_type, functional_type, &energy, force, stress);
 
     // Prepare atoms for numerical differentiation
     real_t *tmp_atoms = (real_t *)malloc(max_length * 3 * sizeof(real_t));
@@ -183,7 +186,7 @@ TEST_P(D3Test, NumericForceMatch) {
             // Forward perturbation
             tmp_atoms[atom_idx * 3 + component] += delta; 
             real_t energy_plus = 0.0f;
-            compute_dispersion_energy((real_t (*)[3])tmp_atoms, elements, max_length, cell, cutoff_radius, coordination_number_cutoff, max_neighbors, &energy_plus, dummy_force, dummy_stress);
+            compute_dispersion_energy((real_t (*)[3])tmp_atoms, elements, max_length, cell, cutoff_radius, coordination_number_cutoff, damping_type, functional_type, &energy_plus, dummy_force, dummy_stress);
             
             // Reset tmp_atoms to original positions
             for (size_t i = 0; i < max_length * 3; ++i) {
@@ -193,7 +196,7 @@ TEST_P(D3Test, NumericForceMatch) {
             // Backward perturbation
             tmp_atoms[atom_idx * 3 + component] -= delta;
             real_t energy_minus = 0.0f;
-            compute_dispersion_energy((real_t (*)[3])tmp_atoms, elements, max_length, cell, cutoff_radius, coordination_number_cutoff, max_neighbors, &energy_minus, dummy_force, dummy_stress);
+            compute_dispersion_energy((real_t (*)[3])tmp_atoms, elements, max_length, cell, cutoff_radius, coordination_number_cutoff, damping_type, functional_type, &energy_minus, dummy_force, dummy_stress);
 
             // Central difference formula for the derivative: f'(x) = (f(x + delta) - f(x - delta)) / (2 * delta)
             real_t numerical_force = -(energy_plus - energy_minus) / (2 * delta);
@@ -233,7 +236,8 @@ TEST_P(D3Test, SupercellConsistency) {
         cell, 
         cutoff_radius, 
         coordination_number_cutoff, 
-        max_neighbors, 
+        damping_type, 
+        functional_type, 
         &original_energy, 
         original_force, 
         original_stress
@@ -298,7 +302,8 @@ TEST_P(D3Test, SupercellConsistency) {
         supercell_cell, 
         cutoff_radius, 
         coordination_number_cutoff, 
-        max_neighbors, 
+        damping_type, 
+        functional_type, 
         &supercell_energy, 
         supercell_force, 
         supercell_stress
@@ -405,7 +410,8 @@ TestConfig generate_crystal() {
         total_atoms,  // max_length
         40.0f,        // cutoff_radius
         40.0f,        // coordination_number_cutoff
-        30000,       // max_neighbors
+        ZERO_DAMPING, // damping_type
+        PBE0, // functional_type
         atoms,
         {
             {cell[0][0], cell[0][1], cell[0][2]},
@@ -429,7 +435,8 @@ TestConfig small_system = {
     10, // max_length
     40.0f, // cutoff_radius
     40.0f, // coordination_number_cutoff
-    10000, // max_neighbors
+    ZERO_DAMPING, // damping_type
+    PBE0, // functional_type
     {
         {5.1372f, 5.5512f, 10.1047f},
         {4.5169f, 6.1365f, 11.3604f},

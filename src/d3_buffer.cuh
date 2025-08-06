@@ -4,6 +4,7 @@
 #include <stdio.h>
 
 #include "d3_internal.h"
+#include "d3_types.h"
 
 void calculate_cell_repeats(real_t cell[3][3], real_t cutoff,
                             size_t max_cell_bias[3]);
@@ -39,7 +40,7 @@ class Device_Buffer {
     __host__ Device_Buffer(
         real_t coords[][3], uint16_t* elements, real_t cell[3][3],
         uint64_t length, real_t cutoff, real_t CN_cutoff,
-        uint64_t max_neighbors);  // Device_Buffer constructor
+        DampingType damping_type, FunctionalType functional_type);  // Device_Buffer constructor
     __host__ ~Device_Buffer();    // Device_Buffer destructor
 
     /* disable copying */

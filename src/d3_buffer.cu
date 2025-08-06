@@ -4,6 +4,9 @@
 
 #include "d3_buffer.cuh"
 #include "d3_internal.h"
+#include "d3_types.h"
+#include "constants_include.h"
+
 // Calculate inverse of a 3x3 matrix
 void matrix_inverse(const real_t mat[3][3], real_t inv[3][3]) {
     // Calculate determinant
@@ -124,7 +127,7 @@ uint16_t Unique_Elements::operator[](uint16_t index) {
 __host__ Device_Buffer::Device_Buffer(real_t coords[][3], uint16_t* elements,
                                       real_t cell[3][3], uint64_t length,
                                       real_t cutoff, real_t CN_cutoff,
-                                      uint64_t max_neighbors) {
+                                      DampingType damping_type, FunctionalType functional_type) {
     memset(&this->host_data_, 0,
            sizeof(device_data_t));  // initialize the host data to 0
     this->device_data_ = nullptr;  // initialize the device data pointer to null
@@ -285,6 +288,10 @@ __host__ Device_Buffer::Device_Buffer(real_t coords[][3], uint16_t* elements,
     }  // cupercell information
     {
         /* construct other fields */
+        this->host_data_.damping_type = damping_type;
+        this->host_data_.functional_type = functional_type;
+        this->host_data_.functional_params =
+            FUNCTIONAL_PARAMS[functional_type];  // set the functional parameters
         real_t* coordination_numbers;
         CHECK_CUDA(
             cudaMalloc((void**)&coordination_numbers, length * sizeof(real_t)));

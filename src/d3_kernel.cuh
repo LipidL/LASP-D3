@@ -11,6 +11,8 @@
 #define FLT_MAX \
     3.402823466e+38F  // maximum float value, used to initialize distances
 
+
+
 /*
 constants used in the simulation
 these constants are from Grimme, S., Antony, J., Ehrlich, S. & Krieg, H. The
@@ -21,14 +23,6 @@ Journal of Chemical Physics 132, 154104 (2010).
 #define K3 4.0f
 #define ALPHA_N(N) (N + 8.0f)
 
-/*
-parameters specified for PBE0 functional
-obtained from Grimme et al. 2010, Table SI1
-*/
-#define S6 1.0f
-#define S8 0.722f
-#define SR_6 1.217f
-#define SR_8 1.0f
 
 __global__ void coordination_number_kernel(device_data_t* data);
 __global__ void print_coordination_number_kernel(device_data_t* data);

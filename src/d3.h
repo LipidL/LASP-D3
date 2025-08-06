@@ -25,7 +25,8 @@ void compute_dispersion_energy(
     real_t cutoff_radius,  // cutoff radius for dispersion energy calculation
     real_t
         CN_cutoff_radius,  // cutoff radius for coordination number calculation
-    uint64_t max_neighbors,  // maximum number of neighbors to consider
+    DampingType damping_type,  // damping type to use
+    FunctionalType functional_type,  // functional type to use
     real_t* energy,          // pointer to store the computed energy
     real_t* force,           // pointer to store the computed forces
     real_t* stress           // pointer to store the computed stress
@@ -34,7 +35,8 @@ void compute_dispersion_energy(
 D3Handle_t* init_d3_handle(uint16_t* elements, uint64_t max_length,
                            real_t cutoff_radius,
                            real_t coordination_number_cutoff,
-                           uint64_t max_neigbors);
+                           DampingType damping_type,
+                           FunctionalType functional_type);
 
 void set_atoms(D3Handle_t* handle, real_t* coords, uint16_t* elements,
                uint64_t length);

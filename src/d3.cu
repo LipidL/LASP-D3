@@ -26,14 +26,14 @@
 D3Handle_t* init_d3_handle(uint16_t* elements, uint64_t max_length,
                            real_t cutoff_radius,
                            real_t coordination_number_cutoff,
-                           uint64_t max_neighbors) {
+                           DampingType damping_type, FunctionalType functional_type) {
     real_t* coords = (real_t*)malloc(
         max_length * 3 * sizeof(real_t));  // allocate memory for coordinates
     real_t cell[3][3] = {10};              // initialize the cell matrix
     Device_Buffer* buffer =
         new Device_Buffer((real_t(*)[3])coords, elements, cell, max_length,
                           cutoff_radius, coordination_number_cutoff,
-                          max_neighbors);  // create a buffer to hold the data
+                          damping_type, functional_type);  // create a buffer to hold the data
     return (D3Handle_t*)buffer;            // return the handle
 }
 
@@ -231,7 +231,10 @@ __host__ void compute_dispersion_energy(real_t coords[][3], uint16_t* elements,
                                         uint64_t length, real_t cell[3][3],
                                         real_t cutoff_radius,
                                         real_t coordination_number_cutoff,
-                                        uint64_t max_neighbors, real_t* energy,
+                                        DampingType damping_type, 
+                                        FunctionalType functional_type,
+                                        // output parameters
+                                        real_t* energy,
                                         real_t* force, real_t* stress) {
     // initialize parameters
     init_params();
@@ -239,15 +242,11 @@ __host__ void compute_dispersion_energy(real_t coords[][3], uint16_t* elements,
     // Start measuring execution time
     D3Handle_t* handle =
         init_d3_handle(elements, length, cutoff_radius,
-                       coordination_number_cutoff, max_neighbors);
-    auto start_time = std::chrono::high_resolution_clock::now();
+                       coordination_number_cutoff, damping_type, functional_type);
     set_atoms(handle, (real_t*)coords, elements, length);
     set_cell(handle, cell);
     clear_d3_handle(handle);
     compute_dispersion_energy_from_handle(handle, energy, force, stress);
-    auto end_time = std::chrono::high_resolution_clock::now();
-    std::chrono::duration<double> elapsed_time = end_time - start_time;
-    debug("Elapsed time: %.6f seconds\n", elapsed_time.count());
     free_d3_handle(handle);
 }
 
@@ -290,7 +289,7 @@ int main() {
     real_t* stress =
         (real_t*)malloc(sizeof(real_t) * 9);  // allocate memory for stress
     compute_dispersion_energy(atoms, elements, 10, cell, cutoff_radius,
-                              CN_cutoff_radius, 5000, &energy, force, stress);
+                              CN_cutoff_radius, ZERO_DAMPING, PBE0, &energy, force, stress);
     debug("energy: %f eV\n", energy);
     real_t force_sum[3] = {0.0f, 0.0f, 0.0f};
     for (int i = 0; i < 10; ++i) {

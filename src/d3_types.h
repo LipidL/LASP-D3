@@ -10,11 +10,40 @@ typedef struct atom {
     real_t x, y, z;    // coordinates in Cartesian space
 } atom_t;
 
+typedef enum {
+    ZERO_DAMPING = 0,  // original DFT-D3 damping
+    BJ_DAMPING = 1,    // Becke-Johnson damping
+} DampingType;
+
+typedef enum {
+    PBE0 = 0,
+    PBE = 1,
+    B3LYP = 2,
+    BLYP = 3,
+    BP86 = 4,
+    REVPBE = 5,
+    CUSTOM = 99  // Special value for custom parameters
+} FunctionalType;
+
+typedef struct {
+    real_t s6;
+    real_t s8;
+    real_t sr6;
+    real_t sr8;
+} functional_params_t;
+
+static const functional_params_t FUNCTIONAL_PARAMS[] = {
+    {1.0f, 0.722f, 1.217f, 1.0f},  // PBE0
+    {1.0f, 0.777f, 1.277f, 1.0f},  // PBE
+    {1.0f, 1.706f, 1.314f, 1.0f},  // B3LYP
+    {1.0f, 2.022f, 1.243f, 1.0f},  // BLYP
+    {1.0f, 1.838f, 1.221f, 1.0f},  // BP86
+    {1.0f, 0.989f, 0.953f, 1.0f},  // REVPBE
+    {1.0f, 1.0f, 1.0f, 1.0f}   // CUSTOM (default)
+};
 typedef struct device_data {
     uint64_t num_atoms;     // number of atoms in the system
     uint64_t num_elements;  // number of unique elements in the system
-    // uint64_t *unique_elements; // array of unique elements in the system,
-    // length: num_elements
     uint64_t* atom_types;  // array of atom types, length: num_atoms. the
                            // entries is not the atomic number, but the index of
                            // the corresponding entry in constants.
@@ -33,6 +62,10 @@ typedef struct device_data {
                            // this must be an odd number (because of symmetry)
     real_t coordination_number_cutoff;  // the cutof radius for CN computation
     real_t cutoff;  // the cutoff radius for the dispersion energy calculation
+    DampingType damping_type;  // the damping type used for the calculation
+    FunctionalType functional_type;  // the functional type used for the
+                                         // calculation
+    functional_params_t functional_params;  // parameters for the functional
     /* some intermediate variables, not initialized but used during
      * computation*/
     real_t* coordination_numbers;  // array of coordination numbers, length:
@@ -44,10 +77,5 @@ typedef struct device_data {
     real_t* forces;   // forces on each atom, length: 3*num_atoms.
     real_t* stress;   // stress tensor, length: 9
 } device_data_t;
-
-enum DampingType {
-    ZERO_DAMPING = 0,  // original DFT-D3 damping
-    BJ_DAMPING = 1,    // Becke-Johnson damping
-};
 
 #endif  // D3_TYPES_H

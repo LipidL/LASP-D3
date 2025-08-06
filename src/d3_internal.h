@@ -1,9 +1,6 @@
 #ifndef D3_INTERNAL_H
 #define D3_INTERNAL_H
 
-#include "constants_include.h"
-#include "d3_types.h"
-
 #define MAX_ELEMENTS 118
 
 #define COMPUTE_SUCCESS 0b00

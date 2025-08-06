@@ -24,7 +24,8 @@ def calculate_dispersion(system_id, elements, coords, cell):
         max_length=5,
         cutoff_radius=46.475800,
         cn_cutoff_radius=46.475800,
-        max_neighbors=100
+        damping_type=0,
+        functional_type=0
     )
     
     # Set the atoms and cell

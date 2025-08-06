@@ -17,7 +17,8 @@ void compute_dispersion_energy(
     float cell[3][3],
     float cutoff_radius,
     float CN_cutoff_radius,
-    uint64_t max_neighbors,
+    int damping_type,
+    int functional_type,
     float *energy,
     float *force,
     float *stress    
@@ -28,7 +29,8 @@ D3Handle_t *init_d3_handle(
     uint64_t max_length, 
     float cutoff_radius,
     float coordination_number_cutoff,
-    uint64_t max_neigbors
+    int damping_type,
+    int functional_type
 );
 
 void set_atoms(D3Handle_t *handle, float *coords, uint16_t *elements, uint64_t length);
@@ -48,7 +50,7 @@ lib_path = os.path.join(os.path.dirname(__file__), "..", "build", "libd3.so")
 lib = ffi.dlopen(lib_path)
 
 class D3Calculator:
-    def __init__(self, elements: list[int], max_length: int, cutoff_radius: float = 46.475800, cn_cutoff_radius: float = 46.475800, max_neighbors: int = 10000):
+    def __init__(self, elements: list[int], max_length: int, cutoff_radius: float = 46.475800, cn_cutoff_radius: float = 46.475800, damping_type: int = 0, functional_type: int = 0):
         """Initialize a D3 calculator object"""
         # Convert elements to the right type
         elements_array = np.array(elements, dtype=np.uint16)
@@ -63,7 +65,8 @@ class D3Calculator:
             max_length,
             cutoff_radius,
             cn_cutoff_radius,
-            max_neighbors
+            damping_type,
+            functional_type
         )
 
         self.num_atoms = max_length

@@ -1,6 +1,7 @@
 #include <assert.h>
 
 #include "d3_kernel.cuh"
+#include "d3_types.h"
 
 __inline__ __device__ real_t calculate_cell_volume(const real_t cell[3][3]) {
     // Calculate the volume of the cell using the determinant of the matrix
@@ -140,6 +141,7 @@ __inline__ __device__ void blockReduceSumThreeBodyKernel(
 
 template <DampingType damping_type>
 __device__ void damping(real_t distance, real_t cutoff_radius,
+                        real_t SR_6, real_t SR_8,
                         real_t* damping_6, real_t* damping_8,
                         real_t* d_damping_6, real_t* d_damping_8) {
     if constexpr (damping_type == ZERO_DAMPING) {
@@ -394,6 +396,10 @@ __global__ void print_coordination_number_kernel(device_data_t* data) {
  * to set a value smaller than the number of neighbors.
  */
 __global__ void two_body_kernel(device_data_t* data) {
+    const real_t s6 = data->functional_params.s6;
+    const real_t s8 = data->functional_params.s8;
+    const real_t sr_6 = data->functional_params.sr6;
+    const real_t sr_8 = data->functional_params.sr8;
     const uint64_t atom_1_index =
         blockIdx.x;  // each block is responsible for one central atom
     const uint64_t atom_1_type =
@@ -732,13 +738,20 @@ __global__ void two_body_kernel(device_data_t* data) {
                     distance_6 * distance_4;  // distance^10
                 /* calculate the dampling function as Grimme et al. 2010, eq4 */
                 real_t f_dn_6, f_dn_8, d_f_dn_6, d_f_dn_8;
-                damping<ZERO_DAMPING>(distance, cutoff_radius, &f_dn_6, &f_dn_8,
-                                      &d_f_dn_6, &d_f_dn_8);
+                switch (data->damping_type) {
+                case ZERO_DAMPING:
+                    damping<ZERO_DAMPING>(distance, cutoff_radius, sr_6, sr_8,
+                                          &f_dn_6, &f_dn_8,
+                                          &d_f_dn_6, &d_f_dn_8);
+                    break;
+                default:
+                    break;
+                }
                 /* calculate the dispersion enegry as Grimme et al. 2010, eq3 */
                 const real_t dispersion_energy_6 =
-                    S6 * (c6_ab / distance_6) * f_dn_6;
+                    s6 * (c6_ab / distance_6) * f_dn_6;
                 const real_t dispersion_energy_8 =
-                    S8 * (c8_ab / distance_8) * f_dn_8;
+                    s8 * (c8_ab / distance_8) * f_dn_8;
                 // printf("dispersion energy between atoms (%llu,%llu):
                 // %f\n",atom_1_index,atom_2_index,dispersion_energy_6 +
                 // dispersion_energy_8);
@@ -764,12 +777,12 @@ __global__ void two_body_kernel(device_data_t* data) {
                 /* accumulate dEij/dCNi to local variable, use Kagan summation
                  * for better accuracy */
                 {
-                    // real_t y = S6 * (f_dn_6 / distance_6) * dC6ab_dCN_1 + S8
+                    // real_t y = s6 * (f_dn_6 / distance_6) * dC6ab_dCN_1 + s8
                     // * (f_dn_8 / distance_8) * dC8ab_dCN_1 -
                     // dE_dCN_conpensate; // calculate the difference
                     const real_t y =
-                        ((S6 * f_dn_6 * distance_2 * dC6ab_dCN_1 +
-                          S8 * f_dn_8 * dC8ab_dCN_1) /
+                        ((s6 * f_dn_6 * distance_2 * dC6ab_dCN_1 +
+                          s8 * f_dn_8 * dC8ab_dCN_1) /
                          distance_8) -
                         batch_dE_dCN_conpensate;  // calculate the difference
                     const real_t t =
@@ -786,18 +799,18 @@ __global__ void two_body_kernel(device_data_t* data) {
                 r_a} r_{ab}^{-n}$ $F_a = S_n C_n^{ab} f_{d,n}(r_{ab}) *
                 (-n)r_{ab}^{-n-2} * \uparrow{r_{ab}}$ */
                 real_t force = 0.0f;  // dE/dr * 1/r
-                force += S6 * c6_ab * f_dn_6 * (-6.0f) /
+                force += s6 * c6_ab * f_dn_6 * (-6.0f) /
                          distance_8;  // dE_6/dr * 1/r
-                force += S8 * c8_ab * f_dn_8 * (-8.0f) /
+                force += s8 * c8_ab * f_dn_8 * (-8.0f) /
                          distance_10;  // dE_8/dr * 1/r
                 /* the second entry of two-body force
                 $F_a = S_n C_n^{ab} r_{ab}^{-n} \frac{\partial}{\partial r_a}
                 f_{d,n}(r_{ab})$ $F_a = S_n C_n^{ab} r_{ab}^{-n} -f_{d,n}^2 *
                 (6*(-\alpha_n)*(r_{ab}/{S_{r,n}R_0^{AB}})^(-\alpha_n - 1) *
                 1/(S_{r,n}R_0^{AB}})) / r_ab \uparrow{r_{ab}}$*/
-                force += S6 * c6_ab / distance_6 * d_f_dn_6 /
+                force += s6 * c6_ab / distance_6 * d_f_dn_6 /
                          distance;  // dE_6/dr * 1/r
-                force += S8 * c8_ab / distance_8 * d_f_dn_8 /
+                force += s8 * c8_ab / distance_8 * d_f_dn_8 /
                          distance;  // dE_8/dr * 1/r
                 /* accumulate force for the central atom, use Kahan summation
                  * for better accuracy */
