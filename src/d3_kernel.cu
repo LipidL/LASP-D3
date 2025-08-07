@@ -428,6 +428,8 @@ __global__ void two_body_kernel(device_data_t* data) {
     const real_t s8 = data->functional_params.s8;
     const real_t sr_6 = data->functional_params.sr6;
     const real_t sr_8 = data->functional_params.sr8;
+    const real_t a1 = data->functional_params.a1;
+    const real_t a2 = data->functional_params.a2;
     const uint64_t atom_1_index =
         blockIdx.x;  // each block is responsible for one central atom
     const uint64_t atom_1_type =
@@ -773,7 +775,7 @@ __global__ void two_body_kernel(device_data_t* data) {
                                             &d_f_dn_6, &d_f_dn_8);
                         break;
                     case BJ_DAMPING:
-                        damping<BJ_DAMPING>(distance, cutoff_radius, sr_6, sr_8,
+                        damping<BJ_DAMPING>(distance, cutoff_radius, a1, a2,
                                             &f_dn_6, &f_dn_8, &d_f_dn_6,
                                             &d_f_dn_8);
                         break;
