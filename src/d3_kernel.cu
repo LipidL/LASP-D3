@@ -141,7 +141,9 @@ __inline__ __device__ void blockReduceSumThreeBodyKernel(
 
 template <DampingType damping_type>
 __device__ void damping(real_t distance, real_t cutoff_radius,
-                        real_t SR_6, real_t SR_8,
+                        real_t param_1, real_t param_2, // parameters used for damping calculation.
+                                                        // when using zero damping, they are SR_6 and SR_8, respectively
+                                                        // when using BJ damping, they are a1 and a2, respectively
                         real_t* damping_6, real_t* damping_8,
                         real_t* d_damping_6, real_t* d_damping_8) {
     if constexpr (damping_type == ZERO_DAMPING) {
@@ -161,16 +163,42 @@ __device__ void damping(real_t distance, real_t cutoff_radius,
             relative_distance_8 * relative_distance_8;
         const real_t relative_distance_17 =
             relative_distance_16 * relative_distance;
+        // calculate damping
         const real_t f_dn_6 = 1 / (1 + 6.0f * (1 / relative_distance_14) *
-                                           powf(SR_6, 14.0f));  // alpha_n = 14
+                                           powf(param_1, 14.0f));  // alpha_n = 14
         const real_t f_dn_8 = 1 / (1 + 6.0f * (1 / relative_distance_16) *
-                                           powf(SR_8, 16.0f));  // alpha_n = 16
+                                           powf(param_2, 16.0f));  // alpha_n = 16
         const real_t d_f_dn_6 = 6.0f * 14.0f * f_dn_6 * f_dn_6 *
                                 (1 / relative_distance_15) *
-                                (1 / (SR_6 * cutoff_radius));
+                                (1 / (param_1 * cutoff_radius));
         const real_t d_f_dn_8 = 6.0f * 16.0f * f_dn_8 * f_dn_8 *
                                 (1 / relative_distance_17) *
-                                (1 / (SR_8 * cutoff_radius));
+                                (1 / (param_2 * cutoff_radius));
+        // write the result back
+        *damping_6 = f_dn_6;
+        *damping_8 = f_dn_8;
+        *d_damping_6 = d_f_dn_6;
+        *d_damping_8 = d_f_dn_8;
+    } else if constexpr (damping_type == BJ_DAMPING) {
+        real_t add_entry = param_1 * cutoff_radius + param_2; // $a_1 R_0^{AB} + a_2$
+        // fast powering
+        real_t add_entry_2 = add_entry * add_entry;
+        real_t add_entry_4 = add_entry_2 * add_entry_2;
+        real_t add_entry_6 = add_entry_4 * add_entry_2;
+        real_t add_entry_8 = add_entry_4 * add_entry_4;
+        real_t distance_2 = distance * distance;
+        real_t distance_4 = distance_2 * distance_2;
+        real_t distance_5 = distance_4 * distance;
+        real_t distance_6 = distance_4 * distance_2;
+        real_t distance_7 = distance_6 * distance;
+        real_t distance_8 = distance_4 * distance_4;
+        // calculate damping
+        real_t f_dn_6 = distance_6 / (distance_6 + add_entry_6);
+        real_t f_dn_8 = distance_8 / (distance_8 + add_entry_8);
+        real_t d_f_dn_6 = 6 * add_entry_6 * distance_5 / ((distance_6 + add_entry_6) *
+                                                          (distance_6 + add_entry_6));
+        real_t d_f_dn_8 = 8 * add_entry_8 * distance_7 / ((distance_8 + add_entry_8) *
+                                                          (distance_8 + add_entry_8));
         // write the result back
         *damping_6 = f_dn_6;
         *damping_8 = f_dn_8;
@@ -739,13 +767,16 @@ __global__ void two_body_kernel(device_data_t* data) {
                 /* calculate the dampling function as Grimme et al. 2010, eq4 */
                 real_t f_dn_6, f_dn_8, d_f_dn_6, d_f_dn_8;
                 switch (data->damping_type) {
-                case ZERO_DAMPING:
-                    damping<ZERO_DAMPING>(distance, cutoff_radius, sr_6, sr_8,
-                                          &f_dn_6, &f_dn_8,
-                                          &d_f_dn_6, &d_f_dn_8);
-                    break;
-                default:
-                    break;
+                    case ZERO_DAMPING:
+                        damping<ZERO_DAMPING>(distance, cutoff_radius, sr_6, sr_8,
+                                            &f_dn_6, &f_dn_8,
+                                            &d_f_dn_6, &d_f_dn_8);
+                        break;
+                    case BJ_DAMPING:
+                        damping<BJ_DAMPING>(distance, cutoff_radius, sr_6, sr_8,
+                                            &f_dn_6, &f_dn_8, &d_f_dn_6,
+                                            &d_f_dn_8);
+                        break;
                 }
                 /* calculate the dispersion enegry as Grimme et al. 2010, eq3 */
                 const real_t dispersion_energy_6 =

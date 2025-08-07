@@ -459,6 +459,18 @@ TestConfig small_system = {
 TestConfig crystal_system = generate_crystal(); // Generate BCC iron crystal
 TestConfig surface_system = generate_surface(); // Generate surface from the crystal
 
+TestConfig init_system_BJ(TestConfig system) {
+    TestConfig bj_system = system;
+    bj_system.test_name += "_BJ";
+    bj_system.damping_type = BJ_DAMPING;
+    return bj_system;
+}
+
+TestConfig small_system_BJ = init_system_BJ(small_system);
+TestConfig crystal_system_BJ = init_system_BJ(crystal_system);
+TestConfig surface_system_BJ = init_system_BJ(surface_system);
+
+
 // Instantiate the test suite with all system configurations
 INSTANTIATE_TEST_SUITE_P(
     SmokeTest,
@@ -466,7 +478,10 @@ INSTANTIATE_TEST_SUITE_P(
     ::testing::Values(
         small_system, 
         crystal_system,
-        surface_system
+        surface_system,
+        small_system_BJ,
+        crystal_system_BJ,
+        surface_system_BJ
     ),
     [](const testing::TestParamInfo<TestConfig>& info) {
         return info.param.test_name; // Use the test name as the test case name
