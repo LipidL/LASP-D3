@@ -219,6 +219,52 @@ __device__ void damping(real_t distance, real_t cutoff_radius,
     }
 }
 
+__device__ void distribute_workload(uint64_t num_atoms, uint64_t total_cell_bias, uint64_t *start_index, uint64_t *end_index, uint64_t *start_bias_index, uint64_t *end_bias_index) {
+     // distribute workload to threads
+    if (num_atoms >= blockDim.x) {
+        /* if the number of atoms exceed number of threads, each thread process
+         * a few atoms, going through all possible bias indicies */
+        uint64_t workload_per_thread = (num_atoms + blockDim.x - 1) / blockDim.x;  // number of atoms per thread
+        *start_index = threadIdx.x * workload_per_thread;
+        *end_index = min(*start_index + workload_per_thread, num_atoms); // the last thread might process fewer atoms
+        *start_bias_index = 0;
+        *end_bias_index = total_cell_bias;  // each thread is responsible for all cell biases
+    } else {
+        /* If the number of atoms is smaller than number of threads, multiple
+         * threads process one atom.
+         * Divide the threads into groups, each group processes one atom.
+         * The first few groups will have one extra thread to guarantee that
+         * every thread is assigned to partially equal workload.
+         */
+        uint64_t threads_per_atom_base = blockDim.x / num_atoms;  // base number of threads per atom
+        uint64_t threads_per_atom_remainder = blockDim.x % num_atoms; // remainder threads
+        uint64_t num_atoms_getting_extra_thread = threads_per_atom_remainder;   // number of atoms getting an extra thread
+        uint64_t threads_in_larger_groups_total = num_atoms_getting_extra_thread * (threads_per_atom_base + 1);  // total number of threads in larger groups
+        uint64_t current_assigned_atom_id;  // which atom this thread is assigned to
+        uint64_t threads_working_on_my_atom;    // number of threads working on my atom
+        uint64_t rank_in_element_thread_group;  // the rank of this thread within the atom's threads
+        if (threadIdx.x < threads_in_larger_groups_total) {
+            // this thread is in a larger group
+            threads_working_on_my_atom = threads_per_atom_base + 1;
+            current_assigned_atom_id = threadIdx.x / threads_working_on_my_atom;
+            rank_in_element_thread_group = threadIdx.x % threads_working_on_my_atom;
+        } else {
+            // this thread falls in later groups that have 'base' threads
+            threads_working_on_my_atom = threads_per_atom_base;
+            uint64_t threads_already_assigned_to_larger_groups = threads_in_larger_groups_total; // number of threads already assigned to larger groups
+            uint64_t threadIdx_relative_to_smaller_groups = threadIdx.x - threads_already_assigned_to_larger_groups; // relative thread index in smaller groups
+            current_assigned_atom_id = 
+                threadIdx_relative_to_smaller_groups / threads_working_on_my_atom + num_atoms_getting_extra_thread;
+            rank_in_element_thread_group = threadIdx_relative_to_smaller_groups % threads_working_on_my_atom;
+        }
+        *start_index = current_assigned_atom_id;
+        *end_index = min(current_assigned_atom_id + 1, num_atoms);
+        uint64_t bias_per_thread = total_cell_bias / threads_working_on_my_atom;  // number of biases per thread
+        *start_bias_index = rank_in_element_thread_group * bias_per_thread;
+        *end_bias_index = min(*start_bias_index + bias_per_thread, total_cell_bias);
+    }
+}
+
 /**
  * @brief this kernel is used to compute the coordination number of each atom in
  * the system.
@@ -262,48 +308,7 @@ __global__ void coordination_number_kernel(device_data_t* data) {
     uint64_t end_index;    // end atom index for this thread
     uint64_t start_bias_index;  // start bias index for this thread
     uint64_t end_bias_index;    // end bias index for this thread
-    if (data->num_atoms >= blockDim.x) {
-        /* if the number of atoms exceed number of threads, each thread process
-         * a few atoms, going through all possible bias indicies */
-        uint64_t workload_per_thread = (data->num_atoms + blockDim.x - 1) / blockDim.x;  // number of atoms per thread
-        start_index = threadIdx.x * workload_per_thread;
-        end_index = min(start_index + workload_per_thread, data->num_atoms); // the last thread might process fewer atoms
-        start_bias_index = 0;
-        end_bias_index = total_cell_bias;  // each thread is responsible for all cell biases
-    } else {
-        /* If the number of atoms is smaller than number of threads, multiple
-         * threads process one atom.
-         * Divide the threads into groups, each group processes one atom.
-         * The first few groups will have one extra thread to guarantee that
-         * every thread is assigned to partially equal workload.
-         */
-        uint64_t threads_per_atom_base = blockDim.x / data->num_atoms;  // base number of threads per atom
-        uint64_t threads_per_atom_remainder = blockDim.x % data->num_atoms; // remainder threads
-        uint64_t num_atoms_getting_extra_thread = threads_per_atom_remainder;   // number of atoms getting an extra thread
-        uint64_t threads_in_larger_groups_total = num_atoms_getting_extra_thread * (threads_per_atom_base + 1);  // total number of threads in larger groups
-        uint64_t current_assigned_atom_id;  // which atom this thread is assigned to
-        uint64_t threads_working_on_my_atom;    // number of threads working on my atom
-        uint64_t rank_in_element_thread_group;  // the rank of this thread within the atom's threads
-        if (threadIdx.x < threads_in_larger_groups_total) {
-            // this thread is in a larger group
-            threads_working_on_my_atom = threads_per_atom_base + 1;
-            current_assigned_atom_id = threadIdx.x / threads_working_on_my_atom;
-            rank_in_element_thread_group = threadIdx.x % threads_working_on_my_atom;
-        } else {
-            // this thread falls in later groups that have 'base' threads
-            threads_working_on_my_atom = threads_per_atom_base;
-            uint64_t threads_already_assigned_to_larger_groups = threads_in_larger_groups_total; // number of threads already assigned to larger groups
-            uint64_t threadIdx_relative_to_smaller_groups = threadIdx.x - threads_already_assigned_to_larger_groups; // relative thread index in smaller groups
-            current_assigned_atom_id = 
-                threadIdx_relative_to_smaller_groups / threads_working_on_my_atom + num_atoms_getting_extra_thread;
-            rank_in_element_thread_group = threadIdx_relative_to_smaller_groups % threads_working_on_my_atom;
-        }
-        start_index = current_assigned_atom_id;
-        end_index = min(current_assigned_atom_id + 1, data->num_atoms);
-        uint64_t bias_per_thread = total_cell_bias / threads_working_on_my_atom;  // number of biases per thread
-        start_bias_index = rank_in_element_thread_group * bias_per_thread;
-        end_bias_index = min(start_bias_index + bias_per_thread, total_cell_bias);
-    }
+    distribute_workload(data->num_atoms, total_cell_bias, &start_index, &end_index, &start_bias_index, &end_bias_index);
     real_t covalent_radii_1 = data->rcov[atom_1_type];  // covalent radii of the central atom
     real_t local_coordination_number = 0.0f;    // local coordination number for the central atom
     for (uint64_t atom_2_index = start_index; atom_2_index < end_index; ++atom_2_index) {
@@ -434,85 +439,7 @@ __global__ void two_body_kernel(device_data_t* data) {
     uint64_t end_index;    // end index for this thread
     uint64_t start_bias_index;  // start bias index for this thread
     uint64_t end_bias_index;    // end bias index for this thread
-    if (data->num_atoms >= blockDim.x) {
-        /* if the number of atoms exceed number of threads, each thread process
-         * an atom, going through all possible bias indicies */
-        const uint64_t workload_per_thread = (data->num_atoms + blockDim.x - 1) / blockDim.x;  // number of atoms per thread
-        start_index = threadIdx.x * workload_per_thread;
-        end_index = min(start_index + workload_per_thread,
-                        data->num_atoms);  // end index for this thread
-        start_bias_index = 0;
-        end_bias_index =
-            total_cell_bias;  // each thread is responsible for all cell biases
-    } else {
-        /* If the number of atoms is smaller than number of threads, multiple
-         * threads process one atom */
-        /* determine the element assigned and rank within that element's threads
-         */
-        const uint64_t threads_per_element_base =
-            blockDim.x / data->num_atoms;  // number of threads per atom
-        const uint64_t threads_per_element_remainder =
-            blockDim.x % data->num_atoms;  // remainder threads
-        const uint64_t num_elements_getting_extra_thread =
-            threads_per_element_remainder;  // number of threads getting an
-                                            // extra thread
-        const uint64_t threads_in_larger_groups_total =
-            num_elements_getting_extra_thread *
-            (threads_per_element_base +
-             1);  // total number of threads in larger groups
-        uint64_t current_assigned_element_id;
-        uint64_t threads_working_on_my_element;
-        uint64_t rank_in_element_thread_group;
-        if (threadIdx.x < threads_in_larger_groups_total) {
-            /* this thread is in a larger group */
-            threads_working_on_my_element =
-                threads_per_element_base +
-                1;  // number of threads working on my element would be one more
-                    // than the base
-            current_assigned_element_id =
-                threadIdx.x /
-                threads_working_on_my_element;  // which element this thread is
-                                                // assigned to
-            rank_in_element_thread_group =
-                threadIdx.x %
-                threads_working_on_my_element;  // the rank of this thread
-                                                // within the element's threads
-        } else {
-            /* this thread falls in later groups that have 'base' threads */
-            threads_working_on_my_element =
-                threads_per_element_base;  // number of threads working on my
-                                           // element would be the base
-            const uint64_t thraeds_already_assigned_to_larger_groups =
-                threads_in_larger_groups_total;  // number of threads already
-                                                 // assigned to larger groups
-            const uint64_t threadIdx_relative_to_smaller_groups =
-                threadIdx.x -
-                thraeds_already_assigned_to_larger_groups;  // relative thread
-                                                            // index in smaller
-                                                            // groups
-            current_assigned_element_id =
-                threadIdx_relative_to_smaller_groups /
-                    threads_working_on_my_element +
-                num_elements_getting_extra_thread;  // which element this thread
-                                                    // is assigned to
-            rank_in_element_thread_group =
-                threadIdx_relative_to_smaller_groups %
-                threads_working_on_my_element;  // the rank of this thread
-                                                // within the element's threads
-        }
-        start_index =
-            current_assigned_element_id;  // start index for this thread
-        end_index = min(current_assigned_element_id + 1,
-                        data->num_atoms);  // end index for this thread
-        const uint64_t bias_per_thread =
-            total_cell_bias /
-            threads_working_on_my_element;  // number of biases per thread
-        start_bias_index = rank_in_element_thread_group *
-                           bias_per_thread;  // start bias index for this thread
-        end_bias_index =
-            min(start_bias_index + bias_per_thread,
-                total_cell_bias);  // end bias index for this thread
-    }
+    distribute_workload(data->num_atoms, total_cell_bias, &start_index, &end_index, &start_bias_index, &end_bias_index);
     for (uint64_t atom_2_index = start_index; atom_2_index < end_index;
          ++atom_2_index) {
         const atom_t atom_2_original =
@@ -1191,88 +1118,7 @@ __global__ void three_body_kernel(device_data_t* data) {
     uint64_t end_index;
     uint64_t start_bias_index;
     uint64_t end_bias_index;
-    if (data->num_atoms >= blockDim.x) {
-        /* if the number of atoms exceed number of threads, each thread process
-         * an atom, going through all possible bias indicies */
-        uint64_t workload_per_thread =
-            (data->num_atoms + blockDim.x - 1) /
-            blockDim.x;  // number of atoms per thread
-        start_index =
-            threadIdx.x * workload_per_thread;  // start index for this thread
-        end_index = min(start_index + workload_per_thread,
-                        data->num_atoms);  // end index for this thread
-        start_bias_index = 0;
-        end_bias_index =
-            total_cell_bias;  // each thread is responsible for all cell biases
-    } else {
-        /* If the number of atoms is smaller than number of threads, multiple
-         * threads process one atom */
-        /* determine the element assigned and rank within that element's threads
-         */
-        uint64_t threads_per_element_base =
-            blockDim.x / data->num_atoms;  // number of threads per atom
-        uint64_t threads_per_element_remainder =
-            blockDim.x % data->num_atoms;  // remainder threads
-        uint64_t num_elements_getting_extra_thread =
-            threads_per_element_remainder;  // number of threads getting an
-                                            // extra thread
-        uint64_t threads_in_larger_groups_total =
-            num_elements_getting_extra_thread *
-            (threads_per_element_base +
-             1);  // total number of threads in larger groups
-        uint64_t current_assigned_element_id;
-        uint64_t threads_working_on_my_element;
-        uint64_t rank_in_element_thread_group;
-        if (threadIdx.x < threads_in_larger_groups_total) {
-            /* this thread is in a larger group */
-            threads_working_on_my_element =
-                threads_per_element_base +
-                1;  // number of threads working on my element would be one more
-                    // than the base
-            current_assigned_element_id =
-                threadIdx.x /
-                threads_working_on_my_element;  // which element this thread is
-                                                // assigned to
-            rank_in_element_thread_group =
-                threadIdx.x %
-                threads_working_on_my_element;  // the rank of this thread
-                                                // within the element's threads
-        } else {
-            /* this thread falls in later groups that have 'base' threads */
-            threads_working_on_my_element =
-                threads_per_element_base;  // number of threads working on my
-                                           // element would be the base
-            uint64_t thraeds_already_assigned_to_larger_groups =
-                threads_in_larger_groups_total;  // number of threads already
-                                                 // assigned to larger groups
-            uint64_t threadIdx_relative_to_smaller_groups =
-                threadIdx.x -
-                thraeds_already_assigned_to_larger_groups;  // relative thread
-                                                            // index in smaller
-                                                            // groups
-            current_assigned_element_id =
-                threadIdx_relative_to_smaller_groups /
-                    threads_working_on_my_element +
-                num_elements_getting_extra_thread;  // which element this thread
-                                                    // is assigned to
-            rank_in_element_thread_group =
-                threadIdx_relative_to_smaller_groups %
-                threads_working_on_my_element;  // the rank of this thread
-                                                // within the element's threads
-        }
-        start_index =
-            current_assigned_element_id;  // start index for this thread
-        end_index = min(current_assigned_element_id + 1,
-                        data->num_atoms);  // end index for this thread
-        uint64_t bias_per_thread =
-            total_cell_bias /
-            threads_working_on_my_element;  // number of biases per thread
-        start_bias_index = rank_in_element_thread_group *
-                           bias_per_thread;  // start bias index for this thread
-        end_bias_index =
-            min(start_bias_index + bias_per_thread,
-                total_cell_bias);  // end bias index for this thread
-    }
+    distribute_workload(data->num_atoms, total_cell_bias, &start_index, &end_index, &start_bias_index, &end_bias_index);
     for (uint64_t atom_2_index = start_index; atom_2_index < end_index;
          ++atom_2_index) {
         real_t force_neighbor_a[3] = {0.0f, 0.0f,
