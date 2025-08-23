@@ -323,16 +323,11 @@ __global__ void coordination_number_kernel(device_data_t* data) {
 
             atom_t atom_2 = atom_2_original;
             // translate atom_2 due to periodic boundaries
-            atom_2.x += x_bias * cell[0][0] + y_bias * cell[1][0] +
-                        z_bias * cell[2][0];
-            atom_2.y += x_bias * cell[0][1] + y_bias * cell[1][1] +
-                        z_bias * cell[2][1];
-            atom_2.z += x_bias * cell[0][2] + y_bias * cell[1][2] +
-                        z_bias * cell[2][2];
+            atom_2.x += x_bias * cell[0][0] + y_bias * cell[1][0] + z_bias * cell[2][0];
+            atom_2.y += x_bias * cell[0][1] + y_bias * cell[1][1] + z_bias * cell[2][1];
+            atom_2.z += x_bias * cell[0][2] + y_bias * cell[1][2] + z_bias * cell[2][2];
             // calculate the distance between the two atoms
-            real_t distance = sqrtf(powf(atom_1.x - atom_2.x, 2) +
-                                    powf(atom_1.y - atom_2.y, 2) +
-                                    powf(atom_1.z - atom_2.z, 2));
+            real_t distance = sqrtf(powf(atom_1.x - atom_2.x, 2) + powf(atom_1.y - atom_2.y, 2) + powf(atom_1.z - atom_2.z, 2));
             // if the distance is within cutoff range, calculate the coordination number
             if (distance <= CN_cutoff && distance > 0.0f) {
                 real_t exp = expf(-K1 * ((covalent_radii_1 + covalent_radii_2) / distance - 1.0f));  // $\exp(-k_1*(\frac{R_A+R_b}{r_{ab}}-1))$
@@ -381,6 +376,7 @@ __global__ void two_body_kernel(device_data_t* data) {
     const real_t sr_8 = data->functional_params.sr8;
     const real_t a1 = data->functional_params.a1;
     const real_t a2 = data->functional_params.a2;
+
     // load the central atom data
     const uint64_t atom_1_index = blockIdx.x;  // index of the central atom
     const uint64_t atom_1_type = data->atom_types[atom_1_index];  // type of the central atom
@@ -411,7 +407,8 @@ __global__ void two_body_kernel(device_data_t* data) {
     real_t local_force_compensate[3] = {0.0f};
     real_t local_stress_compensate[9] = {0.0f};
 
-    const real_t cell_volume = calculate_cell_volume(data->cell);
+    // prefetch and calculate necessary variables during calculation
+    const real_t cell_volume = calculate_cell_volume(data->cell); // volume of the cell
     const uint64_t total_cell_bias = data->max_cell_bias[0] * data->max_cell_bias[1] * data->max_cell_bias[2];  // total number of cell biases
     const uint64_t mcb0 = data->max_cell_bias[0];  // maximum cell bias in x direction
     const uint64_t mcb1 = data->max_cell_bias[1];  // maximum cell bias in y direction
@@ -419,7 +416,7 @@ __global__ void two_body_kernel(device_data_t* data) {
     const real_t cell[3][3] = {
         {data->cell[0][0], data->cell[0][1], data->cell[0][2]},
         {data->cell[1][0], data->cell[1][1], data->cell[1][2]},
-        {data->cell[2][0], data->cell[2][1], data->cell[2][2]}}; // local cell matrix
+        {data->cell[2][0], data->cell[2][1], data->cell[2][2]}}; // cell matrix
     const real_t cutoff = data->cutoff; // cutoff radius for two-body interactions
 
     // print some debug information
@@ -434,183 +431,136 @@ __global__ void two_body_kernel(device_data_t* data) {
         }
         debug("max_cell_bias: %llu %llu %llu\n", mcb0, mcb1, mcb2);
     }
+
     // distribute workload to threads
     uint64_t start_index;  // start index for this thread
     uint64_t end_index;    // end index for this thread
     uint64_t start_bias_index;  // start bias index for this thread
     uint64_t end_bias_index;    // end bias index for this thread
     distribute_workload(data->num_atoms, total_cell_bias, &start_index, &end_index, &start_bias_index, &end_bias_index);
-    for (uint64_t atom_2_index = start_index; atom_2_index < end_index;
-         ++atom_2_index) {
-        const atom_t atom_2_original =
-            data->atoms[atom_2_index];  // surrounding atom
-        const uint64_t atom_2_type =
-            data->atom_types[atom_2_index];  // type of the surrounding atom
-        const real_t coordination_number_2 =
-            data->coordination_numbers[atom_2_index];  // coordination number of
-                                                       // the surrounding atom
-        /* calculate the coordination number based on dispersion coefficient
-            formula: $C_6^{ij} = Z/W$
-            where $Z = \sum_{a,b}C_{6,ref}^{i,j}L_{a,b}$
-            $W = \sum_{a,b}L_{a,b}$
-            $L_{a,b} = \exp(-k3((CN^A-CN^A_{ref,a})^2 + (CN^B-CN^B_{ref,b})^2))$
+    for (uint64_t atom_2_index = start_index; atom_2_index < end_index; ++atom_2_index) {
+        const atom_t atom_2_original = data->atoms[atom_2_index];  // surrounding atom
+        const uint64_t atom_2_type = data->atom_types[atom_2_index];  // type of the surrounding atom
+        const real_t coordination_number_2 = data->coordination_numbers[atom_2_index];  // coordination number of the surrounding atom
+
+        /** calculate the coordination number based on 
+         * the equation comes from Grimme et al. 2010, eq 16.
+         * formula: $C_6^{ij} = Z/W$
+         * where $Z = \sum_{a,b}C_{6,ref}^{i,j}L_{a,b}$
+         * $W = \sum_{a,b}L_{a,b}$
+         * $L_{a,b} = \exp(-k3((CN^A-CN^A_{ref,a})^2 + (CN^B-CN^B_{ref,b})^2))$
          */
-        real_t exponent_args[NUM_REF_C6 * NUM_REF_C6] = {
-            0.0f};  // array to store the exponent arguments for L_ij
-        real_t CN_ref_1[NUM_REF_C6 * NUM_REF_C6] = {
-            0.0f};  // array to store the CNref values for atom_1
-        real_t c6ab_ref[NUM_REF_C6 * NUM_REF_C6] = {
-            0.0f};  // array to store the C6ab_ref values
-        uint16_t valid_term_count =
-            0;  // count of valid terms in the C6ref arrays
-        real_t max_exponent_arg =
-            -FLT_MAX;  // maximum exponent argument for L_ij
+        real_t exponent_args[NUM_REF_C6 * NUM_REF_C6] = {0.0f};  // array to store the exponent arguments for L_ij
+        real_t CN_ref_1[NUM_REF_C6 * NUM_REF_C6] = {0.0f};  // array to store the CNref values for atom_1
+        real_t c6ab_ref[NUM_REF_C6 * NUM_REF_C6] = {0.0f};  // array to store the C6ab_ref values
+        uint16_t valid_term_count = 0;  // count of valid terms in the C6ref arrays
+        real_t max_exponent_arg = -FLT_MAX;  // maximum exponent argument for L_ij
         for (uint64_t i = 0; i < NUM_REF_C6; ++i) {
             for (uint64_t j = 0; j < NUM_REF_C6; ++j) {
-                /* find the C6ref */
-                uint64_t stride_1 = data->num_elements * NUM_REF_C6 *
-                                    NUM_REF_C6 * NUM_C6AB_ENTRIES;
-                uint64_t stride_2 = NUM_REF_C6 * NUM_REF_C6 * NUM_C6AB_ENTRIES;
-                uint64_t stride_3 = NUM_REF_C6 * NUM_C6AB_ENTRIES;
-                uint64_t stride_4 = NUM_C6AB_ENTRIES;
-                uint64_t index = atom_1_type * stride_1 +
-                                 atom_2_type * stride_2 + i * stride_3 +
-                                 j * stride_4;
+                // find the C6ref
+                uint64_t index = atom_1_type * data->c6_stride_1 +
+                                 atom_2_type * data->c6_stride_2 + 
+                                 i * data->c6_stride_3 +
+                                 j * data->c6_stride_4;
                 real_t c6_ref = data->c6_ab_ref[index + 0];
-                /* these entries could be -1.0f if they are not valid, but at
-                 * least one should be valid*/
+                // these entries could be -1.0f if they are not valid, but at least one should be valid
                 real_t coordination_number_ref_1 = data->c6_ab_ref[index + 1];
                 real_t coordination_number_ref_2 = data->c6_ab_ref[index + 2];
                 if (coordination_number_ref_1 - (-1.0f) > 1e-5f &&
                     coordination_number_ref_2 - (-1.0f) > 1e-5f) {
-                    /* if both coordination numbers are valid, we can use them
-                     */
-                    exponent_args[valid_term_count] =
-                        -K3 *
-                        (powf(coordination_number_1 - coordination_number_ref_1,
-                              2) +
-                         powf(coordination_number_2 - coordination_number_ref_2,
-                              2));
-                    CN_ref_1[valid_term_count] =
-                        coordination_number_ref_1;        // store the C6ref for
-                                                          // atom_1
-                    c6ab_ref[valid_term_count] = c6_ref;  // store the C6ab_ref
+                    // if both coordination numbers are valid, we can use them
+                    exponent_args[valid_term_count] = -K3 * (powf(coordination_number_1 - coordination_number_ref_1, 2) + powf(coordination_number_2 - coordination_number_ref_2, 2));
+                    CN_ref_1[valid_term_count] = coordination_number_ref_1;
+                    c6ab_ref[valid_term_count] = c6_ref;
                     max_exponent_arg =
                         (max_exponent_arg > exponent_args[valid_term_count])
                             ? max_exponent_arg
-                            : exponent_args
-                                  [valid_term_count];  // update the maximum
-                                                       // exponent argument
+                            : exponent_args[valid_term_count];  // update the maximum exponent argument
                     valid_term_count++;
                 }
             }
         }
+        // calculate C6 value
         real_t Z = 0.0f;
         real_t W = 0.0f;
-        real_t c_ref_L_ij = 0.0f;
-        real_t c_ref_dL_ij_1 = 0.0f;
-        real_t dL_ij_1 = 0.0f;
-
+        real_t c_ref_L_ij = 0.0f; // C6ab_ref * L_ij
+        real_t c_ref_dL_ij_1 = 0.0f; // C6ab_ref * dL_ij/dCN_1
+        real_t dL_ij_1 = 0.0f; // dL_ij/dCN_1
         if (valid_term_count > 0) {
             for (uint16_t i = 0; i < valid_term_count; ++i) {
-                /* calculate L_ij for the valid terms */
-                real_t L_ij =
-                    expf(exponent_args[i] -
-                         max_exponent_arg);  // normalize the exponent argument
-                real_t dL_ij_1_part = -2.0f * K3 *
-                                      (coordination_number_1 - CN_ref_1[i]) *
-                                      L_ij;  // dL_ij/dCN_1
-                Z += c6ab_ref[i] * L_ij;     // accumulate the value of Z
-                W += L_ij;                   // accumulate the value of W
-                c_ref_L_ij +=
-                    c6ab_ref[i] * L_ij;  // accumulate the value of c_ref_L_ij
-                c_ref_dL_ij_1 +=
-                    c6ab_ref[i] *
-                    dL_ij_1_part;  // accumulate the value of c_ref_dL_ij_1
-                dL_ij_1 += dL_ij_1_part;  // accumulate the value of dL_ij_1
+                // calculate L_ij for the valid terms
+                real_t L_ij = expf(exponent_args[i] - max_exponent_arg);  // normalized the L_ij value
+                real_t dL_ij_1_part = -2.0f * K3 * (coordination_number_1 - CN_ref_1[i]) * L_ij;  // part of dL_ij/dCN_1 contributed by the current valid term
+                Z += c6ab_ref[i] * L_ij;
+                W += L_ij;
+                c_ref_L_ij += c6ab_ref[i] * L_ij;
+                c_ref_dL_ij_1 += c6ab_ref[i] * dL_ij_1_part;
+                dL_ij_1 += dL_ij_1_part;
             }
         } else {
-            printf(
-                "Warning: no valid C6ab terms found for atom pair (%llu, "
-                "%llu)\n",
-                atom_1_index, atom_2_index);
+            // no valid terms found
+            printf("Warning: no valid C6ab terms found for atom pair (%llu, %llu)\n", atom_1_index, atom_2_index);
         }
 
         const real_t L_ij = W;
+        // avoid division by zero
         real_t dC6ab_dCN_1 =
             (L_ij * L_ij > 0.0f)
-                ? (c_ref_dL_ij_1 * L_ij - c_ref_L_ij * dL_ij_1) /
-                      powf(L_ij, 2.0f)
-                : 0.0f;  // avoid division by zero
+                ? (c_ref_dL_ij_1 * L_ij - c_ref_L_ij * dL_ij_1) / powf(L_ij, 2.0f)
+                : 0.0f; // dC6ab/dCN_1
         if (isnan(dC6ab_dCN_1) || isinf(dC6ab_dCN_1)) {
-            printf(
-                "Error: dC6ab/dCN_1 is NaN or Inf for atom pair (%llu, %llu)\n",
-                atom_1_index, atom_2_index);
-            printf(
-                "Z: %f, W: %f, c_ref_L_ij: %f, c_ref_dL_ij_1: %f, dL_ij_1: "
-                "%f\n",
-                Z, W, c_ref_L_ij, c_ref_dL_ij_1, dL_ij_1);
+            // NaN or inf encountered, bad result
+            printf("Error: dC6ab/dCN_1 is NaN or Inf for atom pair (%llu, %llu)\n", atom_1_index, atom_2_index);
+            printf("Z: %f, W: %f, c_ref_L_ij: %f, c_ref_dL_ij_1: %f, dL_ij_1: %f\n", Z, W, c_ref_L_ij, c_ref_dL_ij_1, dL_ij_1);
             dC6ab_dCN_1 = 0.0f;  // reset to 0.0f if it's NaN or Inf
         }
 
-        real_t c6_ab = (W > 0.0f) ? Z / W : 0.0f;  // avoid division by zero
+        // avoid division by zero
+        real_t c6_ab = (W > 0.0f) ? Z / W : 0.0f;   // C6_ab value between atom 1 and 2
         if (isnan(c6_ab) || isinf(c6_ab)) {
-            printf("Error: C6_ab is NaN or Inf for atom pair (%llu, %llu)\n",
-                   atom_1_index, atom_2_index);
-            printf(
-                "Z: %f, W: %f, c_ref_L_ij: %f, c_ref_dL_ij_1: %f, dL_ij_1: "
-                "%f\n",
-                Z, W, c_ref_L_ij, c_ref_dL_ij_1, dL_ij_1);
+            printf("Error: C6_ab is NaN or Inf for atom pair (%llu, %llu)\n", atom_1_index, atom_2_index);
+            printf("Z: %f, W: %f, c_ref_L_ij: %f, c_ref_dL_ij_1: %f, dL_ij_1: %f\n", Z, W, c_ref_L_ij, c_ref_dL_ij_1, dL_ij_1);
             c6_ab = 0.0f;  // reset to 0.0f if it's NaN or Inf
         }
-        /* calculate c8_ab by $C_8^{AB} = 3C_6^{AB}\sqrt{Q^AQ^B}$*/
+
+        // calculate c8_ab by $C_8^{AB} = 3C_6^{AB}\sqrt{Q^AQ^B}$
+        // the values in data->r2r4 is already squared
         const real_t r2r4_1 = data->r2r4[atom_1_type];
         const real_t r2r4_2 = data->r2r4[atom_2_type];
-        const real_t c8_ab = 3.0f * c6_ab * r2r4_1 *
-                             r2r4_2;  // the value in r2r4 is already squared
-        const real_t dC8ab_dCN_1 =
-            3.0f * dC6ab_dCN_1 * r2r4_1 * r2r4_2;  // dC8ab/dCN_1
-        /* acquire the cutoff radius between the two atoms */
-        const real_t cutoff_radius =
-            data->r0ab[atom_1_type * data->num_elements + atom_2_type];
-        for (uint64_t bias_index = start_bias_index;
-             bias_index < end_bias_index; ++bias_index) {
-            /* each thread is responsible for one atom pair, so the number of
-             * threads should be equal to num_atoms * total_cell_bias */
+        const real_t c8_ab = 3.0f * c6_ab * r2r4_1 * r2r4_2;  // C8ab value
+        const real_t dC8ab_dCN_1 = 3.0f * dC6ab_dCN_1 * r2r4_1 * r2r4_2;  // dC8ab/dCN_1
+        // acquire the cutoff radius between the two atoms
+        const real_t cutoff_radius = data->r0ab[atom_1_type * data->num_elements + atom_2_type];
+        // loop over supercells
+        for (uint64_t bias_index = start_bias_index; bias_index < end_bias_index; ++bias_index) {
             const int64_t x_bias = (bias_index % mcb0) - (mcb0 / 2);  // x bias
-            const int64_t y_bias =
-                ((bias_index / mcb0) % mcb1) - (mcb1 / 2);  // y bias
-            const int64_t z_bias =
-                (bias_index / (mcb0 * mcb1) % mcb2) - (mcb2 / 2);  // z bias
-            assert_(atom_2_index <
-                    data->num_atoms);  // make sure the index is in bounds
+            const int64_t y_bias = ((bias_index / mcb0) % mcb1) - (mcb1 / 2);  // y bias
+            const int64_t z_bias = (bias_index / (mcb0 * mcb1) % mcb2) - (mcb2 / 2);  // z bias
+            assert_(atom_2_index < data->num_atoms);  // make sure the index is in bounds
 
-            atom_t atom_2 = atom_2_original;
-            /* translate atom_2 due to periodic boundaries */
-            atom_2.x += x_bias * cell[0][0] + y_bias * cell[1][0] +
-                        z_bias * cell[2][0];  // translate in x direction
-            atom_2.y += x_bias * cell[0][1] + y_bias * cell[1][1] +
-                        z_bias * cell[2][1];  // translate in y direction
-            atom_2.z += x_bias * cell[0][2] + y_bias * cell[1][2] +
-                        z_bias * cell[2][2];  // translate in z direction
-            /* calculate the distance between the two atoms */
-            const real_t distance = sqrtf(powf(atom_1.x - atom_2.x, 2) +
-                                          powf(atom_1.y - atom_2.y, 2) +
-                                          powf(atom_1.z - atom_2.z, 2));
+            atom_t atom_2 = atom_2_original; // the actual atom2 participated in the calculation
+            // translate atom_2 due to periodic boundaries
+            atom_2.x += x_bias * cell[0][0] + y_bias * cell[1][0] + z_bias * cell[2][0];  // translate in x direction
+            atom_2.y += x_bias * cell[0][1] + y_bias * cell[1][1] + z_bias * cell[2][1];  // translate in y direction
+            atom_2.z += x_bias * cell[0][2] + y_bias * cell[1][2] + z_bias * cell[2][2];  // translate in z direction
+            real_t delta_r[3] = {
+                atom_1.x - atom_2.x,  // delta x
+                atom_1.y - atom_2.y,  // delta y
+                atom_1.z - atom_2.z   // delta z
+            }; // delta_r between atom 1 and atom 2
+            const real_t distance = sqrtf(powf(delta_r[0], 2) +
+                                          powf(delta_r[1], 2) +
+                                          powf(delta_r[2], 2)); // distance between atom 1 and atom 2
+
             if (distance <= cutoff && distance > 0.0f) {
-                /* calculate distance^6 and distance^8 using fast power
-                 * algorithm*/
+                // calculate distance^6 and distance^8 using fast power
                 const real_t distance_2 = distance * distance;    // distance^2
                 const real_t distance_3 = distance_2 * distance;  // distance^3
-                const real_t distance_4 =
-                    distance_2 * distance_2;  // distance^4
-                const real_t distance_6 =
-                    distance_3 * distance_3;  // distance^6
-                const real_t distance_8 =
-                    distance_4 * distance_4;  // distance^8
-                const real_t distance_10 =
-                    distance_6 * distance_4;  // distance^10
-                /* calculate the dampling function as Grimme et al. 2010, eq4 */
+                const real_t distance_4 = distance_2 * distance_2;  // distance^4
+                const real_t distance_6 = distance_3 * distance_3;  // distance^6
+                const real_t distance_8 = distance_4 * distance_4;  // distance^8
+                const real_t distance_10 = distance_6 * distance_4;  // distance^10
+                // calculate the damping function
                 real_t f_dn_6, f_dn_8, d_f_dn_6, d_f_dn_8;
                 switch (data->damping_type) {
                     case ZERO_DAMPING:
@@ -624,421 +574,170 @@ __global__ void two_body_kernel(device_data_t* data) {
                                             &d_f_dn_8);
                         break;
                 }
-                /* calculate the dispersion enegry as Grimme et al. 2010, eq3 */
-                const real_t dispersion_energy_6 =
-                    s6 * (c6_ab / distance_6) * f_dn_6;
-                const real_t dispersion_energy_8 =
-                    s8 * (c8_ab / distance_8) * f_dn_8;
-                // printf("dispersion energy between atoms (%llu,%llu):
-                // %f\n",atom_1_index,atom_2_index,dispersion_energy_6 +
-                // dispersion_energy_8);
-                const real_t dispersion_energy =
-                    (dispersion_energy_6 + dispersion_energy_8) /
-                    2.0f;  // divide by 2 because each atom pair is counted
-                           // twice
-                /* add the energy back to results, use Kahan summation for
-                 * higher accuracy */
+                // calculate the dispersion energy according to Grimme et al. 2010, eq3
+                const real_t dispersion_energy_6 = s6 * (c6_ab / distance_6) * f_dn_6;
+                const real_t dispersion_energy_8 = s8 * (c8_ab / distance_8) * f_dn_8;
+                const real_t dispersion_energy = (dispersion_energy_6 + dispersion_energy_8) / 2.0f;  // divide by 2 because each atom pair is counted twice
+                
+                // accumulate the energy, use Kahan summation for higher accuracy
                 {
-                    const real_t y =
-                        dispersion_energy -
-                        batch_energy_compensate;  // calculate the difference
-                    const real_t t =
-                        batch_energy +
-                        y;  // add the difference to the local energy
-                    batch_energy_compensate =
-                        (t - batch_energy) -
-                        y;  // calculate the compensation for the next iteration
-                    batch_energy = t;  // update the local energy
+                    const real_t y = dispersion_energy - batch_energy_compensate;
+                    const real_t t = batch_energy + y;
+                    batch_energy_compensate = (t - batch_energy) - y;
+                    batch_energy = t;
                 }
 
-                /* accumulate dEij/dCNi to local variable, use Kagan summation
-                 * for better accuracy */
+                // accumulate dEij/dCNi to local variable
                 {
-                    // real_t y = s6 * (f_dn_6 / distance_6) * dC6ab_dCN_1 + s8
-                    // * (f_dn_8 / distance_8) * dC8ab_dCN_1 -
-                    // dE_dCN_conpensate; // calculate the difference
-                    const real_t y =
-                        ((s6 * f_dn_6 * distance_2 * dC6ab_dCN_1 +
-                          s8 * f_dn_8 * dC8ab_dCN_1) /
-                         distance_8) -
-                        batch_dE_dCN_compensate;  // calculate the difference
-                    const real_t t =
-                        batch_dE_dCN +
-                        y;  // add the difference to the local dE/dCN
-                    batch_dE_dCN_compensate =
-                        (t - batch_dE_dCN) -
-                        y;  // calculate the compensation for the next iteration
-                    batch_dE_dCN = t;  // update the local dE/dCN
+                    const real_t y = ((s6 * f_dn_6 * distance_2 * dC6ab_dCN_1 + s8 * f_dn_8 * dC8ab_dCN_1) / distance_8) - batch_dE_dCN_compensate;
+                    const real_t t = batch_dE_dCN + y;
+                    batch_dE_dCN_compensate = (t - batch_dE_dCN) - y;
+                    batch_dE_dCN = t;
                 }
-
-                /* the first entry of two-body force
-                $F_a = S_n C_n^{ab} f_{d,n}(r_{ab}) \frac{\partial}{\partial
-                r_a} r_{ab}^{-n}$ $F_a = S_n C_n^{ab} f_{d,n}(r_{ab}) *
-                (-n)r_{ab}^{-n-2} * \uparrow{r_{ab}}$ */
+                /** the first entry of two-body force:
+                 * $F_a = S_n C_n^{ab} f_{d,n}(r_{ab}) \frac{\partial}{\partial r_a} r_{ab}^{-n}$ 
+                 * $F_a = S_n C_n^{ab} f_{d,n}(r_{ab}) * (-n)r_{ab}^{-n-2} * \uparrow{r_{ab}}$ 
+                 */
                 real_t force = 0.0f;  // dE/dr * 1/r
-                force += s6 * c6_ab * f_dn_6 * (-6.0f) /
-                         distance_8;  // dE_6/dr * 1/r
-                force += s8 * c8_ab * f_dn_8 * (-8.0f) /
-                         distance_10;  // dE_8/dr * 1/r
-                /* the second entry of two-body force
-                $F_a = S_n C_n^{ab} r_{ab}^{-n} \frac{\partial}{\partial r_a}
-                f_{d,n}(r_{ab})$ $F_a = S_n C_n^{ab} r_{ab}^{-n} -f_{d,n}^2 *
-                (6*(-\alpha_n)*(r_{ab}/{S_{r,n}R_0^{AB}})^(-\alpha_n - 1) *
-                1/(S_{r,n}R_0^{AB}})) / r_ab \uparrow{r_{ab}}$*/
-                force += s6 * c6_ab / distance_6 * d_f_dn_6 /
-                         distance;  // dE_6/dr * 1/r
-                force += s8 * c8_ab / distance_8 * d_f_dn_8 /
-                         distance;  // dE_8/dr * 1/r
-                /* accumulate force for the central atom, use Kahan summation
-                 * for better accuracy */
-                {
-                    const real_t y0 =
-                        force * (atom_1.x - atom_2.x) -
-                        batch_force_compensate[0];  // calculate the difference
-                                                    // for x component
-                    const real_t t0 =
-                        batch_force[0] +
-                        y0;  // add the difference to the local force
-                    batch_force_compensate[0] =
-                        (t0 - batch_force[0]) -
-                        y0;  // calculate the compensation for the next
-                             // iteration
-                    batch_force[0] =
-                        t0;  // update the local force for x component
+                force += s6 * c6_ab * f_dn_6 * (-6.0f) / distance_8;  // dE_6/dr * 1/r
+                force += s8 * c8_ab * f_dn_8 * (-8.0f) / distance_10;  // dE_8/dr * 1/r
 
-                    const real_t y1 =
-                        force * (atom_1.y - atom_2.y) -
-                        batch_force_compensate[1];  // calculate the difference
-                                                    // for y component
-                    const real_t t1 =
-                        batch_force[1] +
-                        y1;  // add the difference to the local force
-                    batch_force_compensate[1] =
-                        (t1 - batch_force[1]) -
-                        y1;  // calculate the compensation for the next
-                             // iteration
-                    batch_force[1] =
-                        t1;  // update the local force for y component
-
-                    const real_t y2 =
-                        force * (atom_1.z - atom_2.z) -
-                        batch_force_compensate[2];  // calculate the difference
-                                                    // for z component
-                    const real_t t2 =
-                        batch_force[2] +
-                        y2;  // add the difference to the local force
-                    batch_force_compensate[2] =
-                        (t2 - batch_force[2]) -
-                        y2;  // calculate the compensation for the next
-                             // iteration
-                    batch_force[2] =
-                        t2;  // update the local force for z component
+                /** the second entry of two-body force:
+                 * $F_a = S_n C_n^{ab} r_{ab}^{-n} \frac{\partial}{\partial r_a} f_{d,n}(r_{ab})$ 
+                 * $F_a = S_n C_n^{ab} r_{ab}^{-n} -f_{d,n}^2 * 
+                 * (6*(-\alpha_n)*(r_{ab}/{S_{r,n}R_0^{AB}})^{-\alpha_n - 1} * 
+                 * 1/(S_{r,n}R_0^{AB})) / r_ab \vec{r_{ab}}$
+                 */
+                force += s6 * c6_ab / distance_6 * d_f_dn_6 / distance;  // dE_6/dr * 1/r
+                force += s8 * c8_ab / distance_8 * d_f_dn_8 / distance;  // dE_8/dr * 1/r
+                // accumulate force for the central atom
+                for (uint8_t i = 0; i < 3; ++i) {
+                    const real_t y = force * delta_r[i] - batch_force_compensate[i];
+                    const real_t t = batch_force[i] + y;
+                    batch_force_compensate[i] = (t - batch_force[i]) - y;
+                    batch_force[i] = t;
                 }
 
                 /* accumulate stress to local matrix instead of directly using
                  * atomicAdd, divide by 2 becuase the same entry will be
                  * calculated twice (when atom_2 is the central atom), use Kahan
                  * summation for better accuracy */
-                {
-                    const real_t y0 =
-                        -1.0f * (atom_1.x - atom_2.x) * force *
-                            (atom_1.x - atom_2.x) / 2.0f / cell_volume -
-                        batch_stress_compensate[0];  // calculate the difference
-                                                     // for stress_xx
-                    const real_t t0 =
-                        batch_stress[0 * 3 + 0] +
-                        y0;  // add the difference to the local stress
-                    batch_stress_compensate[0] =
-                        (t0 - batch_stress[0 * 3 + 0]) -
-                        y0;  // calculate the compensation for the next
-                             // iteration
-                    batch_stress[0 * 3 + 0] =
-                        t0;  // update the local stress for stress_xx
-
-                    const real_t y1 =
-                        -1.0f * (atom_1.x - atom_2.x) * force *
-                            (atom_1.y - atom_2.y) / 2.0f / cell_volume -
-                        batch_stress_compensate[1];  // calculate the difference
-                                                     // for stress_xy
-                    const real_t t1 =
-                        batch_stress[0 * 3 + 1] +
-                        y1;  // add the difference to the local stress
-                    batch_stress_compensate[1] =
-                        (t1 - batch_stress[0 * 3 + 1]) -
-                        y1;  // calculate the compensation for the next
-                             // iteration
-                    batch_stress[0 * 3 + 1] =
-                        t1;  // update the local stress for stress_xy
-
-                    const real_t y2 =
-                        -1.0f * (atom_1.x - atom_2.x) * force *
-                            (atom_1.z - atom_2.z) / 2.0f / cell_volume -
-                        batch_stress_compensate[2];  // calculate the difference
-                                                     // for stress_xz
-                    const real_t t2 =
-                        batch_stress[0 * 3 + 2] +
-                        y2;  // add the difference to the local stress
-                    batch_stress_compensate[2] =
-                        (t2 - batch_stress[0 * 3 + 2]) -
-                        y2;  // calculate the compensation for the next
-                             // iteration
-                    batch_stress[0 * 3 + 2] =
-                        t2;  // update the local stress for stress_xz
-
-                    const real_t y3 =
-                        -1.0f * (atom_1.y - atom_2.y) * force *
-                            (atom_1.x - atom_2.x) / 2.0f / cell_volume -
-                        batch_stress_compensate[3];  // calculate the difference
-                                                     // for stress_yx
-                    const real_t t3 =
-                        batch_stress[1 * 3 + 0] +
-                        y3;  // add the difference to the local stress
-                    batch_stress_compensate[3] =
-                        (t3 - batch_stress[1 * 3 + 0]) -
-                        y3;  // calculate the compensation for the next
-                             // iteration
-                    batch_stress[1 * 3 + 0] =
-                        t3;  // update the local stress for stress_yx
-
-                    const real_t y4 =
-                        -1.0f * (atom_1.y - atom_2.y) * force *
-                            (atom_1.y - atom_2.y) / 2.0f / cell_volume -
-                        batch_stress_compensate[4];  // calculate the difference
-                                                     // for stress_yy
-                    const real_t t4 =
-                        batch_stress[1 * 3 + 1] +
-                        y4;  // add the difference to the local stress
-                    batch_stress_compensate[4] =
-                        (t4 - batch_stress[1 * 3 + 1]) -
-                        y4;  // calculate the compensation for the next
-                             // iteration
-                    batch_stress[1 * 3 + 1] =
-                        t4;  // update the local stress for stress_yy
-
-                    const real_t y5 =
-                        -1.0f * (atom_1.y - atom_2.y) * force *
-                            (atom_1.z - atom_2.z) / 2.0f / cell_volume -
-                        batch_stress_compensate[5];  // calculate the difference
-                                                     // for stress_yz
-                    const real_t t5 =
-                        batch_stress[1 * 3 + 2] +
-                        y5;  // add the difference to the local stress
-                    batch_stress_compensate[5] =
-                        (t5 - batch_stress[1 * 3 + 2]) -
-                        y5;  // calculate the compensation for the next
-                             // iteration
-                    batch_stress[1 * 3 + 2] =
-                        t5;  // update the local stress for stress_yz
-
-                    const real_t y6 =
-                        -1.0f * (atom_1.z - atom_2.z) * force *
-                            (atom_1.x - atom_2.x) / 2.0f / cell_volume -
-                        batch_stress_compensate[6];  // calculate the difference
-                                                     // for stress_zx
-                    const real_t t6 =
-                        batch_stress[2 * 3 + 0] +
-                        y6;  // add the difference to the local stress
-                    batch_stress_compensate[6] =
-                        (t6 - batch_stress[2 * 3 + 0]) -
-                        y6;  // calculate the compensation for the next
-                             // iteration
-                    batch_stress[2 * 3 + 0] =
-                        t6;  // update the local stress for stress_zx
-
-                    const real_t y7 =
-                        -1.0f * (atom_1.z - atom_2.z) * force *
-                            (atom_1.y - atom_2.y) / 2.0f / cell_volume -
-                        batch_stress_compensate[7];  // calculate the difference
-                                                     // for stress_zy
-                    const real_t t7 =
-                        batch_stress[2 * 3 + 1] +
-                        y7;  // add the difference to the local stress
-                    batch_stress_compensate[7] =
-                        (t7 - batch_stress[2 * 3 + 1]) -
-                        y7;  // calculate the compensation for the next
-                             // iteration
-                    batch_stress[2 * 3 + 1] =
-                        t7;  // update the local stress for stress_zy
-
-                    const real_t y8 =
-                        -1.0f * (atom_1.z - atom_2.z) * force *
-                            (atom_1.z - atom_2.z) / 2.0f / cell_volume -
-                        batch_stress_compensate[8];  // calculate the difference
-                                                     // for stress_zz
-                    const real_t t8 =
-                        batch_stress[2 * 3 + 2] +
-                        y8;  // add the difference to the local stress
-                    batch_stress_compensate[8] =
-                        (t8 - batch_stress[2 * 3 + 2]) -
-                        y8;  // calculate the compensation for the next
-                             // iteration
-                    batch_stress[2 * 3 + 2] =
-                        t8;  // update the local stress for stress_zz
+                for (uint8_t i = 0; i < 3; ++i) {
+                    for (uint8_t j = 0; j < 3; ++j) {
+                        const real_t y = -1.0f * delta_r[i] * force * delta_r[j] / 2.0f / cell_volume - batch_stress_compensate[i * 3 + j];
+                        const real_t t = batch_stress[i * 3 + j] + y;
+                        batch_stress_compensate[i * 3 + j] = (t - batch_stress[i * 3 + j]) - y;
+                        batch_stress[i * 3 + j] = t;
+                    }
                 }
-                batch_count++;  // increment the count of interactions for the
-                                // central atom
+                batch_count++;  // increment the count of interactions for the central atom
                 if (batch_count >= batch_size) {
-                    /* accumulate the batch variables to local variables */
+                    // accumulate the batch variables to local variables
                     {
-                        const real_t y =
-                            batch_dE_dCN -
-                            local_dE_dCN_compensate;  // calculate the
-                                                      // difference
-                        const real_t t =
-                            local_dE_dCN +
-                            y;  // add the difference to the local dE/dCN
-                        local_dE_dCN_compensate =
-                            (t - local_dE_dCN) -
-                            y;  // calculate the compensation for the next
-                                // iteration
-                        local_dE_dCN = t;  // update the local dE/dCN
+                        // dE/dCN
+                        const real_t y = batch_dE_dCN - local_dE_dCN_compensate;
+                        const real_t t = local_dE_dCN + y;
+                        local_dE_dCN_compensate = (t - local_dE_dCN) - y;
+                        local_dE_dCN = t;
                     }
                     {
-                        const real_t y =
-                            batch_energy -
-                            local_energy_compensate;  // calculate the
-                                                      // difference
-                        const real_t t =
-                            local_energy +
-                            y;  // add the difference to the local energy
-                        local_energy_compensate =
-                            (t - local_energy) -
-                            y;  // calculate the compensation for the next
-                                // iteration
-                        local_energy = t;  // update the local energy
+                        // energy
+                        const real_t y = batch_energy - local_energy_compensate;
+                        const real_t t = local_energy + y;
+                        local_energy_compensate = (t - local_energy) - y;
+                        local_energy = t;
                     }
                     {
+                        // force
                         for (uint16_t i = 0; i < 3; ++i) {
-                            const real_t y =
-                                batch_force[i] -
-                                local_force_compensate[i];  // calculate the
-                                                            // difference for
-                                                            // each component
-                            const real_t t =
-                                local_force[i] +
-                                y;  // add the difference to the local force
-                            local_force_compensate[i] =
-                                (t - local_force[i]) -
-                                y;  // calculate the compensation for the next
-                                    // iteration
-                            local_force[i] =
-                                t;  // update the local force for each component
+                            const real_t y = batch_force[i] - local_force_compensate[i];
+                            const real_t t = local_force[i] + y;
+                            local_force_compensate[i] = (t - local_force[i]) - y;
+                            local_force[i] = t;
                         }
                     }
                     {
+                        // stress
                         for (uint16_t i = 0; i < 9; ++i) {
-                            const real_t y =
-                                batch_stress[i] -
-                                local_stress_compensate[i];  // calculate the
-                                                             // difference for
-                                                             // each component
-                            const real_t t =
-                                local_stress[i] +
-                                y;  // add the difference to the local stress
-                            local_stress_compensate[i] =
-                                (t - local_stress[i]) -
-                                y;  // calculate the compensation for the next
-                                    // iteration
-                            local_stress[i] = t;  // update the local stress for
-                                                  // each component
+                            const real_t y = batch_stress[i] - local_stress_compensate[i];
+                            const real_t t = local_stress[i] + y;
+                            local_stress_compensate[i] = (t - local_stress[i]) - y;
+                            local_stress[i] = t;
                         }
                     }
-                    /* reset the batch variables */
-                    batch_dE_dCN = 0.0f;  // reset the batch dE/dCN
-                    batch_energy = 0.0f;  // reset the batch energy
+                    // reset the batch variables
+                    batch_dE_dCN = 0.0f;
+                    batch_energy = 0.0f;
                     for (uint16_t i = 0; i < 3; ++i) {
-                        batch_force[i] =
-                            0.0f;  // reset the batch force for each component
+                        batch_force[i] = 0.0f;
                     }
                     for (uint16_t i = 0; i < 9; ++i) {
-                        batch_stress[i] =
-                            0.0f;  // reset the batch stress for each component
+                        batch_stress[i] = 0.0f;
                     }
-                    batch_count = 0;  // reset the batch count
+                    batch_count = 0;
                 }
             }
         }
     }
-    /* accumulate the remaining batch variables */
+    // accumulate the remaining batch variables
     {
-        const real_t y =
-            batch_dE_dCN - local_dE_dCN_compensate;  // calculate the difference
-        const real_t t =
-            local_dE_dCN + y;  // add the difference to the local dE/dCN
-        local_dE_dCN_compensate =
-            (t - local_dE_dCN) -
-            y;             // calculate the compensation for the next iteration
-        local_dE_dCN = t;  // update the local dE/dCN
+        // dE/dCN
+        const real_t y = batch_dE_dCN - local_dE_dCN_compensate;
+        const real_t t = local_dE_dCN + y;
+        local_dE_dCN_compensate = (t - local_dE_dCN) - y;
+        local_dE_dCN = t;
     }
     {
-        const real_t y =
-            batch_energy - local_energy_compensate;  // calculate the difference
-        const real_t t =
-            local_energy + y;  // add the difference to the local energy
-        local_energy_compensate =
-            (t - local_energy) -
-            y;             // calculate the compensation for the next iteration
-        local_energy = t;  // update the local energy
+        // energy
+        const real_t y = batch_energy - local_energy_compensate;
+        const real_t t = local_energy + y;
+        local_energy_compensate = (t - local_energy) - y;
+        local_energy = t;
     }
     {
+        // force
         for (uint16_t i = 0; i < 3; ++i) {
-            const real_t y =
-                batch_force[i] -
-                local_force_compensate[i];  // calculate the difference for each
-                                            // component
-            const real_t t =
-                local_force[i] + y;  // add the difference to the local force
-            local_force_compensate[i] =
-                (t - local_force[i]) -
-                y;  // calculate the compensation for the next iteration
-            local_force[i] = t;  // update the local force for each component
+            const real_t y = batch_force[i] - local_force_compensate[i];
+            const real_t t = local_force[i] + y;
+            local_force_compensate[i] = (t - local_force[i]) - y;
+            local_force[i] = t;
         }
     }
     {
+        // stress
         for (uint16_t i = 0; i < 9; ++i) {
-            const real_t y =
-                batch_stress[i] -
-                local_stress_compensate[i];  // calculate the difference for
-                                             // each component
-            const real_t t =
-                local_stress[i] + y;  // add the difference to the local stress
-            local_stress_compensate[i] =
-                (t - local_stress[i]) -
-                y;  // calculate the compensation for the next iteration
-            local_stress[i] = t;  // update the local stress for each component
+            const real_t y = batch_stress[i] - local_stress_compensate[i];
+            const real_t t = local_stress[i] + y;
+            local_stress_compensate[i] = (t - local_stress[i]) - y;
+            local_stress[i] = t;
         }
     }
 
-    real_t dE_dCN_sum = 0;  // reduce dE/dCN across the block
-    real_t energy_sum = 0;  // reduce energy across the block
-    real_t force_central_sum[3] = {
-        0.0f, 0.0f, 0.0f};  // force cache for the central atom across the block
-    real_t stress_sum[9] = {
-        0.0f};  // stress cache for the central atom across the block
-    /* accumulate the results across the block */
+    real_t dE_dCN_sum = 0;  // sum of dE/dCN across the block
+    real_t energy_sum = 0;  // sum of energy across the block
+    real_t force_central_sum[3] = {0.0f, 0.0f, 0.0f};  // sum of force of central atom across the block
+    real_t stress_sum[9] = {0.0f};  // sum of stress of central atom across the block
+    // accumulate the results across the block
     blockReduceTwoBodyKernel(local_dE_dCN, local_energy, local_force,
                              local_stress, &dE_dCN_sum, &energy_sum,
                              force_central_sum, stress_sum);
 
     if (threadIdx.x == 0) {
-        /* only the first thread in the block will write the results back to
-         * global memory */
-        data->dE_dCN[atom_1_index] =
-            dE_dCN_sum;  // accumulate dE/dCN for the central atom
-        // atomicAdd(data->energy, energy_sum); // accumulate energy for the
-        // central atom
-        data->energy[atom_1_index] =
-            energy_sum;  // store the energy for the central atom
-        /* accumulate force for the central atom
-            there is only one thread accessing this memory, so no atomic
-           operation is needed :) */
-        data->forces[atom_1_index * 3 + 0] = force_central_sum[0];
-        data->forces[atom_1_index * 3 + 1] = force_central_sum[1];
-        data->forces[atom_1_index * 3 + 2] = force_central_sum[2];
-/* accumulate stress for the central atom */
-#pragma unroll
-        for (uint16_t i = 0; i < 9; ++i) {
-            atomicAdd(&data->stress[i], stress_sum[i]);
+        /** Only the first thread in the block is responsible for writing back the accumulated result.
+         * We directly write to global memory for dE/dCN, energy, and force without atomic operations.
+         * This is safe because each block processes a single atom, therefore no data race :).
+         * However, stress accumulation requires atomic operations to avoid data races.
+         */
+        // dE/dCN
+        data->dE_dCN[atom_1_index] = dE_dCN_sum;
+        // energy
+        data->energy[atom_1_index] = energy_sum;
+        // force and stress
+        for (uint8_t i = 0; i < 3; ++i) {
+            data->forces[atom_1_index * 3 + i] = force_central_sum[i];
+            for(uint8_t j = 0; j < 3; ++j) {
+                atomicAdd(&data->stress[i * 3 + j], stress_sum[i * 3 + j]); // atomic operation here to avoid data races
+            }
         }
     }
 }
