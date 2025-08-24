@@ -71,7 +71,7 @@ void calculate_cell_repeats(real_t cell[3][3], real_t cutoff,
     }
 }
 
-/* implementations for UniqueElements class */
+// implementations for UniqueElements class
 Unique_Elements::Unique_Elements(uint16_t* elements, uint16_t length) {
     uint16_t* all_elements = (uint16_t*)malloc(MAX_ELEMENTS * sizeof(uint16_t));
     memset(all_elements, 0,

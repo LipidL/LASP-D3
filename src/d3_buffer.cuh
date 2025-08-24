@@ -17,15 +17,25 @@ void calculate_cell_repeats(real_t cell[3][3], real_t cutoff,
 class Unique_Elements {
    public:
     uint16_t num_elements;  // number of unique elements in the system
-    Unique_Elements(uint16_t* elements,
-                    uint16_t length);  // Unique_Elements constructor
-    ~Unique_Elements();                // Unique_Elements destructor
-    uint16_t find(
-        uint16_t element);  // find the index of the element in the unique
-                            // elements array, if not found, it will add the
-                            // element to the array and return the index
-    uint16_t operator[](
-        uint16_t index);  // operator to access the element at the given index
+    /**
+     * @brief constructor of `Unique_Elements` class
+     */
+    Unique_Elements(uint16_t* elements, uint16_t length);
+    /**
+     * @brief destructor of `Unique_Elements` class
+     */
+    ~Unique_Elements();
+    /**
+     * @brief find the index of the element in the unique elements array.
+     * if not found, the new element will be inserted and the index will be returned
+     * @return the index of the element in the unique elements array
+     */
+    uint16_t find(uint16_t element);
+    /**
+     * @brief access the element at the given index
+     * @return the element at the given index
+     */
+    uint16_t operator[](uint16_t index);
 
    private:
     uint16_t* elements_;  // array of unique elements in the system
@@ -37,11 +47,18 @@ class Unique_Elements {
  */
 class Device_Buffer {
    public:
+   /**
+    * @brief constructor of `Device_Buffer` class
+    */
     __host__ Device_Buffer(
         real_t coords[][3], uint16_t* elements, real_t cell[3][3],
         uint64_t length, real_t cutoff, real_t CN_cutoff,
-        DampingType damping_type, FunctionalType functional_type);  // Device_Buffer constructor
-    __host__ ~Device_Buffer();    // Device_Buffer destructor
+        DampingType damping_type, FunctionalType functional_type);
+        
+    /**
+     * @brief destructor of `Device_Buffer` class
+     */
+    __host__ ~Device_Buffer();
 
     /* disable copying */
     Device_Buffer(const Device_Buffer&) = delete;  // disable copy constructor
@@ -50,20 +67,42 @@ class Device_Buffer {
 
     /* enable moving */
     __host__ Device_Buffer(Device_Buffer&& other) noexcept;  // move constructor
-    __host__ Device_Buffer& operator=(
-        Device_Buffer&& other) noexcept;  // move assignment operator
+    __host__ Device_Buffer& operator=(Device_Buffer&& other) noexcept;  // move assignment operator
+    /**
+     * @brief get the pointer to the device side data
+     * @note it points to the data at device side, so don't dereference it at host side
+     */
     __host__ device_data_t* get_device_data() {
-        return this->device_data_;  // return the device data pointer
-    }  // get device data pointer
+        return this->device_data_;
+    }
+    /**
+     * @brief get the pointer to the host side data
+     * @note the host side data only contain a copy of the device side data at initialization.
+     * You can't find any calculation result inside.
+     */
     __host__ device_data_t get_host_data() {
-        return this->host_data_;  // return the host data
-    }  // get host data
+        return this->host_data_;
+    }
 
-    __host__ void set_atoms(uint16_t* elements, real_t coords[][3],
-                            uint64_t length);  // set atoms
+    /**
+     * @brief set the atom informations, like elements, coordinations
+     * @note the elements should be within the range of elements specified when initialization
+     * the number of atoms should also be within the maximum value specified when initialization
+     * @param elements the array of elements, length: num_atoms
+     * @param coords the array of coordinates, length: num_atoms * 3
+     * @param length the number of atoms
+     */
+    __host__ void set_atoms(uint16_t* elements, real_t coords[][3], uint64_t length);  // set atoms
 
-    __host__ void set_cell(real_t cell[3][3]);  // set cell
+    /**
+     * @brief set the cell matrix of the system to be calculated
+     */
+    __host__ void set_cell(real_t cell[3][3]);
 
+    /**
+     * @brief clear intermediate results produced during calculation
+     * @note normally, you should always call it before start calculation
+     */
     __host__ void clear();  // clear the device data
    private:
     device_data_t* device_data_;  // pointer to the device data
