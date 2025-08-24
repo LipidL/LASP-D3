@@ -9,49 +9,34 @@
 #include "d3_buffer.cuh"
 #include "d3_kernel.cuh"
 
-/**
- * @brief this function is used to init a handle for d3 energy/force/stress
- * calculation.
- *
- * @note if you need to call calculate d3 for multiple times where the
- * structures are similar in element composition, you would better use this
- * handle.
- * @note this function initializes the handle in heap area, so you need to free
- * it after use.
- * @note if the number of atoms will vary during your simulation, you need to
- * assign the largest possible number of atoms as the `length` parameter.
- * @note if the elements will vary during your simulation, you need to include
- * all possible elements in the `elements` parameter.
- */
-D3Handle_t* init_d3_handle(uint16_t* elements, uint64_t max_length,
-                           real_t cutoff_radius,
-                           real_t coordination_number_cutoff,
-                           DampingType damping_type, FunctionalType functional_type) {
-    real_t* coords = (real_t*)malloc(
-        max_length * 3 * sizeof(real_t));  // allocate memory for coordinates
-    real_t cell[3][3] = {10};              // initialize the cell matrix
+
+D3Handle_t* init_d3_handle(
+    uint16_t* elements, 
+    uint64_t max_length,
+    real_t cutoff_radius,
+    real_t coordination_number_cutoff,
+    DampingType damping_type, 
+    FunctionalType functional_type
+) {
+    real_t* coords = (real_t*)malloc(max_length * 3 * sizeof(real_t));  // allocate memory for coordinates
+    real_t cell[3][3] = {10};   // initialize the cell matrix
     Device_Buffer* buffer =
         new Device_Buffer((real_t(*)[3])coords, elements, cell, max_length,
                           cutoff_radius, coordination_number_cutoff,
-                          damping_type, functional_type);  // create a buffer to hold the data
-    return (D3Handle_t*)buffer;            // return the handle
+                          damping_type, functional_type);   // create a buffer to hold the data
+    return (D3Handle_t*)buffer; // return the pointer to the handle
 }
 
-/**
- * @brief this function is used to set the coordinates and elements of the atoms
- * in the system.
- * @note the coordinates and elements should be in the same order as the atoms
- * in the system.
- * @note the number of atoms should not exceed the maximum number of atoms
- * specified in the init_d3_handle function, or the system will crash.
- */
-void set_atoms(D3Handle_t* handle, real_t* coords, uint16_t* elements,
-               uint64_t length) {
-    Device_Buffer* buffer =
-        (Device_Buffer*)handle;  // cast the handle to Device_Buffer
+
+void set_atoms(
+    D3Handle_t* handle,
+    real_t* coords, 
+    uint16_t* elements,
+    uint64_t length) {
+    Device_Buffer* buffer = (Device_Buffer*)handle; // cast the handle to Device_Buffer
     // Convert coordinates from Angstrom to Bohr
     real_t angstrom_to_bohr = 1.0f / 0.52917726f;
-    real_t(*bohr_coords)[3] = (real_t(*)[3])malloc(length * 3 * sizeof(real_t));
+    real_t (*bohr_coords)[3] = (real_t(*)[3])malloc(length * 3 * sizeof(real_t));
     for (uint64_t i = 0; i < length; ++i) {
         bohr_coords[i][0] = coords[i * 3] * angstrom_to_bohr;
         bohr_coords[i][1] = coords[i * 3 + 1] * angstrom_to_bohr;
@@ -61,12 +46,9 @@ void set_atoms(D3Handle_t* handle, real_t* coords, uint16_t* elements,
     free(bohr_coords);
 }
 
-/**
- * @brief this function is used to set the cell matrix of the system.
- */
+
 void set_cell(D3Handle_t* handle, real_t cell[3][3]) {
-    Device_Buffer* buffer =
-        (Device_Buffer*)handle;  // cast the handle to Device_Buffer
+    Device_Buffer* buffer = (Device_Buffer*)handle; // cast the handle to Device_Buffer
     // Convert cell from Angstrom to Bohr
     real_t angstrom_to_bohr = 1.0f / 0.52917726f;
     real_t bohr_cell[3][3];
@@ -75,47 +57,32 @@ void set_cell(D3Handle_t* handle, real_t cell[3][3]) {
             bohr_cell[i][j] = cell[i][j] * angstrom_to_bohr;
         }
     }
-    buffer->set_cell(bohr_cell);  // set the cell in the buffer
+    buffer->set_cell(bohr_cell); // set the cell in the buffer
 }
 
-/**
- * @brief this function is used to clear the intermediate data in the handle.
- * @note you need to call this function before using the handle again.
- */
+
 void clear_d3_handle(D3Handle_t* handle) {
-    Device_Buffer* buffer =
-        (Device_Buffer*)handle;  // cast the handle to Device_Buffer
-    buffer->clear();             // clear the buffer
+    Device_Buffer* buffer = (Device_Buffer*)handle; // cast the handle to Device_Buffer
+    buffer->clear();    // clear the buffer
 }
 
-/**
- * @brief this function is used to free the handle after use.
- */
+
 void free_d3_handle(D3Handle_t* handle) {
-    Device_Buffer* buffer =
-        (Device_Buffer*)handle;  // cast the handle to Device_Buffer
-    delete buffer;               // free the buffer
+    Device_Buffer* buffer = (Device_Buffer*)handle; // cast the handle to Device_Buffer
+    delete buffer;  // free the buffer
 }
 
-/**
- * @brief this function is used to compute the dispersion energy of the system
- * using the D3 potential.
- * @param handle the handle to the D3 potential.
- * @param energy pointer to the energy value to be computed.
- * @param force pointer to the force values to be computed.
- * @param stress pointer to the stress values to be computed.
- * @return uint16_t status code indicating the result of the computation.
- */
+
 uint16_t compute_dispersion_energy_from_handle_status(D3Handle_t* handle,
                                                       real_t* energy,
                                                       real_t* force,
                                                       real_t* stress) {
-    /* create a CUDA stream */
+    // create a CUDA stream
     cudaStream_t stream;
     CHECK_CUDA(cudaStreamCreate(&stream));
     Device_Buffer* buffer =
         (Device_Buffer*)handle;  // cast the handle to Device_Buffer
-    /* print debug information about cell */
+    // print debug information about cell
     for (int i = 0; i < 3; ++i) {
         for (int j = 0; j < 3; ++j) {
             debug("cell[%d][%d] = %f\n", i, j,
@@ -123,36 +90,24 @@ uint16_t compute_dispersion_energy_from_handle_status(D3Handle_t* handle,
         }
     }
     // launch the kernel
-    uint64_t length = buffer->get_host_data()
-                          .num_atoms;  // get the number of atoms in the system
-    debug("launching coordination_number_kernel, size: %zu, %d\n", length,
-          MAX_BLOCK_SIZE);
-    coordination_number_kernel<<<length, MAX_BLOCK_SIZE, 0, stream>>>(
-        buffer->get_device_data());  // launch the kernel to compute the
-                                     // coordination numbers
+    uint64_t length = buffer->get_host_data().num_atoms;  // get the number of atoms in the system
+    debug("launching coordination_number_kernel, size: %zu, %d\n", length, MAX_BLOCK_SIZE);
+    // calculate coordination number
+    coordination_number_kernel<<<length, MAX_BLOCK_SIZE, 0, stream>>>(buffer->get_device_data());
 #ifdef DEBUG
-    print_coordination_number_kernel<<<1, 1, 0, stream>>>(
-        buffer->get_device_data());       // print the coordination numbers for
-                                          // debugging
-    CHECK_CUDA(cudaDeviceSynchronize());  // synchronize the device to ensure
-                                          // all threads are finished
+    // print some debug information
+    print_coordination_number_kernel<<<1, 1, 0, stream>>>(buffer->get_device_data());
 #endif
     debug("launching two_body_kernel, size: %zu, %d\n", length, MAX_BLOCK_SIZE);
-    two_body_kernel<<<length, MAX_BLOCK_SIZE, 0, stream>>>(
-        buffer->get_device_data());
-    real_t* atomic_energy = (real_t*)malloc(
-        length * sizeof(real_t));  // allocate memory for atomic energy
-    CHECK_CUDA(
-        cudaMemcpyAsync(atomic_energy, buffer->get_host_data().energy,
-                        length * sizeof(real_t), cudaMemcpyDeviceToHost,
-                        stream));  // copy the energy from device to host memory
-    CHECK_CUDA(
-        cudaStreamSynchronize(stream));  // synchronize the stream to ensure the
-                                         // first two kernels are finished
-    debug("launching three_body_kernel, size: %zu, %d\n", length,
-          MAX_BLOCK_SIZE);
-    three_body_kernel<<<length, MAX_BLOCK_SIZE, 0, stream>>>(
-        buffer->get_device_data());
+    // calculate energy and two-body part of force
+    two_body_kernel<<<length, MAX_BLOCK_SIZE, 0, stream>>>(buffer->get_device_data());
+    real_t* atomic_energy = (real_t*)malloc(length * sizeof(real_t));  // allocate memory for atomic energy
+    CHECK_CUDA(cudaMemcpyAsync(atomic_energy, buffer->get_host_data().energy, length * sizeof(real_t), cudaMemcpyDeviceToHost, stream));  // copy the energy from device to host memory
+    CHECK_CUDA(cudaStreamSynchronize(stream));  // synchronize the stream to ensure the first two kernels are finished
+    // calculate the three-body part of force
+    debug("launching three_body_kernel, size: %zu, %d\n", length, MAX_BLOCK_SIZE);
+    three_body_kernel<<<length, MAX_BLOCK_SIZE, 0, stream>>>(buffer->get_device_data());
+    // perform energy accumulation
     double energy_sum = 0.0;  // use high precision at CPU side
     /* perform reduction to get the total energy */
     for (uint64_t i = 0; i < length; ++i) {
@@ -161,42 +116,30 @@ uint16_t compute_dispersion_energy_from_handle_status(D3Handle_t* handle,
     *energy = energy_sum;  // set the energy value
     free(atomic_energy);   // free the atomic energy array
 
-    cudaMemcpyAsync(force, buffer->get_host_data().forces,
-                    length * 3 * sizeof(real_t), cudaMemcpyDeviceToHost,
-                    stream);  // copy the forces back to host memory
-    // cudaMemcpyAsync(energy, buffer->get_host_data().energy, sizeof(real_t),
-    // cudaMemcpyDeviceToHost, stream); // copy the energy back to host memory
-    cudaMemcpyAsync(stress, buffer->get_host_data().stress, 9 * sizeof(real_t),
-                    cudaMemcpyDeviceToHost,
-                    stream);  // copy the stress back to host memory
+    // copy the force and stress back to host side
+    cudaMemcpyAsync(force, buffer->get_host_data().forces, length * 3 * sizeof(real_t), cudaMemcpyDeviceToHost, stream);
+    cudaMemcpyAsync(stress, buffer->get_host_data().stress, 9 * sizeof(real_t), cudaMemcpyDeviceToHost, stream);
 
     uint16_t status;
-    /* check for compute status */
+    // check for compute status
     device_data_t* device_data = buffer->get_device_data();
-    cudaMemcpyAsync(&status, &(device_data->status), sizeof(uint16_t),
-                    cudaMemcpyDeviceToHost,
-                    stream);  // copy the compute status back to host memory
+    cudaMemcpyAsync(&status, &(device_data->status), sizeof(uint16_t), cudaMemcpyDeviceToHost, stream);  // copy the compute status back to host memory
 
-    CHECK_CUDA(
-        cudaStreamSynchronize(stream));  // synchronize the stream to ensure all
-                                         // operations are finished
+    CHECK_CUDA(cudaStreamSynchronize(stream));  // synchronize the stream to ensure all operations are finished
 
-    real_t angstron_to_bohr =
-        1 / 0.52917726f;  // angstron to bohr conversion factor
+    // convert bohr to angstron, hartree to eV
+    real_t angstron_to_bohr = 1 / 0.52917726f;  // angstron to bohr conversion factor
     real_t hartree_to_eV = 27.211396641308f;  // hartree to eV conversion factor
     *energy *= -hartree_to_eV;  // convert energy to eV and negate it
     for (uint64_t i = 0; i < length; ++i) {
-        /* convert force from hartree/bohr to eV/angstron */
+        // convert force from hartree/bohr to eV/angstrom
         force[i * 3 + 0] *= hartree_to_eV * angstron_to_bohr;
         force[i * 3 + 1] *= hartree_to_eV * angstron_to_bohr;
         force[i * 3 + 2] *= hartree_to_eV * angstron_to_bohr;
     }
     for (uint64_t i = 0; i < 3; ++i) {
         for (uint64_t j = 0; j < 3; ++j) {
-            stress[i * 3 + j] *=
-                hartree_to_eV *
-                powf(angstron_to_bohr, 3);  // convert stress to from
-                                            // hartree/bohr^3 to eV/angstron^3
+            stress[i * 3 + j] *= hartree_to_eV * powf(angstron_to_bohr, 3);  // convert stress to from hartree/bohr^3 to eV/angstron^3
         }
     }
     CHECK_CUDA(cudaStreamDestroy(stream));  // destroy the stream
@@ -205,44 +148,25 @@ uint16_t compute_dispersion_energy_from_handle_status(D3Handle_t* handle,
 
 void compute_dispersion_energy_from_handle(D3Handle_t* handle, real_t* energy,
                                            real_t* force, real_t* stress) {
-    uint16_t status = compute_dispersion_energy_from_handle_status(
-        handle, energy, force,
-        stress);  // compute the dispersion energy from the handle
+    uint16_t status = compute_dispersion_energy_from_handle_status( handle, energy, force, stress);  // compute the dispersion energy from the handle
     if (status != COMPUTE_SUCCESS) {
-        fprintf(stderr,
-                "Error: compute_dispersion_energy_from_handle failed with "
-                "status %d\n",
-                status);
+        fprintf(stderr, "Error: compute_dispersion_energy_from_handle failed with status %d\n",status);
     }
 }
 
-/**
- * @brief the function is used to compute the dispersion energy of the system
- * using the D3 potential.
- *
- * @param atoms the array of atoms in the system. The array is of size num_atoms
- * * 4, where the first entry is atomic number and the last 3 entries are the
- * coordinates of the atom.
- * @param length the number of atoms in the system.
- * @note the function is not thread safe, and should be called from a single
- * thread.
- */
+
 __host__ void compute_dispersion_energy(real_t coords[][3], uint16_t* elements,
                                         uint64_t length, real_t cell[3][3],
                                         real_t cutoff_radius,
                                         real_t coordination_number_cutoff,
                                         DampingType damping_type, 
                                         FunctionalType functional_type,
-                                        // output parameters
                                         real_t* energy,
                                         real_t* force, real_t* stress) {
     // initialize parameters
     init_params();
     // compute dispersion energy
-    // Start measuring execution time
-    D3Handle_t* handle =
-        init_d3_handle(elements, length, cutoff_radius,
-                       coordination_number_cutoff, damping_type, functional_type);
+    D3Handle_t* handle = init_d3_handle(elements, length, cutoff_radius, coordination_number_cutoff, damping_type, functional_type);
     set_atoms(handle, (real_t*)coords, elements, length);
     set_cell(handle, cell);
     clear_d3_handle(handle);
