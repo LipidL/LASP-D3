@@ -35,7 +35,7 @@ typedef struct {
 } functional_params_t;
 
 static const functional_params_t FUNCTIONAL_PARAMS[] = {
-    {1.0f, 0.722f, 1.217f, 1.0f, 0.40085597f, 5.02928789f},  // PBE0
+    {1.0f, 0.928f, 1.287f, 1.0f, 0.41450000f, 4.85930000f},  // PBE0
     {1.0f, 0.777f, 1.277f, 1.0f, 0.38574991f, 4.80688534f},  // PBE
     {1.0f, 1.706f, 1.314f, 1.0f, 0.40868035f, 4.53807137f},  // B3LYP
     {1.0f, 2.022f, 1.243f, 1.0f, 0.44488865f, 4.09330090f},  // BLYP

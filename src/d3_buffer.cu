@@ -210,7 +210,7 @@ __host__ Device_Buffer::Device_Buffer(real_t coords[][3], uint16_t* elements,
                                          this->host_data_.c6_stride_4 * l;
                         for (uint16_t m = 0; m < NUM_C6AB_ENTRIES; ++m) {
                             h_c6ab_ref[index + m] =
-                                c6ab_ref[element_i][element_j][k][l][m];
+                                c6ab_ref[element_i - 1][element_j - 1][k][l][m];
                         }
                     }
                 }
@@ -237,7 +237,7 @@ __host__ Device_Buffer::Device_Buffer(real_t coords[][3], uint16_t* elements,
             for (uint16_t j = 0; j < num_elements; ++j) {
                 uint16_t element_i = unique_elements[i];
                 uint16_t element_j = unique_elements[j];
-                h_r0ab[i * num_elements + j] = r0ab[element_i][element_j];
+                h_r0ab[i * num_elements + j] = r0ab[element_i - 1][element_j - 1];
             }
         }
         real_t* d_r0ab;
@@ -253,7 +253,7 @@ __host__ Device_Buffer::Device_Buffer(real_t coords[][3], uint16_t* elements,
         /* rcov array */
         real_t* h_rcov = (real_t*)malloc(num_elements * sizeof(real_t));
         for (uint16_t i = 0; i < num_elements; ++i) {
-            h_rcov[i] = rcov[unique_elements[i]];
+            h_rcov[i] = rcov[unique_elements[i] - 1];
         }
         real_t* d_rcov;
         CHECK_CUDA(cudaMalloc((void**)&d_rcov, num_elements * sizeof(real_t)));
@@ -266,7 +266,7 @@ __host__ Device_Buffer::Device_Buffer(real_t coords[][3], uint16_t* elements,
         /* r2r4 array */
         real_t* h_r2r4 = (real_t*)malloc(num_elements * sizeof(real_t));
         for (uint16_t i = 0; i < num_elements; ++i) {
-            h_r2r4[i] = r2r4[unique_elements[i]];
+            h_r2r4[i] = r2r4[unique_elements[i] - 1];
         }
         real_t* d_r2r4;
         CHECK_CUDA(cudaMalloc((void**)&d_r2r4, num_elements * sizeof(real_t)));
