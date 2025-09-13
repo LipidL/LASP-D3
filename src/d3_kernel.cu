@@ -310,7 +310,12 @@ __global__ void coordination_number_kernel(device_data_t* data) {
     uint64_t end_bias_index;    // end bias index for this thread
     distribute_workload(data->num_atoms, total_cell_bias, &start_index, &end_index, &start_bias_index, &end_bias_index);
     real_t covalent_radii_1 = data->rcov[atom_1_type];  // covalent radii of the central atom
+    real_t local_coordination_number_compensate = 0.0f; // compensation for Kahan summation
     real_t local_coordination_number = 0.0f;    // local coordination number for the central atom
+    real_t batch_coordination_number_compensate = 0.0f; // compensation for Kahan summation in batched accumulation
+    real_t batch_coordination_number = 0.0f;    // batched coordination number
+    const uint16_t batched_number = 1024;  // number of accumulations in one batch
+    uint16_t batch_count = 0;  // current number of accumulations in the batch
     for (uint64_t atom_2_index = start_index; atom_2_index < end_index; ++atom_2_index) {
         atom_t atom_2_original = data->atoms[atom_2_index];  // surrounding atom without supercell translation
         real_t covalent_radii_2 = data->rcov[data->atom_types[atom_2_index]];  // covalent radii of the surrounding atom
@@ -331,15 +336,42 @@ __global__ void coordination_number_kernel(device_data_t* data) {
             // if the distance is within cutoff range, calculate the coordination number
             if (distance <= CN_cutoff && distance > 0.0f) {
                 real_t exp = expf(-K1 * ((covalent_radii_1 + covalent_radii_2) / distance - 1.0f));  // $\exp(-k_1*(\frac{R_A+R_b}{r_{ab}}-1))$
-                real_t tanh_value = tanhf(CN_cutoff - distance);  // $\tanh(CN_cutoff - r_{ab})$
-                real_t smooth_cutoff = powf(tanh_value, 3);  // $\tanh^3(CN_cutoff- r_{ab}))$, this is a smooth cutoff function added in LASP code.
+                // real_t tanh_value = tanhf(CN_cutoff - distance);  // $\tanh(CN_cutoff - r_{ab})$
+                // real_t smooth_cutoff = powf(tanh_value, 3);  // $\tanh^3(CN_cutoff- r_{ab}))$, this is a smooth cutoff function added in LASP code.
 
                 // the covalent radii table have already taken K2 coefficient into consideration
-                real_t coordination_number = 1.0f / (1.0f + exp) * smooth_cutoff;
-                local_coordination_number += coordination_number;  // accumulate the coordination number for the central atom
+                real_t coordination_number = 1.0f / (1.0f + exp); // * smooth_cutoff;
+                if (atom_1_index == 32) {
+                    printf("Atom pair (%02llu, %02llu), distance: %f, CN contribution: %f\n", atom_1_index, atom_2_index, distance, coordination_number);
+                }
+                // use Kahan summation to reduce numeric error
+                {
+                    const real_t y = coordination_number - batch_coordination_number_compensate;
+                    const real_t t = batch_coordination_number + y;
+                    batch_coordination_number_compensate = (t - batch_coordination_number) - y;
+                    batch_coordination_number = t;
+                    batch_count += 1;
+                }
+                if (batch_count == batched_number) {
+                    // update local coordination number
+                    const real_t y = batch_coordination_number - local_coordination_number_compensate;
+                    const real_t t = local_coordination_number + y;
+                    local_coordination_number_compensate = (t - local_coordination_number) - y;
+                    local_coordination_number = t;
+                    // reset batch variables
+                    batch_coordination_number = 0.0f;
+                    batch_coordination_number_compensate = 0.0f;
+                    batch_count = 0;
+                }
             }
         }
     }
+    // update the remaining batch
+    if (batch_count > 0) {
+        local_coordination_number += batch_coordination_number - local_coordination_number_compensate;
+        local_coordination_number_compensate = (local_coordination_number - (local_coordination_number - batch_coordination_number));
+    }
+    // use atomicAdd to update the global coordination number
     atomicAdd(&data->coordination_numbers[atom_1_index], local_coordination_number);  // accumulate the coordination number for the central atom
     return;
 }
@@ -832,10 +864,10 @@ __global__ void three_body_kernel(device_data_t* data) {
                  * \sqrt{1}{1+exp(-k_1(k_2(R_{A,cov}+R_{B,cov})/r_{AB}-1))}$
                  */
                 real_t exp = expf(-K1 * ((covalent_radii_1 + covalent_radii_2) / distance - 1.0f));  // $\exp(-k_1*(\frac{R_A+R_b}{r_{ab}}-1))$
-                real_t tanh_value = tanhf(CN_cutoff - distance);  // $\tanh(CN_cutoff - r_{ab})$
-                real_t smooth_cutoff = powf(tanh_value, 3);  // $\tanh^3(CN_cutoff- r_{ab}))$, this is a smooth cutoff function added in LASP code.
-                real_t d_smooth_cutoff_dr = 3.0f * powf(tanh_value, 2) * (1.0f - powf(tanh_value, 2)) * (-1.0f);  // d(smooth_cutoff)/dr
-                real_t dCN_datom = powf(1.0f + exp, -2.0f) * (-K1) * exp * (covalent_radii_1 + covalent_radii_2) * powf(distance, -3.0f) * smooth_cutoff + d_smooth_cutoff_dr * 1.0f / (1.0f + exp) / distance;  // dCN_ij/dr_ij * 1/r_ij
+                // real_t tanh_value = tanhf(CN_cutoff - distance);  // $\tanh(CN_cutoff - r_{ab})$
+                // real_t smooth_cutoff = powf(tanh_value, 3);  // $\tanh^3(CN_cutoff- r_{ab}))$, this is a smooth cutoff function added in LASP code.
+                // real_t d_smooth_cutoff_dr = 3.0f * powf(tanh_value, 2) * (1.0f - powf(tanh_value, 2)) * (-1.0f);  // d(smooth_cutoff)/dr
+                real_t dCN_datom = powf(1.0f + exp, -2.0f) * (-K1) * exp * (covalent_radii_1 + covalent_radii_2) * powf(distance, -3.0f); // * smooth_cutoff + d_smooth_cutoff_dr * 1.0f / (1.0f + exp) / distance;  // dCN_ij/dr_ij * 1/r_ij
                 // dE/drik = dE/dCN * dCN/drik
                 real_t dE_drik = dE_dCN * dCN_datom;
                 // accumulate force for the central atom and neighboring atom
