@@ -49,8 +49,9 @@ add_library(d3_obj OBJECT ${SOURCES} ${HEADERS})
 
 # Apply CUDA options to object file
 target_compile_options(d3_obj PRIVATE $<$<COMPILE_LANGUAGE:CUDA>:
-    -Xptxas -O2
+    -O2
     -lineinfo
+    --use_fast_math
 >)
 
 # Set define for static constants if enabled
