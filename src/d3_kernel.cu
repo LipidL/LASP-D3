@@ -312,8 +312,12 @@ __global__ void coordination_number_kernel(device_data_t* data) {
     real_t covalent_radii_1 = data->rcov[atom_1_type];  // covalent radii of the central atom
     real_t local_coordination_number_compensate = 0.0f; // compensation for Kahan summation
     real_t local_coordination_number = 0.0f;    // local coordination number for the central atom
+    real_t local_dCN_dr_compensate[3] = {0.0f}; // compensation for Kahan summation in dCN/dr
+    real_t local_dCN_dr[3] = {0.0f};    // local dCN/dr for the central atom
     real_t batch_coordination_number_compensate = 0.0f; // compensation for Kahan summation in batched accumulation
     real_t batch_coordination_number = 0.0f;    // batched coordination number
+    real_t batch_dCN_dr_compensate[3] = {0.0f}; // compensation for Kahan summation in dCN/dr in batched accumulation
+    real_t batch_dCN_dr[3] = {0.0f};    // batched dCN/dr
     const uint16_t batched_number = 1024;  // number of accumulations in one batch
     uint16_t batch_count = 0;  // current number of accumulations in the batch
     for (uint64_t atom_2_index = start_index; atom_2_index < end_index; ++atom_2_index) {
@@ -331,6 +335,11 @@ __global__ void coordination_number_kernel(device_data_t* data) {
             atom_2.x += x_bias * cell[0][0] + y_bias * cell[1][0] + z_bias * cell[2][0];
             atom_2.y += x_bias * cell[0][1] + y_bias * cell[1][1] + z_bias * cell[2][1];
             atom_2.z += x_bias * cell[0][2] + y_bias * cell[1][2] + z_bias * cell[2][2];
+            real_t delta_r[3] = {
+                atom_1.x - atom_2.x,  // delta x
+                atom_1.y - atom_2.y,  // delta y
+                atom_1.z - atom_2.z   // delta z
+            }; // delta_r between atom 1 and atom 2
             // calculate the distance between the two atoms
             real_t distance = sqrtf(powf(atom_1.x - atom_2.x, 2) + powf(atom_1.y - atom_2.y, 2) + powf(atom_1.z - atom_2.z, 2));
             // if the distance is within cutoff range, calculate the coordination number
@@ -338,13 +347,12 @@ __global__ void coordination_number_kernel(device_data_t* data) {
                 real_t exp = expf(-K1 * ((covalent_radii_1 + covalent_radii_2) / distance - 1.0f));  // $\exp(-k_1*(\frac{R_A+R_b}{r_{ab}}-1))$
                 // real_t tanh_value = tanhf(CN_cutoff - distance);  // $\tanh(CN_cutoff - r_{ab})$
                 // real_t smooth_cutoff = powf(tanh_value, 3);  // $\tanh^3(CN_cutoff- r_{ab}))$, this is a smooth cutoff function added in LASP code.
+                // real_t d_smooth_cutoff_dr = 3.0f * powf(tanh_value, 2) * (1.0f - powf(tanh_value, 2)) * (-1.0f);  // d(smooth_cutoff)/dr
+                real_t dCN_datom = powf(1.0f + exp, -2.0f) * (-K1) * exp * (covalent_radii_1 + covalent_radii_2) * powf(distance, -3.0f); // * smooth_cutoff + d_smooth_cutoff_dr * 1.0f / (1.0f + exp) / distance;  // dCN_ij/dr_ij * 1/r_ij
 
                 // the covalent radii table have already taken K2 coefficient into consideration
                 real_t coordination_number = 1.0f / (1.0f + exp); // * smooth_cutoff;
-                if (atom_1_index == 32) {
-                    printf("Atom pair (%02llu, %02llu), distance: %f, CN contribution: %f\n", atom_1_index, atom_2_index, distance, coordination_number);
-                }
-                // use Kahan summation to reduce numeric error
+                // accumulate coordination number
                 {
                     const real_t y = coordination_number - batch_coordination_number_compensate;
                     const real_t t = batch_coordination_number + y;
@@ -352,12 +360,33 @@ __global__ void coordination_number_kernel(device_data_t* data) {
                     batch_coordination_number = t;
                     batch_count += 1;
                 }
+                // accumulate dCN/dr
+                {
+                    for (uint16_t i = 0; i < 3; ++i) {
+                        real_t dCN_dr_contribution = dCN_datom * delta_r[i];
+                        const real_t y = dCN_dr_contribution - batch_dCN_dr_compensate[i];
+                        const real_t t = batch_dCN_dr[i] + y;
+                        batch_dCN_dr_compensate[i] = (t - batch_dCN_dr[i]) - y;
+                        batch_dCN_dr[i] = t;
+                    }
+                }
                 if (batch_count == batched_number) {
                     // update local coordination number
-                    const real_t y = batch_coordination_number - local_coordination_number_compensate;
-                    const real_t t = local_coordination_number + y;
-                    local_coordination_number_compensate = (t - local_coordination_number) - y;
-                    local_coordination_number = t;
+                    {
+                        const real_t y = batch_coordination_number - local_coordination_number_compensate;
+                        const real_t t = local_coordination_number + y;
+                        local_coordination_number_compensate = (t - local_coordination_number) - y;
+                        local_coordination_number = t;
+                    }
+                    // update local dCN/dr
+                    {
+                        for (uint16_t i = 0; i < 3; ++i) {
+                            const real_t y = batch_dCN_dr[i] - local_dCN_dr_compensate[i];
+                            const real_t t = local_dCN_dr[i] + y;
+                            local_dCN_dr_compensate[i] = (t - local_dCN_dr[i]) - y;
+                            local_dCN_dr[i] = t;
+                        }
+                    }
                     // reset batch variables
                     batch_coordination_number = 0.0f;
                     batch_coordination_number_compensate = 0.0f;
@@ -368,11 +397,28 @@ __global__ void coordination_number_kernel(device_data_t* data) {
     }
     // update the remaining batch
     if (batch_count > 0) {
-        local_coordination_number += batch_coordination_number - local_coordination_number_compensate;
-        local_coordination_number_compensate = (local_coordination_number - (local_coordination_number - batch_coordination_number));
+        // update local coordination number
+        {
+            const real_t y = batch_coordination_number - local_coordination_number_compensate;
+            const real_t t = local_coordination_number + y;
+            local_coordination_number_compensate = (t - local_coordination_number) - y;
+            local_coordination_number = t;
+        }
+        // update local dCN/dr
+        {
+            for (uint16_t i = 0; i < 3; ++i) {
+                const real_t y = batch_dCN_dr[i] - local_dCN_dr_compensate[i];
+                const real_t t = local_dCN_dr[i] + y;
+                local_dCN_dr_compensate[i] = (t - local_dCN_dr[i]) - y;
+                local_dCN_dr[i] = t;
+            }
+        }
     }
     // use atomicAdd to update the global coordination number
     atomicAdd(&data->coordination_numbers[atom_1_index], local_coordination_number);  // accumulate the coordination number for the central atom
+    for (uint16_t i = 0; i < 3; ++i) {
+        atomicAdd(&data->dCN_dr[atom_1_index * 3 + i], local_dCN_dr[i]);  // accumulate the dCN/dr for the central atom
+    }
     return;
 }
 /**
@@ -767,6 +813,8 @@ __global__ void two_body_kernel(device_data_t* data) {
         data->energy[atom_1_index] = energy_sum;
         // force and stress
         for (uint8_t i = 0; i < 3; ++i) {
+            force_central_sum[i] += dE_dCN_sum * data->dCN_dr[atom_1_index * 3 + i];  // another force entry: $F_i = dE/dCN_i * dCN_i/dr_i$
+            // write back the force without atomic operation, safe because no other thread writes to this memory
             data->forces[atom_1_index * 3 + i] = force_central_sum[i];
             for(uint8_t j = 0; j < 3; ++j) {
                 atomicAdd(&data->stress[i * 3 + j], stress_sum[i * 3 + j]); // atomic operation here to avoid data races
@@ -794,10 +842,15 @@ __global__ void three_body_kernel(device_data_t* data) {
     atom_t atom_1 = data->atoms[atom_1_index];  // central atom
     uint64_t atom_1_type = data->atom_types[atom_1_index];  // type of the central atom
     real_t covalent_radii_1 = data->rcov[atom_1_type];  // covalent radius of the central atom
-    real_t dE_dCN = data->dE_dCN[atom_1_index];  // dE/dCN of central atom
 
+    real_t force_central_batch[3] = {0.0f};  // batch force of the central atom
+    real_t force_central_batch_compensate[3] = {0.0f};  // force compensation for the central atom to improve numerical stability
+    uint16_t batch_count = 0;  // number of interactions in the current batch
+    const uint16_t batch_size = 1024;  // batch storage will be updated
     real_t force_central[3] = {0.0f};  // force of the central atom
     real_t force_compensate_central[3] = {0.0f};  // force compensation for the central atom to improve numerical stability
+    real_t stress_batch[9] = {0.0f};  // stress of the central atom
+    real_t stress_batch_compensate[9] = {0.0f};  // stress compensation for the central atom to improve numerical stability
     real_t stress[9] = {0.0f};  // stress of the central atom
     real_t stress_compensate[9] = {0.0f};  // stress compensation for the central atom to improve numerical stability
 
@@ -830,8 +883,7 @@ __global__ void three_body_kernel(device_data_t* data) {
 
     // iterate over surrounding atoms
     for (uint64_t atom_2_index = start_index; atom_2_index < end_index; ++atom_2_index) {
-        real_t force_neighbor_a[3] = {0.0f};  // force cache for the surrounding atom
-        real_t force_compensate_neighbor[3] = {0.0f};  // force compensation for the surrounding atom to improve numerical stability
+        real_t dE_dCN = data->dE_dCN[atom_2_index];  // dE/dCN of the surrounding atom
         atom_t atom_2_original = data->atoms[atom_2_index];  // original surrounding atom before translation
         real_t covalent_radii_2 = data->rcov[data->atom_types[atom_2_index]];  // covalent radii of the surrounding atom
 
@@ -876,32 +928,72 @@ __global__ void three_body_kernel(device_data_t* data) {
                 for (uint8_t i = 0; i < 3; ++i) {
                     {
                         // accumulate force for the central atom
-                        real_t y = dE_drik * delta_r[i] - force_compensate_central[i];
-                        real_t t = force_central[i] + y;
-                        force_compensate_central[i] = (t - force_central[i]) - y;
-                        force_central[i] = t;
-                    }
-                    {
-                        // accumulate force for the neighboring atom
-                        real_t y = -dE_drik * delta_r[i] - force_compensate_neighbor[i];
-                        real_t t = force_neighbor_a[i] + y;
-                        force_compensate_neighbor[i] = (t - force_neighbor_a[i]) - y;
-                        force_neighbor_a[i] = t;
+                        real_t y = dE_drik * delta_r[i] - force_central_batch_compensate[i];
+                        real_t t = force_central_batch[i] + y;
+                        force_central_batch_compensate[i] = (t - force_central_batch[i]) - y;
+                        force_central_batch[i] = t;
                     }
                     for (uint8_t j = 0; j < 3; ++j) {
                         // accumulate stress
                         // stress += -1.0f * (atom_1[j] - atom_2[j]) * dE_drik
-                        real_t y = -1.0f * delta_r[i] * dE_drik * delta_r[j] - stress_compensate[i * 3 + j];
-                        real_t t = stress[i * 3 + j] + y;
-                        stress_compensate[i * 3 + j] = (t - stress[i * 3 + j]) - y;
-                        stress[i * 3 + j] = t;
+                        real_t y = -1.0f * delta_r[i] * dE_drik * delta_r[j] - stress_batch_compensate[i * 3 + j];
+                        real_t t = stress_batch[i * 3 + j] + y;
+                        stress_batch_compensate[i * 3 + j] = (t - stress_batch[i * 3 + j]) - y;
+                        stress_batch[i * 3 + j] = t;
                     }
+                }
+                batch_count++;  // increment the count of interactions for the central atom
+                if (batch_count >= batch_size) {
+                    // accumulate the batch variables to local variables
+                    {
+                        // force
+                        for (uint8_t i = 0; i < 3; ++i) {
+                            real_t y = force_central_batch[i] - force_compensate_central[i];
+                            real_t t = force_central[i] + y;
+                            force_compensate_central[i] = (t - force_central[i]) - y;
+                            force_central[i] = t;
+                            force_central_batch[i] = 0.0f;
+                            force_central_batch_compensate[i] = 0.0f;
+                        }
+                    }
+                    {
+                        // stress
+                        for (uint8_t i = 0; i < 9; ++i) {
+                            real_t y = stress_batch[i] - stress_compensate[i];
+                            real_t t = stress[i] + y;
+                            stress_compensate[i] = (t - stress[i]) - y;
+                            stress[i] = t;
+                            stress_batch[i] = 0.0f;
+                            stress_batch_compensate[i] = 0.0f;
+                        }
+                    }
+                    // reset the batch variables
+                    batch_count = 0;
                 }
             }
         }
-        // accumulate force of neighboring atom to global memory
+    }
+    // accumulate the remaining batch variables to local variables
+    {
+        // force
         for (uint8_t i = 0; i < 3; ++i) {
-            atomicAdd(&data->forces[atom_2_index * 3 + i], force_neighbor_a[i]);
+            real_t y = force_central_batch[i] - force_compensate_central[i];
+            real_t t = force_central[i] + y;
+            force_compensate_central[i] = (t - force_central[i]) - y;
+            force_central[i] = t;
+            force_central_batch[i] = 0.0f;
+            force_central_batch_compensate[i] = 0.0f;
+        }
+    }
+    {
+        // stress
+        for (uint8_t i = 0; i < 9; ++i) {
+            real_t y = stress_batch[i] - stress_compensate[i];
+            real_t t = stress[i] + y;
+            stress_compensate[i] = (t - stress[i]) - y;
+            stress[i] = t;
+            stress_batch[i] = 0.0f;
+            stress_batch_compensate[i] = 0.0f;
         }
     }
     // accumulate force of central atom and stress
@@ -913,7 +1005,7 @@ __global__ void three_body_kernel(device_data_t* data) {
     if (threadIdx.x == 0) {
         for (uint8_t i = 0; i < 3; ++i) {
             // accumulate force
-            atomicAdd(&data->forces[atom_1_index * 3 + i], force_central_sum[i]);
+            data->forces[atom_1_index * 3 + i] += force_central_sum[i];
             for (uint8_t j = 0; j < 3; ++j) {
                 // accumulate stress
                 atomicAdd(&data->stress[i * 3 + j], stress_sum[i * 3 + j] / cell_volume);

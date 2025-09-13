@@ -65,6 +65,7 @@ typedef struct device_data {
     real_t* coordination_numbers;  // array of coordination numbers, length:
                                    // num_atoms.
     uint16_t status;  // status of the calculation process, 0:normal, 0b01: neighbor list overflow detected
+    real_t* dCN_dr;  // dCN/dr for each atom, length: num_atoms*3 (x, y and z).
     real_t* dE_dCN;   // dE/dCN for each atom, length: num_atoms.
     real_t* energy;   // energy of the system, length: num_atoms.
     real_t* forces;   // forces on each atom, length: 3*num_atoms.

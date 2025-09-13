@@ -299,6 +299,10 @@ __host__ Device_Buffer::Device_Buffer(real_t coords[][3], uint16_t* elements,
             cudaMemset(coordination_numbers, 0, length * sizeof(real_t)));
         this->host_data_.coordination_numbers = coordination_numbers;
         this->host_data_.status = COMPUTE_SUCCESS;  // set the status to normal
+        real_t* dCN_dr;
+        CHECK_CUDA(cudaMalloc((void**)&dCN_dr, length * 3 * sizeof(real_t)));
+        CHECK_CUDA(cudaMemset(dCN_dr, 0, length * 3 * sizeof(real_t)));
+        this->host_data_.dCN_dr = dCN_dr;
         real_t* dE_dCN;
         CHECK_CUDA(cudaMalloc((void**)&dE_dCN, length * sizeof(real_t)));
         CHECK_CUDA(cudaMemset(dE_dCN, 0, length * sizeof(real_t)));
