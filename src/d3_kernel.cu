@@ -159,33 +159,11 @@ __device__ void damping(real_t distance, real_t cutoff_radius,
                         real_t* damping_6, real_t* damping_8,
                         real_t* d_damping_6, real_t* d_damping_8) {
     if constexpr (damping_type == ZERO_DAMPING) {
-        const real_t relative_distance = distance / (cutoff_radius);
-        // fast powering
-        const real_t relative_distance_2 =
-            relative_distance * relative_distance;
-        const real_t relative_distance_4 =
-            relative_distance_2 * relative_distance_2;
-        const real_t relative_distance_8 =
-            relative_distance_4 * relative_distance_4;
-        const real_t relative_distance_14 =
-            relative_distance_8 * relative_distance_4 * relative_distance_2;
-        const real_t relative_distance_15 =
-            relative_distance_14 * relative_distance;
-        const real_t relative_distance_16 =
-            relative_distance_8 * relative_distance_8;
-        const real_t relative_distance_17 =
-            relative_distance_16 * relative_distance;
         // calculate damping
-        const real_t f_dn_6 = 1 / (1 + 6.0f * (1 / relative_distance_14) *
-                                           powf(param_1, 14.0f));  // alpha_n = 14
-        const real_t f_dn_8 = 1 / (1 + 6.0f * (1 / relative_distance_16) *
-                                           powf(param_2, 16.0f));  // alpha_n = 16
-        const real_t d_f_dn_6 = 6.0f * 14.0f * f_dn_6 * f_dn_6 *
-                                (1 / relative_distance_15) *
-                                (1 / (param_1 * cutoff_radius));
-        const real_t d_f_dn_8 = 6.0f * 16.0f * f_dn_8 * f_dn_8 *
-                                (1 / relative_distance_17) *
-                                (1 / (param_2 * cutoff_radius));
+        const real_t f_dn_6 = 1 / (1 + 6.0f * powf(param_1 * cutoff_radius / distance, 14.0f));  // alpha_n = 14
+        const real_t f_dn_8 = 1 / (1 + 6.0f * powf(param_2 * cutoff_radius / distance, 16.0f));  // alpha_n = 16
+        const real_t d_f_dn_6 = 6.0f * 14.0f * f_dn_6 * f_dn_6 * powf(param_1 * cutoff_radius / distance, 15.0f) / param_1 / cutoff_radius;
+        const real_t d_f_dn_8 = 6.0f * 16.0f * f_dn_8 * f_dn_8 * powf(param_2 * cutoff_radius / distance, 17.0f) / param_2 / cutoff_radius;
         // write the result back
         *damping_6 = f_dn_6;
         *damping_8 = f_dn_8;
@@ -487,15 +465,15 @@ __global__ void two_body_kernel(device_data_t* data) {
 
     // prefetch and calculate necessary variables during calculation
     const real_t cell_volume = calculate_cell_volume(data->cell); // volume of the cell
-    const uint64_t total_cell_bias = data->max_cell_bias[0] * data->max_cell_bias[1] * data->max_cell_bias[2];  // total number of cell biases
     const uint64_t mcb0 = data->max_cell_bias[0];  // maximum cell bias in x direction
     const uint64_t mcb1 = data->max_cell_bias[1];  // maximum cell bias in y direction
     const uint64_t mcb2 = data->max_cell_bias[2];  // maximum cell bias in z direction
+    const uint64_t total_cell_bias = mcb0 * mcb1 * mcb2;  // total number of cell bias
     const real_t cell[3][3] = {
         {data->cell[0][0], data->cell[0][1], data->cell[0][2]},
         {data->cell[1][0], data->cell[1][1], data->cell[1][2]},
         {data->cell[2][0], data->cell[2][1], data->cell[2][2]}}; // cell matrix
-    const real_t cutoff = data->cutoff; // cutoff radius for two-body interactions
+    const real_t cutoff_square = data->cutoff * data->cutoff; // cutoff radius for two-body interactions
 
     // print some debug information
     if (threadIdx.x == 0 && blockIdx.x == 0) {
@@ -545,10 +523,12 @@ __global__ void two_body_kernel(device_data_t* data) {
                 // these entries could be -1.0f if they are not valid, but at least one should be valid
                 real_t coordination_number_ref_1 = data->c6_ab_ref[index + 1];
                 real_t coordination_number_ref_2 = data->c6_ab_ref[index + 2];
-                if (coordination_number_ref_1 - (-1.0f) > 1e-5f &&
-                    coordination_number_ref_2 - (-1.0f) > 1e-5f) {
+                if (coordination_number_ref_1 > -1.0f &&
+                    coordination_number_ref_2 > -1.0f) {
                     // if both coordination numbers are valid, we can use them
-                    exponent_args[valid_term_count] = -K3 * (powf(coordination_number_1 - coordination_number_ref_1, 2) + powf(coordination_number_2 - coordination_number_ref_2, 2));
+                    const real_t delta_CN_1 = coordination_number_1 - coordination_number_ref_1;
+                    const real_t delta_CN_2 = coordination_number_2 - coordination_number_ref_2;
+                    exponent_args[valid_term_count] = -K3 * (delta_CN_1 * delta_CN_1 + delta_CN_2 * delta_CN_2);
                     CN_ref_1[valid_term_count] = coordination_number_ref_1;
                     c6ab_ref[valid_term_count] = c6_ref;
                     max_exponent_arg =
@@ -585,7 +565,7 @@ __global__ void two_body_kernel(device_data_t* data) {
         // avoid division by zero
         real_t dC6ab_dCN_1 =
             (L_ij * L_ij > 0.0f)
-                ? (c_ref_dL_ij_1 * L_ij - c_ref_L_ij * dL_ij_1) / powf(L_ij, 2.0f)
+                ? (c_ref_dL_ij_1 * L_ij - c_ref_L_ij * dL_ij_1) / (L_ij * L_ij)
                 : 0.0f; // dC6ab/dCN_1
         if (isnan(dC6ab_dCN_1) || isinf(dC6ab_dCN_1)) {
             // NaN or inf encountered, bad result
@@ -627,13 +607,12 @@ __global__ void two_body_kernel(device_data_t* data) {
                 atom_1.y - atom_2.y,  // delta y
                 atom_1.z - atom_2.z   // delta z
             }; // delta_r between atom 1 and atom 2
-            const real_t distance = sqrtf(powf(delta_r[0], 2) +
-                                          powf(delta_r[1], 2) +
-                                          powf(delta_r[2], 2)); // distance between atom 1 and atom 2
-
-            if (distance <= cutoff && distance > 0.0f) {
+            const real_t distance_2 = delta_r[0] * delta_r[0] +
+                                       delta_r[1] * delta_r[1] +
+                                       delta_r[2] * delta_r[2]; // distance^2 between atom 1 and atom 2
+            if (distance_2 <= cutoff_square && distance_2 > 0.0f) {
+                const real_t distance = sqrtf(distance_2); // distance between atom 1 and atom 2
                 // calculate distance^6 and distance^8 using fast power
-                const real_t distance_2 = distance * distance;    // distance^2
                 const real_t distance_3 = distance_2 * distance;  // distance^3
                 const real_t distance_4 = distance_2 * distance_2;  // distance^4
                 const real_t distance_6 = distance_3 * distance_3;  // distance^6
@@ -658,21 +637,6 @@ __global__ void two_body_kernel(device_data_t* data) {
                 const real_t dispersion_energy_8 = s8 * (c8_ab / distance_8) * f_dn_8;
                 const real_t dispersion_energy = (dispersion_energy_6 + dispersion_energy_8) / 2.0f;  // divide by 2 because each atom pair is counted twice
                 
-                // accumulate the energy, use Kahan summation for higher accuracy
-                {
-                    const real_t y = dispersion_energy - batch_energy_compensate;
-                    const real_t t = batch_energy + y;
-                    batch_energy_compensate = (t - batch_energy) - y;
-                    batch_energy = t;
-                }
-
-                // accumulate dEij/dCNi to local variable
-                {
-                    const real_t y = ((s6 * f_dn_6 * distance_2 * dC6ab_dCN_1 + s8 * f_dn_8 * dC8ab_dCN_1) / distance_8) - batch_dE_dCN_compensate;
-                    const real_t t = batch_dE_dCN + y;
-                    batch_dE_dCN_compensate = (t - batch_dE_dCN) - y;
-                    batch_dE_dCN = t;
-                }
                 /** the first entry of two-body force:
                  * $F_a = S_n C_n^{ab} f_{d,n}(r_{ab}) \frac{\partial}{\partial r_a} r_{ab}^{-n}$ 
                  * $F_a = S_n C_n^{ab} f_{d,n}(r_{ab}) * (-n)r_{ab}^{-n-2} * \uparrow{r_{ab}}$ 
@@ -689,6 +653,20 @@ __global__ void two_body_kernel(device_data_t* data) {
                  */
                 force += s6 * c6_ab / distance_6 * d_f_dn_6 / distance;  // dE_6/dr * 1/r
                 force += s8 * c8_ab / distance_8 * d_f_dn_8 / distance;  // dE_8/dr * 1/r
+                // accumulate the energy, use Kahan summation for higher accuracy
+                {
+                    const real_t y = dispersion_energy - batch_energy_compensate;
+                    const real_t t = batch_energy + y;
+                    batch_energy_compensate = (t - batch_energy) - y;
+                    batch_energy = t;
+                }
+                // accumulate dEij/dCNi to local variable
+                {
+                    const real_t y = ((s6 * f_dn_6 * distance_2 * dC6ab_dCN_1 + s8 * f_dn_8 * dC8ab_dCN_1) / distance_8) - batch_dE_dCN_compensate;
+                    const real_t t = batch_dE_dCN + y;
+                    batch_dE_dCN_compensate = (t - batch_dE_dCN) - y;
+                    batch_dE_dCN = t;
+                }
                 // accumulate force for the central atom
                 for (uint8_t i = 0; i < 3; ++i) {
                     const real_t y = force * delta_r[i] - batch_force_compensate[i];
@@ -698,9 +676,9 @@ __global__ void two_body_kernel(device_data_t* data) {
                 }
 
                 /* accumulate stress to local matrix instead of directly using
-                 * atomicAdd, divide by 2 becuase the same entry will be
-                 * calculated twice (when atom_2 is the central atom), use Kahan
-                 * summation for better accuracy */
+                    * atomicAdd, divide by 2 becuase the same entry will be
+                    * calculated twice (when atom_2 is the central atom), use Kahan
+                    * summation for better accuracy */
                 for (uint8_t i = 0; i < 3; ++i) {
                     for (uint8_t j = 0; j < 3; ++j) {
                         const real_t y = -1.0f * delta_r[i] * force * delta_r[j] / 2.0f / cell_volume - batch_stress_compensate[i * 3 + j];
@@ -905,9 +883,10 @@ __global__ void three_body_kernel(device_data_t* data) {
                 atom_1.z - atom_2.z   // delta z
             }; // delta_r between atom 1 and atom 2
             // calculate the distance between the two atoms
-            real_t distance = sqrtf(powf(delta_r[0], 2) +
-                                    powf(delta_r[1], 2) +
-                                    powf(delta_r[2], 2));
+            const real_t distance_square = delta_r[0] * delta_r[0] +
+                                               delta_r[1] * delta_r[1] +
+                                               delta_r[2] * delta_r[2];
+            real_t distance = sqrtf(distance_square);
             /* if the distance is within cutoff range, update neighbor_flags */
             if (distance <= CN_cutoff && distance > 0.0f) {
                 /**
