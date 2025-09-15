@@ -54,32 +54,6 @@ cmake --build . # build both executable and library
 
 If you prefer building specific targets, you can run `cmake --build . --target d3` or `cmake --build . --target d3_lib` for building executable or library separately.
 
-#### Build with Different Parameter Management Options
-
-##### Using Compile-time Constants (Recommended for Performance)
-
-This approach generates a header file with embedded constants during the build process, avoiding the need for runtime loading:
-
-```powershell
-cd path/to/dft_d3
-mkdir -p build; cd build
-cmake -DUSE_STATIC_CONSTANTS=ON .. # ON by default
-cmake --build .
-```
-
-##### Using Runtime Parameter Loading
-
-If you prefer to load parameters at runtime:
-
-```powershell
-cd path/to/dft_d3
-mkdir -p build; cd build
-cmake -DUSE_STATIC_CONSTANTS=OFF ..
-cmake --build .
-```
-
-Make sure the `params.bin` file is available in the working directory when using runtime loading.
-
 ### Use
 
 The executable can be executed directly as long as you have CUDA runtime and a supported GPU.

@@ -14,8 +14,6 @@ typedef void D3Handle_t;
 extern "C" {
 #endif
 
-void init_params();
-
 /**
  * @brief the function is used to compute the dispersion energy of the system
  * using the D3 potential.
@@ -70,6 +68,7 @@ void compute_dispersion_energy(
  */
 D3Handle_t* init_d3_handle(
     uint16_t* elements, 
+    uint64_t num_elements,
     uint64_t max_length,
     real_t cutoff_radius,
     real_t coordination_number_cutoff,

@@ -72,7 +72,7 @@ class D3Test : public testing::TestWithParam<TestConfig> {
 };
 
 TEST_P(D3Test, HandleOperations) {
-    D3Handle_t *handle = init_d3_handle(elements, max_length, cutoff_radius, coordination_number_cutoff, damping_type, functional_type);
+    D3Handle_t *handle = init_d3_handle(elements, max_length, max_length, cutoff_radius, coordination_number_cutoff, damping_type, functional_type);
     EXPECT_NE(handle, nullptr) << "Failed to initialize D3 handle";
     set_atoms(handle, atoms, elements, max_length);
     set_cell(handle, cell);

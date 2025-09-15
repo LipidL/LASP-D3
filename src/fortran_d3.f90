@@ -4,11 +4,6 @@ program test_d3
     
     ! External function interface declarations
     interface
-        subroutine init_params() bind(c, name='init_params')
-            use, intrinsic :: iso_c_binding
-            implicit none
-        end subroutine init_params
-
         subroutine compute_dispersion_energy(atoms, elements, num_atoms, cell, &
                 cutoff_radius, CN_cutoff_radius, damping_type, functional_type, &
                 energy, force, &
@@ -29,12 +24,13 @@ program test_d3
             real(c_float), intent(out) :: stress(9)
         end subroutine compute_dispersion_energy
 
-        function init_d3_handle(elements, max_length, cutoff_radius, &
+        function init_d3_handle(elements, num_elements, max_length, cutoff_radius, &
             coordination_number_cutoff, damping_type, functional_type) bind(c, name='init_d3_handle')
             use, intrinsic :: iso_c_binding
             implicit none
             
             integer(c_int16_t), intent(in) :: elements(*)
+            integer(c_int64_t), value :: num_elements
             integer(c_int64_t), value :: max_length
             real(c_float), value :: cutoff_radius
             real(c_float), value :: coordination_number_cutoff
@@ -138,8 +134,6 @@ program test_d3
     
     ! Initialize parameters
     print *, "Computing dispersion energy for", num_atoms, "atoms..."
-    call init_params()
-    print *, "Computing dispersion energy..."
     
     ! Call the compute_dispersion_energy function
     call compute_dispersion_energy(atoms, elements, int(num_atoms, c_int64_t), cell, &

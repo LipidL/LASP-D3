@@ -8,14 +8,6 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CUDA_STANDARD 17)  # Compatible with CUDA 11.8
 set(CMAKE_CUDA_STANDARD_REQUIRED ON)
 
-# Option to use static constants instead of runtime loading
-option(USE_STATIC_CONSTANTS "Use statically compiled constants instead of runtime loading" ON)
-
-# Configure build with static constants if enabled
-if(USE_STATIC_CONSTANTS)
-    add_compile_definitions(BUILD_WITH_STATIC_CONSTANTS)
-endif()
-
 # Source files
 set(SOURCES 
     src/d3.cu
@@ -24,7 +16,6 @@ set(SOURCES
 )
 
 set(HEADERS 
-    src/constants.h
     src/constants_include.h
     src/d3_buffer.cuh
     src/d3_internal.h
@@ -54,11 +45,7 @@ target_compile_options(d3_obj PRIVATE $<$<COMPILE_LANGUAGE:CUDA>:
     --use_fast_math
 >)
 
-# Set define for static constants if enabled
-if(USE_STATIC_CONSTANTS)
-    target_compile_definitions(d3_obj PRIVATE BUILD_WITH_STATIC_CONSTANTS)
-    add_dependencies(d3_obj generate_constants)
-endif()
+add_dependencies(d3_obj generate_constants)
 
 # Set CUDA properties for object file
 set_target_properties(d3_obj PROPERTIES
@@ -78,22 +65,20 @@ foreach(SOURCE_FILE ${SOURCES})
     list(APPEND OUTPUT_OBJECTS ${CMAKE_CURRENT_BINARY_DIR}/${FILE_NAME}.o)
     list(APPEND COMPILE_COMMANDS 
         COMMAND ${CMAKE_CUDA_COMPILER} -c ${CMAKE_CURRENT_SOURCE_DIR}/${SOURCE_FILE} -o ${CMAKE_CURRENT_BINARY_DIR}/${FILE_NAME}.o
-        -Xptxas -O2 -lineinfo -DBUILD_LIBRARY $<$<BOOL:${USE_STATIC_CONSTANTS}>:-DBUILD_WITH_STATIC_CONSTANTS>)
+        -Xptxas -O2 -lineinfo -DBUILD_LIBRARY)
 endforeach()
 
 add_custom_command(
     OUTPUT ${OUTPUT_OBJECTS}
     ${COMPILE_COMMANDS}
     DEPENDS ${SOURCES} ${HEADERS}
-            $<$<BOOL:${USE_STATIC_CONSTANTS}>:${CMAKE_CURRENT_SOURCE_DIR}/src/gen_constants.h>
+            ${CMAKE_CURRENT_SOURCE_DIR}/src/gen_constants.h
     COMMENT "Generating standalone object files"
 )
 
 # Custom target to ensure .o file is built
 add_custom_target(d3_o ALL DEPENDS ${OUTPUT_OBJECTS})
-if(USE_STATIC_CONSTANTS)
-    add_dependencies(d3_o generate_constants)
-endif()
+add_dependencies(d3_o generate_constants)
 
 # Create static library from object files
 add_custom_command(
@@ -116,9 +101,7 @@ install(FILES ${CMAKE_CURRENT_BINARY_DIR}/libd3.a
 add_library(d3_shared SHARED $<TARGET_OBJECTS:d3_obj>)
 
 # Add dependency on generated constants if static constants are enabled
-if(USE_STATIC_CONSTANTS)
-    add_dependencies(d3_shared generate_constants)
-endif()
+add_dependencies(d3_shared generate_constants)
 
 # Set library properties
 set_target_properties(d3_shared PROPERTIES

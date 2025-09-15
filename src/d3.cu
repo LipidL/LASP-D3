@@ -12,6 +12,7 @@
 
 D3Handle_t* init_d3_handle(
     uint16_t* elements, 
+    uint64_t length_elements,
     uint64_t max_length,
     real_t cutoff_radius,
     real_t coordination_number_cutoff,
@@ -21,7 +22,7 @@ D3Handle_t* init_d3_handle(
     real_t* coords = (real_t*)malloc(max_length * 3 * sizeof(real_t));  // allocate memory for coordinates
     real_t cell[3][3] = {10};   // initialize the cell matrix
     Device_Buffer* buffer =
-        new Device_Buffer((real_t(*)[3])coords, elements, cell, max_length,
+        new Device_Buffer((real_t(*)[3])coords, elements, length_elements, cell, max_length,
                           cutoff_radius, coordination_number_cutoff,
                           damping_type, functional_type);   // create a buffer to hold the data
     return (D3Handle_t*)buffer; // return the pointer to the handle
@@ -163,10 +164,8 @@ __host__ void compute_dispersion_energy(real_t coords[][3], uint16_t* elements,
                                         FunctionalType functional_type,
                                         real_t* energy,
                                         real_t* force, real_t* stress) {
-    // initialize parameters
-    init_params();
     // compute dispersion energy
-    D3Handle_t* handle = init_d3_handle(elements, length, cutoff_radius, coordination_number_cutoff, damping_type, functional_type);
+    D3Handle_t* handle = init_d3_handle(elements, length, length, cutoff_radius, coordination_number_cutoff, damping_type, functional_type);
     set_atoms(handle, (real_t*)coords, elements, length);
     set_cell(handle, cell);
     clear_d3_handle(handle);
@@ -193,11 +192,7 @@ int main() {
         atoms[i][2] *= angstron_to_bohr;  // convert to bohr
     }
     // fill the atoms array with Po element
-    debug("Computing dispersion energy for %zu atoms...\n",
-          sizeof(atoms) / sizeof(atoms[0]));
-    // initialize parameters
-    init_params();
-    debug("Computing dispersion energy...\n");
+    debug("Computing dispersion energy for %zu atoms...\n", sizeof(atoms) / sizeof(atoms[0]));
     real_t cell[3][3] = {
         {200.0f, 0.0f, 0.0f}, {0.0f, 20.0f, 0.0f}, {0.0f, 0.0f, 20.0f}};
     for (uint64_t i = 0; i < 3; ++i) {
