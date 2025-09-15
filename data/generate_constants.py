@@ -359,7 +359,6 @@ static const double c6ab_ref[NUM_ELEMENTS][NUM_ELEMENTS][NUM_REF_C6][NUM_REF_C6]
                 print(f"Generated data for {i+1}/103 elements")
         
         f.write("};\n\n")
-        f.write("inline void init_params(){}\n\n")
         f.write("#endif /* DFTD3_REFERENCE_H */\n")
 
 def main():

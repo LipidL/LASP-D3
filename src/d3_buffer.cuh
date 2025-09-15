@@ -6,8 +6,11 @@
 #include "d3_internal.h"
 #include "d3_types.h"
 
-void calculate_cell_repeats(real_t cell[3][3], real_t cutoff,
-                            size_t max_cell_bias[3]);
+void calculate_cell_repeats(
+    real_t cell[3][3], 
+    real_t cutoff, 
+    size_t max_cell_bias[3]
+);
 
 /**
  * @brief class to store unique elements in the system
@@ -51,9 +54,15 @@ class Device_Buffer {
     * @brief constructor of `Device_Buffer` class
     */
     __host__ Device_Buffer(
-        real_t coords[][3], uint16_t* elements, real_t cell[3][3],
-        uint64_t length, real_t cutoff, real_t CN_cutoff,
-        DampingType damping_type, FunctionalType functional_type);
+        real_t coords[][3], 
+        uint16_t* elements, 
+        uint64_t length_elements, 
+        real_t cell[3][3], 
+        uint64_t length, 
+        real_t cutoff, 
+        real_t CN_cutoff, 
+        DampingType damping_type, 
+        FunctionalType functional_type);
         
     /**
      * @brief destructor of `Device_Buffer` class
@@ -62,8 +71,7 @@ class Device_Buffer {
 
     /* disable copying */
     Device_Buffer(const Device_Buffer&) = delete;  // disable copy constructor
-    Device_Buffer& operator=(const Device_Buffer&) =
-        delete;  // disable copy assignment operator
+    Device_Buffer& operator=(const Device_Buffer&) = delete;  // disable copy assignment operator
 
     /* enable moving */
     __host__ Device_Buffer(Device_Buffer&& other) noexcept;  // move constructor
@@ -92,7 +100,11 @@ class Device_Buffer {
      * @param coords the array of coordinates, length: num_atoms * 3
      * @param length the number of atoms
      */
-    __host__ void set_atoms(uint16_t* elements, real_t coords[][3], uint64_t length);  // set atoms
+    __host__ void set_atoms(
+        uint16_t* elements, 
+        real_t coords[][3], 
+        uint64_t length
+    );
 
     /**
      * @brief set the cell matrix of the system to be calculated

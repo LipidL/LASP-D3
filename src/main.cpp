@@ -26,7 +26,6 @@ int main(int argc, char* argv[])
                 return 1;
             }
             auto structures = structures_optional.value();
-            init_params(); // initialize parameters
             for (const auto& structure : structures) {
                 uint64_t num_atoms = structure.atoms.size();
                 uint16_t *elements = (uint16_t *)malloc(sizeof(uint16_t) * num_atoms);

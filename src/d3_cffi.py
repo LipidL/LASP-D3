@@ -8,8 +8,6 @@ ffi = cffi.FFI()
 ffi.cdef("""
 typedef void D3Handle_t;
 
-void init_params();
-
 void compute_dispersion_energy(
     float atoms[][3],
     uint16_t *elements,
@@ -26,6 +24,7 @@ void compute_dispersion_energy(
 
 D3Handle_t *init_d3_handle( 
     uint16_t *elements,
+    uint64_t length_elements,
     uint64_t max_length, 
     float cutoff_radius,
     float coordination_number_cutoff,
@@ -56,18 +55,18 @@ class D3Calculator:
         elements_array = np.array(elements, dtype=np.uint16)
         elements_ptr = ffi.cast("uint16_t*", elements_array.ctypes.data)
 
-        # Initialize parameters
-        lib.init_params()  # type: ignore
         
         # Initialize the handle
         self.handle = lib.init_d3_handle( # type: ignore
             elements_ptr, 
+            len(elements_array),
             max_length,
             cutoff_radius,
             cn_cutoff_radius,
             damping_type,
             functional_type
         )
+        print("handle initialized")
 
         self.num_atoms = max_length
 
