@@ -449,7 +449,7 @@ __global__ void two_body_kernel(device_data_t* data) {
     real_t batch_dE_dCN_compensate = 0.0f;
     real_t batch_force_compensate[3] = {0.0f};
     real_t batch_stress_compensate[9] = {0.0f};
-    const uint32_t batch_size = 1024;   // batch storage will be updated to local storage after this many accumulations
+    const uint32_t batch_size = 8;   // batch storage will be updated to local storage after this many accumulations
     uint32_t batch_count = 0;   // number of accumulations in the current batch
 
     // local variables for central atom

@@ -89,9 +89,9 @@ TEST_P(D3Test, ResultStable) {
     // Run the dispersion energy calculation multiple times and verify stability
     const int num_runs = 64; // Number of runs to check stability
 
-    real_t energy_tolerance = 1e-5; // Tolerance for energy comparison
-    real_t force_tolerance = 1e-3; // Tolerance for force comparison
-    real_t stress_tolerance = 1e-3; // Tolerance for stress comparison
+    real_t energy_tolerance = 1e-7; // Tolerance for energy comparison
+    real_t force_tolerance = 1e-5; // Tolerance for force comparison
+    real_t stress_tolerance = 1e-5; // Tolerance for stress comparison
     
     // Perform initial run
     compute_dispersion_energy((real_t (*)[3])atoms, elements, max_length, cell, cutoff_radius, coordination_number_cutoff, damping_type, functional_type, &energy, force, stress);
@@ -125,7 +125,7 @@ TEST_P(D3Test, ResultStable) {
     }
 } // ResultStable
 
-TEST_P(D3Test, TestSumToZero) {
+TEST_P(D3Test, ForceSumToZero) {
     real_t tolerance = 1e-5; // Tolerance for sum to zero check
     compute_dispersion_energy((real_t (*)[3])atoms, elements, max_length, cell, cutoff_radius, coordination_number_cutoff, damping_type, functional_type, &energy, force, stress);
     real_t force_sum[3] = {0.0f};
@@ -166,7 +166,7 @@ TEST_P(D3Test, NumericForceMatch) {
         tmp_atoms[i] = atoms[i]; // Copy original atom positions
     }
 
-    real_t tolerance = 1e-1f; // Tolerance, relatively large because numerical differentiation can bring significant errors
+    real_t tolerance = 1e-3f; // Tolerance, relatively large because numerical differentiation can bring significant errors
     real_t delta = 1e-3f; // Perturbation size, relatively large to cover instability in energy computation
     for(size_t atom_idx = 0; atom_idx < max_length; ++atom_idx) {
         for(size_t component = 0; component < 3; ++component) {
@@ -319,7 +319,7 @@ TEST_P(D3Test, SupercellConsistency) {
     
     // Check if forces on equivalent atoms are similar
     // Compare atoms at the same relative positions in different unit cells
-    real_t force_tolerance = 1e-1f;
+    real_t force_tolerance = 1e-5f;
     for (int x = 0; x < supercell_dims[0]; ++x) {
         for (int y = 0; y < supercell_dims[1]; ++y) {
             for (int z = 0; z < supercell_dims[2]; ++z) {
@@ -344,7 +344,7 @@ TEST_P(D3Test, SupercellConsistency) {
     }
     
     // Check if stress tensor components scale appropriately
-    real_t stress_tolerance = 0.1f;
+    real_t stress_tolerance = 1e-5f;
     for (size_t i = 0; i < 9; ++i) {
         EXPECT_NEAR(
             supercell_stress[i], 
@@ -424,7 +424,7 @@ TestConfig generate_crystal() {
 TestConfig generate_surface() {
     TestConfig crystal = generate_crystal();
     // Lengthen the cell to create a surface
-    crystal.cell[2][2] *= 2.0f; // Double the z dimension to create a surface
+    crystal.cell[2][2] *= 1.2f; // Increase the z dimension to create a surface
     crystal.test_name = "BCC_Fe_Surface";
     return crystal;
 }
