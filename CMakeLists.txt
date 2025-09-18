@@ -42,7 +42,7 @@ add_library(d3_obj OBJECT ${SOURCES} ${HEADERS})
 target_compile_options(d3_obj PRIVATE $<$<COMPILE_LANGUAGE:CUDA>:
     -O2
     -lineinfo
-    --use_fast_math
+    --maxrregcount=64
 >)
 
 add_dependencies(d3_obj generate_constants)
@@ -65,7 +65,7 @@ foreach(SOURCE_FILE ${SOURCES})
     list(APPEND OUTPUT_OBJECTS ${CMAKE_CURRENT_BINARY_DIR}/${FILE_NAME}.o)
     list(APPEND COMPILE_COMMANDS 
         COMMAND ${CMAKE_CUDA_COMPILER} -c ${CMAKE_CURRENT_SOURCE_DIR}/${SOURCE_FILE} -o ${CMAKE_CURRENT_BINARY_DIR}/${FILE_NAME}.o
-        -Xptxas -O2 -lineinfo -DBUILD_LIBRARY)
+        -O2 -lineinfo --maxrregcount=64 -DBUILD_LIBRARY)
 endforeach()
 
 add_custom_command(
