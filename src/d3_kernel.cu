@@ -507,15 +507,11 @@ __global__ void two_body_kernel(device_data_t* data) {
          * $W = \sum_{a,b}L_{a,b}$
          * $L_{a,b} = \exp(-k3((CN^A-CN^A_{ref,a})^2 + (CN^B-CN^B_{ref,b})^2))$
          */
-        real_t exponent_args[NUM_REF_C6 * NUM_REF_C6] = {0.0f};  // array to store the exponent arguments for L_ij
-        real_t CN_ref_1[NUM_REF_C6 * NUM_REF_C6] = {0.0f};  // array to store the CNref values for atom_1
-        real_t c6ab_ref[NUM_REF_C6 * NUM_REF_C6] = {0.0f};  // array to store the C6ab_ref values
-        uint16_t valid_term_count = 0;  // count of valid terms in the C6ref arrays. Maximum value: 25
         real_t max_exponent_arg = -FLT_MAX;  // maximum exponent argument for L_ij
-        for (uint64_t i = 0; i < NUM_REF_C6; ++i) {
-            for (uint64_t j = 0; j < NUM_REF_C6; ++j) {
+        for (uint8_t i = 0; i < NUM_REF_C6; ++i) {
+            for (uint8_t j = 0; j < NUM_REF_C6; ++j) {
                 // find the C6ref
-                uint64_t index = atom_1_type * data->c6_stride_1 +
+                uint32_t index = atom_1_type * data->c6_stride_1 +
                                  atom_2_type * data->c6_stride_2 + 
                                  i * data->c6_stride_3 +
                                  j * data->c6_stride_4;
@@ -528,14 +524,11 @@ __global__ void two_body_kernel(device_data_t* data) {
                     // if both coordination numbers are valid, we can use them
                     const real_t delta_CN_1 = coordination_number_1 - coordination_number_ref_1;
                     const real_t delta_CN_2 = coordination_number_2 - coordination_number_ref_2;
-                    exponent_args[valid_term_count] = -K3 * (delta_CN_1 * delta_CN_1 + delta_CN_2 * delta_CN_2);
-                    CN_ref_1[valid_term_count] = coordination_number_ref_1;
-                    c6ab_ref[valid_term_count] = c6_ref;
+                    const real_t exponent_arg = -K3 * (delta_CN_1 * delta_CN_1 + delta_CN_2 * delta_CN_2);
                     max_exponent_arg =
-                        (max_exponent_arg > exponent_args[valid_term_count])
+                        (max_exponent_arg > exponent_arg)
                             ? max_exponent_arg
-                            : exponent_args[valid_term_count];  // update the maximum exponent argument
-                    valid_term_count++;
+                            : exponent_arg;  // update the maximum exponent argument
                 }
             }
         }
@@ -545,27 +538,38 @@ __global__ void two_body_kernel(device_data_t* data) {
         real_t c_ref_L_ij = 0.0f; // C6ab_ref * L_ij
         real_t c_ref_dL_ij_1 = 0.0f; // C6ab_ref * dL_ij/dCN_1
         real_t dL_ij_1 = 0.0f; // dL_ij/dCN_1
-        if (valid_term_count > 0) {
-            for (uint16_t i = 0; i < valid_term_count; ++i) {
-                // calculate L_ij for the valid terms
-                real_t L_ij = expf(exponent_args[i] - max_exponent_arg);  // normalized the L_ij value
-                real_t dL_ij_1_part = -2.0f * K3 * (coordination_number_1 - CN_ref_1[i]) * L_ij;  // part of dL_ij/dCN_1 contributed by the current valid term
-                Z += c6ab_ref[i] * L_ij;
-                W += L_ij;
-                c_ref_L_ij += c6ab_ref[i] * L_ij;
-                c_ref_dL_ij_1 += c6ab_ref[i] * dL_ij_1_part;
-                dL_ij_1 += dL_ij_1_part;
+        for (uint8_t i = 0; i < NUM_REF_C6; ++i) {
+            for (uint8_t j = 0; j < NUM_REF_C6; ++j) {
+                // find the C6ref
+                uint32_t index = atom_1_type * data->c6_stride_1 +
+                                 atom_2_type * data->c6_stride_2 + 
+                                 i * data->c6_stride_3 +
+                                 j * data->c6_stride_4;
+                real_t c6_ref = data->c6_ab_ref[index + 0];
+                // these entries could be -1.0f if they are not valid, but at least one should be valid
+                real_t coordination_number_ref_1 = data->c6_ab_ref[index + 1];
+                real_t coordination_number_ref_2 = data->c6_ab_ref[index + 2];
+                if (coordination_number_ref_1 > -1.0f &&
+                    coordination_number_ref_2 > -1.0f) {
+                    // if both coordination numbers are valid, we can use them
+                    const real_t delta_CN_1 = coordination_number_1 - coordination_number_ref_1;
+                    const real_t delta_CN_2 = coordination_number_2 - coordination_number_ref_2;
+                    const real_t exponent_arg = -K3 * (delta_CN_1 * delta_CN_1 + delta_CN_2 * delta_CN_2);
+                    const real_t L_ij = expf(exponent_arg - max_exponent_arg);  // normalized the L_ij value
+                    real_t dL_ij_1_part = -2.0f * K3 * (coordination_number_1 - coordination_number_ref_1) * L_ij;  // part of dL_ij/dCN_1 contributed by the current valid term
+                    Z += c6_ref * L_ij;
+                    W += L_ij;
+                    c_ref_L_ij += c6_ref * L_ij;
+                    c_ref_dL_ij_1 += c6_ref * dL_ij_1_part;
+                    dL_ij_1 += dL_ij_1_part;
+                }
             }
-        } else {
-            // no valid terms found
-            printf("Warning: no valid C6ab terms found for atom pair (%llu, %llu)\n", atom_1_index, atom_2_index);
         }
 
-        const real_t L_ij = W;
         // avoid division by zero
         real_t dC6ab_dCN_1 =
-            (L_ij * L_ij > 0.0f)
-                ? (c_ref_dL_ij_1 * L_ij - c_ref_L_ij * dL_ij_1) / (L_ij * L_ij)
+            (W * W > 0.0f)
+                ? (c_ref_dL_ij_1 * W - c_ref_L_ij * dL_ij_1) / (W * W)
                 : 0.0f; // dC6ab/dCN_1
         if (isnan(dC6ab_dCN_1) || isinf(dC6ab_dCN_1)) {
             // NaN or inf encountered, bad result

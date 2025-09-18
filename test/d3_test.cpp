@@ -108,7 +108,7 @@ TEST_P(D3Test, ResultStable) {
         compute_dispersion_energy((real_t (*)[3])atoms, elements, max_length, cell, cutoff_radius, coordination_number_cutoff, damping_type, functional_type, &current_energy, current_force, current_stress);
 
         // Check stability of results
-        EXPECT_NEAR(current_energy, energy, -(energy_tolerance * energy)) 
+        EXPECT_NEAR(current_energy, energy, energy_tolerance) 
             << "Energy not stable between initial and run " << run;
 
         for (size_t i = 0; i < max_length * 3; ++i) {
