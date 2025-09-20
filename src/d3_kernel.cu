@@ -515,7 +515,6 @@ __global__ void two_body_kernel(device_data_t* data) {
                                  atom_2_type * data->c6_stride_2 + 
                                  i * data->c6_stride_3 +
                                  j * data->c6_stride_4;
-                real_t c6_ref = data->c6_ab_ref[index + 0];
                 // these entries could be -1.0f if they are not valid, but at least one should be valid
                 real_t coordination_number_ref_1 = data->c6_ab_ref[index + 1];
                 real_t coordination_number_ref_2 = data->c6_ab_ref[index + 2];
