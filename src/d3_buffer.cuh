@@ -22,6 +22,10 @@ class Unique_Elements {
     uint16_t num_elements;  // number of unique elements in the system
     /**
      * @brief constructor of `Unique_Elements` class
+     * @param elements the array of elements in the system
+     * @param length the length of the elements array
+     * 
+     * @throws std::runtime_error if any element exceeds MAX_ELEMENTS
      */
     Unique_Elements(uint16_t* elements, uint16_t length);
     /**
