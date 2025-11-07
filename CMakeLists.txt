@@ -159,7 +159,7 @@ target_link_libraries(d3_cpp PRIVATE
 include(FetchContent)
 FetchContent_Declare(
     googletest
-    GIT_REPOSITORY http://10.158.134.245:3000/luohz/googletest.git
+    GIT_REPOSITORY https://github.com/google/googletest.git
     GIT_TAG v1.17.0
 )
 
