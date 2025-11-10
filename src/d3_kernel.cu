@@ -951,16 +951,25 @@ __global__ void three_body_kernel(device_data_t* data) {
     uint64_t atom_1_type = data->atom_types[atom_1_index];  // type of the central atom
     real_t covalent_radii_1 = data->rcov[atom_1_type];  // covalent radius of the central atom
 
-    real_t force_central_batch[3] = {0.0f};  // batch force of the central atom
-    real_t force_central_batch_compensate[3] = {0.0f};  // force compensation for the central atom to improve numerical stability
-    uint16_t batch_count = 0;  // number of interactions in the current batch
-    const uint16_t batch_size = 1024;  // batch storage will be updated
-    real_t force_central[3] = {0.0f};  // force of the central atom
-    real_t force_compensate_central[3] = {0.0f};  // force compensation for the central atom to improve numerical stability
-    real_t stress_batch[9] = {0.0f};  // stress of the central atom
-    real_t stress_batch_compensate[9] = {0.0f};  // stress compensation for the central atom to improve numerical stability
-    real_t stress[9] = {0.0f};  // stress of the central atom
-    real_t stress_compensate[9] = {0.0f};  // stress compensation for the central atom to improve numerical stability
+    Hierarchical_Kahan_Accumulator force_accumulators[3];
+    Hierarchical_Kahan_Accumulator stress_accumulators[9];
+    for (int i = 0; i < 3; ++i) {
+        force_accumulators[i].init();
+    }
+    for (int i = 0; i < 9; ++i) {
+        stress_accumulators[i].init();
+    }
+
+    // real_t force_central_batch[3] = {0.0f};  // batch force of the central atom
+    // real_t force_central_batch_compensate[3] = {0.0f};  // force compensation for the central atom to improve numerical stability
+    // uint16_t batch_count = 0;  // number of interactions in the current batch
+    // const uint16_t batch_size = 1024;  // batch storage will be updated
+    // real_t force_central[3] = {0.0f};  // force of the central atom
+    // real_t force_compensate_central[3] = {0.0f};  // force compensation for the central atom to improve numerical stability
+    // real_t stress_batch[9] = {0.0f};  // stress of the central atom
+    // real_t stress_batch_compensate[9] = {0.0f};  // stress compensation for the central atom to improve numerical stability
+    // real_t stress[9] = {0.0f};  // stress of the central atom
+    // real_t stress_compensate[9] = {0.0f};  // stress compensation for the central atom to improve numerical stability
 
     uint64_t total_cell_bias = data->max_cell_bias[0] * data->max_cell_bias[1] * data->max_cell_bias[2];  // total number of cell biases
     const uint64_t mcb0 = data->max_cell_bias[0];  // maximum cell bias in x direction
@@ -1035,80 +1044,94 @@ __global__ void three_body_kernel(device_data_t* data) {
                 // force_central += dE/drik * delta_r
                 // use Kahan summation to improve numerical stability
                 for (uint8_t i = 0; i < 3; ++i) {
-                    {
-                        // accumulate force for the central atom
-                        real_t y = dE_drik * delta_r[i] - force_central_batch_compensate[i];
-                        real_t t = force_central_batch[i] + y;
-                        force_central_batch_compensate[i] = (t - force_central_batch[i]) - y;
-                        force_central_batch[i] = t;
-                    }
+                    force_accumulators[i].add(dE_drik * delta_r[i]);
                     for (uint8_t j = 0; j < 3; ++j) {
-                        // accumulate stress
-                        // stress += -1.0f * (atom_1[j] - atom_2[j]) * dE_drik
-                        real_t y = -1.0f * delta_r[i] * dE_drik * delta_r[j] - stress_batch_compensate[i * 3 + j];
-                        real_t t = stress_batch[i * 3 + j] + y;
-                        stress_batch_compensate[i * 3 + j] = (t - stress_batch[i * 3 + j]) - y;
-                        stress_batch[i * 3 + j] = t;
+                        stress_accumulators[i * 3 + j].add(-1.0f * delta_r[i] * dE_drik * delta_r[j]);
                     }
                 }
-                batch_count++;  // increment the count of interactions for the central atom
-                if (batch_count >= batch_size) {
-                    // accumulate the batch variables to local variables
-                    {
-                        // force
-                        for (uint8_t i = 0; i < 3; ++i) {
-                            real_t y = force_central_batch[i] - force_compensate_central[i];
-                            real_t t = force_central[i] + y;
-                            force_compensate_central[i] = (t - force_central[i]) - y;
-                            force_central[i] = t;
-                            force_central_batch[i] = 0.0f;
-                            force_central_batch_compensate[i] = 0.0f;
-                        }
-                    }
-                    {
-                        // stress
-                        for (uint8_t i = 0; i < 9; ++i) {
-                            real_t y = stress_batch[i] - stress_compensate[i];
-                            real_t t = stress[i] + y;
-                            stress_compensate[i] = (t - stress[i]) - y;
-                            stress[i] = t;
-                            stress_batch[i] = 0.0f;
-                            stress_batch_compensate[i] = 0.0f;
-                        }
-                    }
-                    // reset the batch variables
-                    batch_count = 0;
-                }
+                // for (uint8_t i = 0; i < 3; ++i) {
+                //     {
+                //         // accumulate force for the central atom
+                //         real_t y = dE_drik * delta_r[i] - force_central_batch_compensate[i];
+                //         real_t t = force_central_batch[i] + y;
+                //         force_central_batch_compensate[i] = (t - force_central_batch[i]) - y;
+                //         force_central_batch[i] = t;
+                //     }
+                //     for (uint8_t j = 0; j < 3; ++j) {
+                //         // accumulate stress
+                //         // stress += -1.0f * (atom_1[j] - atom_2[j]) * dE_drik
+                //         real_t y = -1.0f * delta_r[i] * dE_drik * delta_r[j] - stress_batch_compensate[i * 3 + j];
+                //         real_t t = stress_batch[i * 3 + j] + y;
+                //         stress_batch_compensate[i * 3 + j] = (t - stress_batch[i * 3 + j]) - y;
+                //         stress_batch[i * 3 + j] = t;
+                //     }
+                // }
+                // batch_count++;  // increment the count of interactions for the central atom
+                // if (batch_count >= batch_size) {
+                //     // accumulate the batch variables to local variables
+                //     {
+                //         // force
+                //         for (uint8_t i = 0; i < 3; ++i) {
+                //             real_t y = force_central_batch[i] - force_compensate_central[i];
+                //             real_t t = force_central[i] + y;
+                //             force_compensate_central[i] = (t - force_central[i]) - y;
+                //             force_central[i] = t;
+                //             force_central_batch[i] = 0.0f;
+                //             force_central_batch_compensate[i] = 0.0f;
+                //         }
+                //     }
+                //     {
+                //         // stress
+                //         for (uint8_t i = 0; i < 9; ++i) {
+                //             real_t y = stress_batch[i] - stress_compensate[i];
+                //             real_t t = stress[i] + y;
+                //             stress_compensate[i] = (t - stress[i]) - y;
+                //             stress[i] = t;
+                //             stress_batch[i] = 0.0f;
+                //             stress_batch_compensate[i] = 0.0f;
+                //         }
+                //     }
+                //     // reset the batch variables
+                //     batch_count = 0;
+                // }
             }
         }
     }
     // accumulate the remaining batch variables to local variables
-    {
-        // force
-        for (uint8_t i = 0; i < 3; ++i) {
-            real_t y = force_central_batch[i] - force_compensate_central[i];
-            real_t t = force_central[i] + y;
-            force_compensate_central[i] = (t - force_central[i]) - y;
-            force_central[i] = t;
-            force_central_batch[i] = 0.0f;
-            force_central_batch_compensate[i] = 0.0f;
-        }
-    }
-    {
-        // stress
-        for (uint8_t i = 0; i < 9; ++i) {
-            real_t y = stress_batch[i] - stress_compensate[i];
-            real_t t = stress[i] + y;
-            stress_compensate[i] = (t - stress[i]) - y;
-            stress[i] = t;
-            stress_batch[i] = 0.0f;
-            stress_batch_compensate[i] = 0.0f;
-        }
-    }
+    // {
+    //     // force
+    //     for (uint8_t i = 0; i < 3; ++i) {
+    //         real_t y = force_central_batch[i] - force_compensate_central[i];
+    //         real_t t = force_central[i] + y;
+    //         force_compensate_central[i] = (t - force_central[i]) - y;
+    //         force_central[i] = t;
+    //         force_central_batch[i] = 0.0f;
+    //         force_central_batch_compensate[i] = 0.0f;
+    //     }
+    // }
+    // {
+    //     // stress
+    //     for (uint8_t i = 0; i < 9; ++i) {
+    //         real_t y = stress_batch[i] - stress_compensate[i];
+    //         real_t t = stress[i] + y;
+    //         stress_compensate[i] = (t - stress[i]) - y;
+    //         stress[i] = t;
+    //         stress_batch[i] = 0.0f;
+    //         stress_batch_compensate[i] = 0.0f;
+    //     }
+    // }
     // accumulate force of central atom and stress
+    real_t local_force_sum[3];
+    real_t local_stress_sum[9];
+    for (int i = 0; i < 3; ++i) {
+        local_force_sum[i] = force_accumulators[i].get_sum();
+        for (int j = 0; j < 3; ++j) {
+            local_stress_sum[i * 3 + j] = stress_accumulators[i * 3 + j].get_sum();
+        }
+    }
     real_t force_central_sum[3] = {0.0f};  // force sum for the central atom across the block
     real_t stress_sum[9] = {0.0f};  // stress sum across the block
-    blockReduceSumThreeBodyKernel(force_central, stress, force_central_sum, stress_sum);
+    blockReduceSumThreeBodyKernel(local_force_sum, local_stress_sum, force_central_sum, stress_sum);
 
     // the first thread accumulates the results back to global memory
     if (threadIdx.x == 0) {

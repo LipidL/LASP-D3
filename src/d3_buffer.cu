@@ -227,7 +227,6 @@ __host__ Device_Buffer::Device_Buffer(real_t coords[][3], uint16_t* elements, ui
         }
         uint64_t *current_position = (uint64_t*)malloc(total_grids * sizeof(uint64_t));
         memcpy(current_position, grid_start_index, total_grids * sizeof(uint64_t));
-        printf("0d00\n");
         for (uint64_t i = 0; i < length; ++i) {
             uint64_t grid_idx = grid_indices[i];
             uint64_t pos = current_position[grid_idx];
@@ -243,7 +242,6 @@ __host__ Device_Buffer::Device_Buffer(real_t coords[][3], uint16_t* elements, ui
             assert(grid_idx < total_grids);
             current_position[grid_idx] += 1;
         }
-        printf("0d00\n");
 
         // copy data to device
         atom_t* d_atoms;
