@@ -5,7 +5,7 @@
 
 #define ACCUMULATE_LEVELS 2
 #define ACCUMULATE_STRIDE 8
-struct Hierarchical_Kahan_Accumulator {
+struct HierarchicalKahanAccumulator {
     // Kahan summation state for the base level
     real_t base_sum; // current sum at the base level
     real_t compensation; // compensation for lost low-order bits
@@ -397,7 +397,7 @@ __global__ void coordination_number_kernel(device_data_t* data) {
     uint64_t end_bias_index;    // end bias index for this thread
     distribute_workload(data->num_atoms, total_cell_bias, &start_index, &end_index, &start_bias_index, &end_bias_index);
     real_t covalent_radii_1 = data->rcov[atom_1_type];  // covalent radii of the central atom
-    Hierarchical_Kahan_Accumulator CN_accumulator, dCN_dr_accumulators[3];
+    HierarchicalKahanAccumulator CN_accumulator, dCN_dr_accumulators[3];
     CN_accumulator.init();
     for (int i = 0; i < 3; ++i) {
         dCN_dr_accumulators[i].init();
@@ -503,32 +503,9 @@ __global__ void two_body_kernel(device_data_t* data) {
     const atom_t atom_1 = data->atoms[atom_1_index];  // central atom
     const real_t coordination_number_1 = data->coordination_numbers[atom_1_index];  // coordination number of the central atom
 
-    // // batch variables for energy, force and stress accumulation to reduce numeric error
-    // real_t batch_energy = 0.0f;  // temporary batch energy
-    // real_t batch_force[3] = {0.0f};   // temporary batch force vector
-    // real_t batch_stress[9] = {0.0f};  // temporary batch stress matrix
-    // real_t batch_dE_dCN = 0.0f;  // temporary dE/dCN
-    // // compensation variables to perform Kahan addition in batched variables
-    // real_t batch_energy_compensate = 0.0f;
-    // real_t batch_dE_dCN_compensate = 0.0f;
-    // real_t batch_force_compensate[3] = {0.0f};
-    // real_t batch_stress_compensate[9] = {0.0f};
-    // const uint32_t batch_size = 8;   // batch storage will be updated to local storage after this many accumulations
-    // uint32_t batch_count = 0;   // number of accumulations in the current batch
-
-    // // local variables for central atom
-    // real_t local_energy = 0.0f; // local energy
-    // real_t local_dE_dCN = 0.0f;  // local dE/dCN
-    // real_t local_force[3] = {0.0f};   // local force for the central atom
-    // real_t local_stress[9] = {0.0f};  // local stress matrix
-    // // compensation variables for local variables
-    // real_t local_energy_compensate = 0.0f;
-    // real_t local_dE_dCN_compensate = 0.0f;
-    // real_t local_force_compensate[3] = {0.0f};
-    // real_t local_stress_compensate[9] = {0.0f};
-    Hierarchical_Kahan_Accumulator energy_accumulator, dE_dCN_accumulator;
-    Hierarchical_Kahan_Accumulator force_accumulators[3];
-    Hierarchical_Kahan_Accumulator stress_accumulators[9];
+    HierarchicalKahanAccumulator energy_accumulator, dE_dCN_accumulator;
+    HierarchicalKahanAccumulator force_accumulators[3];
+    HierarchicalKahanAccumulator stress_accumulators[9];
     energy_accumulator.init();
     dE_dCN_accumulator.init();
     for (int i = 0; i < 3; ++i) {
@@ -811,8 +788,8 @@ __global__ void three_body_kernel(device_data_t* data) {
     uint64_t atom_1_type = data->atom_types[atom_1_index];  // type of the central atom
     real_t covalent_radii_1 = data->rcov[atom_1_type];  // covalent radius of the central atom
 
-    Hierarchical_Kahan_Accumulator force_accumulators[3];
-    Hierarchical_Kahan_Accumulator stress_accumulators[9];
+    HierarchicalKahanAccumulator force_accumulators[3];
+    HierarchicalKahanAccumulator stress_accumulators[9];
     for (int i = 0; i < 3; ++i) {
         force_accumulators[i].init();
     }
