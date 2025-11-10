@@ -402,16 +402,7 @@ __global__ void coordination_number_kernel(device_data_t* data) {
     for (int i = 0; i < 3; ++i) {
         dCN_dr_accumulators[i].init();
     }
-    // real_t local_coordination_number_compensate = 0.0f; // compensation for Kahan summation in coordination number
-    // real_t local_coordination_number = 0.0f;    // local coordination number for the central atom
-    // real_t local_dCN_dr_compensate[3] = {0.0f}; // compensation for Kahan summation in dCN/dr
-    // real_t local_dCN_dr[3] = {0.0f};    // local dCN/dr for the central atom
-    // real_t batch_coordination_number_compensate = 0.0f; // compensation for Kahan summation in batched accumulation
-    // real_t batch_coordination_number = 0.0f;    // batched coordination number
-    // real_t batch_dCN_dr_compensate[3] = {0.0f}; // compensation for Kahan summation in dCN/dr in batched accumulation
-    // real_t batch_dCN_dr[3] = {0.0f};    // batched dCN/dr
-    // const uint16_t batched_number = 1024;  // number of accumulations in one batch
-    // uint16_t batch_count = 0;  // current number of accumulations in the batch
+
     for (uint64_t atom_2_index = start_index; atom_2_index < end_index; ++atom_2_index) {
         atom_t atom_2_original = data->atoms[atom_2_index];  // surrounding atom without supercell translation
         real_t covalent_radii_2 = data->rcov[data->atom_types[atom_2_index]];  // covalent radii of the surrounding atom
@@ -454,25 +445,7 @@ __global__ void coordination_number_kernel(device_data_t* data) {
             }
         }
     }
-    // // update the remaining batch
-    // if (batch_count > 0) {
-    //     // update local coordination number
-    //     {
-    //         const real_t y = batch_coordination_number - local_coordination_number_compensate;
-    //         const real_t t = local_coordination_number + y;
-    //         local_coordination_number_compensate = (t - local_coordination_number) - y;
-    //         local_coordination_number = t;
-    //     }
-    //     // update local dCN/dr
-    //     {
-    //         for (uint16_t i = 0; i < 3; ++i) {
-    //             const real_t y = batch_dCN_dr[i] - local_dCN_dr_compensate[i];
-    //             const real_t t = local_dCN_dr[i] + y;
-    //             local_dCN_dr_compensate[i] = (t - local_dCN_dr[i]) - y;
-    //             local_dCN_dr[i] = t;
-    //         }
-    //     }
-    // }
+
     // use blockwise reduction to accumulate coordination number and dCN/dr from all threads
     real_t CN_sum, dCN_dr_sum[3];
     real_t local_CN_sum = CN_accumulator.get_sum();
@@ -773,122 +746,9 @@ __global__ void two_body_kernel(device_data_t* data) {
                         stress_accumulators[i * 3 + j].add(-1.0f * delta_r[i] * force * delta_r[j] / 2.0f / cell_volume);
                     }
                 }
-                // // accumulate the energy, use Kahan summation for higher accuracy
-                // {
-                //     const real_t y = dispersion_energy - batch_energy_compensate;
-                //     const real_t t = batch_energy + y;
-                //     batch_energy_compensate = (t - batch_energy) - y;
-                //     batch_energy = t;
-                // }
-                // // accumulate dEij/dCNi to local variable
-                // {
-                //     const real_t y = ((s6 * f_dn_6 * distance_2 * dC6ab_dCN_1 + s8 * f_dn_8 * dC8ab_dCN_1) / distance_8) - batch_dE_dCN_compensate;
-                //     const real_t t = batch_dE_dCN + y;
-                //     batch_dE_dCN_compensate = (t - batch_dE_dCN) - y;
-                //     batch_dE_dCN = t;
-                // }
-                // // accumulate force for the central atom
-                // for (uint8_t i = 0; i < 3; ++i) {
-                //     const real_t y = force * delta_r[i] - batch_force_compensate[i];
-                //     const real_t t = batch_force[i] + y;
-                //     batch_force_compensate[i] = (t - batch_force[i]) - y;
-                //     batch_force[i] = t;
-                // }
-
-                // /* accumulate stress to local matrix instead of directly using
-                //     * atomicAdd, divide by 2 becuase the same entry will be
-                //     * calculated twice (when atom_2 is the central atom), use Kahan
-                //     * summation for better accuracy */
-                // for (uint8_t i = 0; i < 3; ++i) {
-                //     for (uint8_t j = 0; j < 3; ++j) {
-                //         const real_t y = -1.0f * delta_r[i] * force * delta_r[j] / 2.0f / cell_volume - batch_stress_compensate[i * 3 + j];
-                //         const real_t t = batch_stress[i * 3 + j] + y;
-                //         batch_stress_compensate[i * 3 + j] = (t - batch_stress[i * 3 + j]) - y;
-                //         batch_stress[i * 3 + j] = t;
-                //     }
-                // }
-                // batch_count++;  // increment the count of interactions for the central atom
-                // if (batch_count >= batch_size) {
-                //     // accumulate the batch variables to local variables
-                //     {
-                //         // dE/dCN
-                //         const real_t y = batch_dE_dCN - local_dE_dCN_compensate;
-                //         const real_t t = local_dE_dCN + y;
-                //         local_dE_dCN_compensate = (t - local_dE_dCN) - y;
-                //         local_dE_dCN = t;
-                //     }
-                //     {
-                //         // energy
-                //         const real_t y = batch_energy - local_energy_compensate;
-                //         const real_t t = local_energy + y;
-                //         local_energy_compensate = (t - local_energy) - y;
-                //         local_energy = t;
-                //     }
-                //     {
-                //         // force
-                //         for (uint8_t i = 0; i < 3; ++i) {
-                //             const real_t y = batch_force[i] - local_force_compensate[i];
-                //             const real_t t = local_force[i] + y;
-                //             local_force_compensate[i] = (t - local_force[i]) - y;
-                //             local_force[i] = t;
-                //         }
-                //     }
-                //     {
-                //         // stress
-                //         for (uint8_t i = 0; i < 9; ++i) {
-                //             const real_t y = batch_stress[i] - local_stress_compensate[i];
-                //             const real_t t = local_stress[i] + y;
-                //             local_stress_compensate[i] = (t - local_stress[i]) - y;
-                //             local_stress[i] = t;
-                //         }
-                //     }
-                //     // reset the batch variables
-                //     batch_dE_dCN = 0.0f;
-                //     batch_energy = 0.0f;
-                //     for (uint8_t i = 0; i < 3; ++i) {
-                //         batch_force[i] = 0.0f;
-                //     }
-                //     for (uint8_t i = 0; i < 9; ++i) {
-                //         batch_stress[i] = 0.0f;
-                //     }
-                //     batch_count = 0;
-                // }
             }
         }
     }
-    // accumulate the remaining batch variables
-    // {
-    //     // dE/dCN
-    //     const real_t y = batch_dE_dCN - local_dE_dCN_compensate;
-    //     const real_t t = local_dE_dCN + y;
-    //     local_dE_dCN_compensate = (t - local_dE_dCN) - y;
-    //     local_dE_dCN = t;
-    // }
-    // {
-    //     // energy
-    //     const real_t y = batch_energy - local_energy_compensate;
-    //     const real_t t = local_energy + y;
-    //     local_energy_compensate = (t - local_energy) - y;
-    //     local_energy = t;
-    // }
-    // {
-    //     // force
-    //     for (uint8_t i = 0; i < 3; ++i) {
-    //         const real_t y = batch_force[i] - local_force_compensate[i];
-    //         const real_t t = local_force[i] + y;
-    //         local_force_compensate[i] = (t - local_force[i]) - y;
-    //         local_force[i] = t;
-    //     }
-    // }
-    // {
-    //     // stress
-    //     for (uint8_t i = 0; i < 9; ++i) {
-    //         const real_t y = batch_stress[i] - local_stress_compensate[i];
-    //         const real_t t = local_stress[i] + y;
-    //         local_stress_compensate[i] = (t - local_stress[i]) - y;
-    //         local_stress[i] = t;
-    //     }
-    // }
 
     real_t local_dE_dCN = dE_dCN_accumulator.get_sum();
     real_t local_energ = energy_accumulator.get_sum();
@@ -959,17 +819,6 @@ __global__ void three_body_kernel(device_data_t* data) {
     for (int i = 0; i < 9; ++i) {
         stress_accumulators[i].init();
     }
-
-    // real_t force_central_batch[3] = {0.0f};  // batch force of the central atom
-    // real_t force_central_batch_compensate[3] = {0.0f};  // force compensation for the central atom to improve numerical stability
-    // uint16_t batch_count = 0;  // number of interactions in the current batch
-    // const uint16_t batch_size = 1024;  // batch storage will be updated
-    // real_t force_central[3] = {0.0f};  // force of the central atom
-    // real_t force_compensate_central[3] = {0.0f};  // force compensation for the central atom to improve numerical stability
-    // real_t stress_batch[9] = {0.0f};  // stress of the central atom
-    // real_t stress_batch_compensate[9] = {0.0f};  // stress compensation for the central atom to improve numerical stability
-    // real_t stress[9] = {0.0f};  // stress of the central atom
-    // real_t stress_compensate[9] = {0.0f};  // stress compensation for the central atom to improve numerical stability
 
     uint64_t total_cell_bias = data->max_cell_bias[0] * data->max_cell_bias[1] * data->max_cell_bias[2];  // total number of cell biases
     const uint64_t mcb0 = data->max_cell_bias[0];  // maximum cell bias in x direction
@@ -1049,77 +898,10 @@ __global__ void three_body_kernel(device_data_t* data) {
                         stress_accumulators[i * 3 + j].add(-1.0f * delta_r[i] * dE_drik * delta_r[j]);
                     }
                 }
-                // for (uint8_t i = 0; i < 3; ++i) {
-                //     {
-                //         // accumulate force for the central atom
-                //         real_t y = dE_drik * delta_r[i] - force_central_batch_compensate[i];
-                //         real_t t = force_central_batch[i] + y;
-                //         force_central_batch_compensate[i] = (t - force_central_batch[i]) - y;
-                //         force_central_batch[i] = t;
-                //     }
-                //     for (uint8_t j = 0; j < 3; ++j) {
-                //         // accumulate stress
-                //         // stress += -1.0f * (atom_1[j] - atom_2[j]) * dE_drik
-                //         real_t y = -1.0f * delta_r[i] * dE_drik * delta_r[j] - stress_batch_compensate[i * 3 + j];
-                //         real_t t = stress_batch[i * 3 + j] + y;
-                //         stress_batch_compensate[i * 3 + j] = (t - stress_batch[i * 3 + j]) - y;
-                //         stress_batch[i * 3 + j] = t;
-                //     }
-                // }
-                // batch_count++;  // increment the count of interactions for the central atom
-                // if (batch_count >= batch_size) {
-                //     // accumulate the batch variables to local variables
-                //     {
-                //         // force
-                //         for (uint8_t i = 0; i < 3; ++i) {
-                //             real_t y = force_central_batch[i] - force_compensate_central[i];
-                //             real_t t = force_central[i] + y;
-                //             force_compensate_central[i] = (t - force_central[i]) - y;
-                //             force_central[i] = t;
-                //             force_central_batch[i] = 0.0f;
-                //             force_central_batch_compensate[i] = 0.0f;
-                //         }
-                //     }
-                //     {
-                //         // stress
-                //         for (uint8_t i = 0; i < 9; ++i) {
-                //             real_t y = stress_batch[i] - stress_compensate[i];
-                //             real_t t = stress[i] + y;
-                //             stress_compensate[i] = (t - stress[i]) - y;
-                //             stress[i] = t;
-                //             stress_batch[i] = 0.0f;
-                //             stress_batch_compensate[i] = 0.0f;
-                //         }
-                //     }
-                //     // reset the batch variables
-                //     batch_count = 0;
-                // }
             }
         }
     }
-    // accumulate the remaining batch variables to local variables
-    // {
-    //     // force
-    //     for (uint8_t i = 0; i < 3; ++i) {
-    //         real_t y = force_central_batch[i] - force_compensate_central[i];
-    //         real_t t = force_central[i] + y;
-    //         force_compensate_central[i] = (t - force_central[i]) - y;
-    //         force_central[i] = t;
-    //         force_central_batch[i] = 0.0f;
-    //         force_central_batch_compensate[i] = 0.0f;
-    //     }
-    // }
-    // {
-    //     // stress
-    //     for (uint8_t i = 0; i < 9; ++i) {
-    //         real_t y = stress_batch[i] - stress_compensate[i];
-    //         real_t t = stress[i] + y;
-    //         stress_compensate[i] = (t - stress[i]) - y;
-    //         stress[i] = t;
-    //         stress_batch[i] = 0.0f;
-    //         stress_batch_compensate[i] = 0.0f;
-    //     }
-    // }
+
     // accumulate force of central atom and stress
     real_t local_force_sum[3];
     real_t local_stress_sum[9];
