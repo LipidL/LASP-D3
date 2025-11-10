@@ -25,7 +25,7 @@ D3Handle_t* init_d3_handle(
         fprintf(stderr, "Error: failed to allocate memory for coordinates in init_d3_handle\n");
         return NULL;
     }
-    real_t cell[3][3] = {10};   // initialize the cell matrix
+    real_t cell[3][3] = {10, 0, 0, 0, 10, 0, 0, 0, 10};   // initialize the cell matrix
     try {
         Device_Buffer* buffer =
         new Device_Buffer((real_t(*)[3])coords, elements, length_elements, cell, max_length,

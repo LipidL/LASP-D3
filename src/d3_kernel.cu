@@ -3,6 +3,71 @@
 #include "d3_kernel.cuh"
 #include "d3_types.h"
 
+#define ACCUMULATE_LEVELS 2
+#define ACCUMULATE_STRIDE 8
+struct Hierarchical_Kahan_Accumulator {
+    // Kahan summation state for the base level
+    real_t base_sum; // current sum at the base level
+    real_t compensation; // compensation for lost low-order bits
+
+    // accumulation hierarchy levels
+    real_t levels[ACCUMULATE_LEVELS]; // higher-level accumulators
+    uint64_t count; // number of additions made
+
+    /**
+     * @brief initializes an accumulator
+     * Call this once at the start.
+     */
+    __inline__ __device__ void init() {
+        base_sum = 0.0f;
+        compensation = 0.0f;
+        for (uint32_t i = 0; i < ACCUMULATE_LEVELS; ++i) {
+            levels[i] = 0.0f;
+        }
+        count = 0;
+    }
+
+    /**
+     * @brief add a value to the accumulator
+     */
+    __inline__ __device__ void add(real_t value) {
+        // Kahan summation for the base level
+        real_t y = value - compensation;
+        real_t t = base_sum + y;
+        compensation = (t - base_sum) - y;
+        base_sum = t;
+        count += 1;
+
+        // Hierarchical accumulation
+        if (count % ACCUMULATE_STRIDE == 0) {
+            levels[0] += base_sum;
+            base_sum = 0.0f;
+            compensation = 0.0f;
+
+            // propagate to higher levels if needed
+            uint32_t current_level = 0;
+            uint32_t count_at_level = count / ACCUMULATE_STRIDE;
+            while (count_at_level % ACCUMULATE_STRIDE == 0 && current_level + 1 < ACCUMULATE_LEVELS) {
+                levels[current_level + 1] += levels[current_level];
+                levels[current_level] = 0.0f;
+                current_level += 1;
+                count_at_level /= ACCUMULATE_STRIDE;
+            }
+        }
+    }
+
+    /**
+     * @brief get the final accumulated sum
+     */
+    __inline__ __device__ real_t get_sum() {
+        real_t total = base_sum;
+        for (uint32_t i = 0; i < ACCUMULATE_LEVELS; ++i) {
+            total += levels[i];
+        }
+        return total;
+    }
+};
+
 __inline__ __device__ real_t calculate_cell_volume(const real_t cell[3][3]) {
     // Calculate the volume of the cell using the determinant of the matrix
     // formed by the cell vectors
@@ -16,6 +81,50 @@ __inline__ __device__ real_t warpReduceSum(real_t val) {
         val += __shfl_down_sync(0xFFFFFFFF, val, offset);
     }
     return val;
+}
+
+/** @brief blockReduceSum for coordination_number_kernel.
+ * The entries taht need to be added are: CN and dCN_dr (3 components).
+ */
+__inline__ __device__ void blockReduceCNKernel(
+    real_t coordination_number, real_t dCN_dr[3],
+    real_t* coordination_number_sum, real_t dCN_dr_sum[3]) {
+    static __shared__ real_t shared_coordination_number[32];
+    static __shared__ real_t shared_dCN_dr[32 * 3];  // 3 components for dCN_dr
+
+    int lane = threadIdx.x % warpSize;
+    int warp_id = threadIdx.x / warpSize;
+
+    coordination_number =
+        warpReduceSum(coordination_number);  // reduce CN within the warp
+    for (int i = 0; i < 3; ++i) {
+        dCN_dr[i] =
+            warpReduceSum(dCN_dr[i]);  // reduce dCN_dr components within the warp
+    }
+
+    if (lane == 0) {
+        shared_coordination_number[warp_id] =
+            coordination_number;  // store CN in shared memory
+        for (int i = 0; i < 3; ++i) {
+            shared_dCN_dr[warp_id * 3 + i] =
+                dCN_dr[i];  // store dCN_dr components in shared memory
+        }
+    }
+    __syncthreads();  // synchronize threads in the block
+    if (warp_id == 0) {
+        coordination_number = (threadIdx.x < blockDim.x / warpSize)
+                                  ? shared_coordination_number[lane]
+                                  : 0.0f;  // only the first warp writes to shared memory
+        for (int i = 0; i < 3; ++i) {
+            dCN_dr[i] = (threadIdx.x < blockDim.x / warpSize)
+                            ? shared_dCN_dr[lane * 3 + i]
+                            : 0.0f;  // only the first warp writes to shared memory
+        }
+        *coordination_number_sum = warpReduceSum(coordination_number);
+        for (int i = 0; i < 3; ++i) {
+            dCN_dr_sum[i] = warpReduceSum(dCN_dr[i]);
+        }
+    }
 }
 
 /**
@@ -288,16 +397,21 @@ __global__ void coordination_number_kernel(device_data_t* data) {
     uint64_t end_bias_index;    // end bias index for this thread
     distribute_workload(data->num_atoms, total_cell_bias, &start_index, &end_index, &start_bias_index, &end_bias_index);
     real_t covalent_radii_1 = data->rcov[atom_1_type];  // covalent radii of the central atom
-    real_t local_coordination_number_compensate = 0.0f; // compensation for Kahan summation in coordination number
-    real_t local_coordination_number = 0.0f;    // local coordination number for the central atom
-    real_t local_dCN_dr_compensate[3] = {0.0f}; // compensation for Kahan summation in dCN/dr
-    real_t local_dCN_dr[3] = {0.0f};    // local dCN/dr for the central atom
-    real_t batch_coordination_number_compensate = 0.0f; // compensation for Kahan summation in batched accumulation
-    real_t batch_coordination_number = 0.0f;    // batched coordination number
-    real_t batch_dCN_dr_compensate[3] = {0.0f}; // compensation for Kahan summation in dCN/dr in batched accumulation
-    real_t batch_dCN_dr[3] = {0.0f};    // batched dCN/dr
-    const uint16_t batched_number = 1024;  // number of accumulations in one batch
-    uint16_t batch_count = 0;  // current number of accumulations in the batch
+    Hierarchical_Kahan_Accumulator CN_accumulator, dCN_dr_accumulators[3];
+    CN_accumulator.init();
+    for (int i = 0; i < 3; ++i) {
+        dCN_dr_accumulators[i].init();
+    }
+    // real_t local_coordination_number_compensate = 0.0f; // compensation for Kahan summation in coordination number
+    // real_t local_coordination_number = 0.0f;    // local coordination number for the central atom
+    // real_t local_dCN_dr_compensate[3] = {0.0f}; // compensation for Kahan summation in dCN/dr
+    // real_t local_dCN_dr[3] = {0.0f};    // local dCN/dr for the central atom
+    // real_t batch_coordination_number_compensate = 0.0f; // compensation for Kahan summation in batched accumulation
+    // real_t batch_coordination_number = 0.0f;    // batched coordination number
+    // real_t batch_dCN_dr_compensate[3] = {0.0f}; // compensation for Kahan summation in dCN/dr in batched accumulation
+    // real_t batch_dCN_dr[3] = {0.0f};    // batched dCN/dr
+    // const uint16_t batched_number = 1024;  // number of accumulations in one batch
+    // uint16_t batch_count = 0;  // current number of accumulations in the batch
     for (uint64_t atom_2_index = start_index; atom_2_index < end_index; ++atom_2_index) {
         atom_t atom_2_original = data->atoms[atom_2_index];  // surrounding atom without supercell translation
         real_t covalent_radii_2 = data->rcov[data->atom_types[atom_2_index]];  // covalent radii of the surrounding atom
@@ -330,72 +444,49 @@ __global__ void coordination_number_kernel(device_data_t* data) {
 
                 // the covalent radii table have already taken K2 coefficient into consideration
                 real_t coordination_number = 1.0f / (1.0f + exp); // * smooth_cutoff;
-                // accumulate coordination number
-                {
-                    const real_t y = coordination_number - batch_coordination_number_compensate;
-                    const real_t t = batch_coordination_number + y;
-                    batch_coordination_number_compensate = (t - batch_coordination_number) - y;
-                    batch_coordination_number = t;
-                    batch_count += 1;
+                // accumulate coordination number and dCN/dr using Kahan summation with batching
+                CN_accumulator.add(coordination_number);
+                for (uint16_t i = 0; i < 3; ++i) {
+                    real_t dCN_dr_contribution = dCN_datom * delta_r[i];
+                    dCN_dr_accumulators[i].add(dCN_dr_contribution);
                 }
-                // accumulate dCN/dr
-                {
-                    for (uint16_t i = 0; i < 3; ++i) {
-                        real_t dCN_dr_contribution = dCN_datom * delta_r[i];
-                        const real_t y = dCN_dr_contribution - batch_dCN_dr_compensate[i];
-                        const real_t t = batch_dCN_dr[i] + y;
-                        batch_dCN_dr_compensate[i] = (t - batch_dCN_dr[i]) - y;
-                        batch_dCN_dr[i] = t;
-                    }
-                }
-                if (batch_count == batched_number) {
-                    // update local coordination number
-                    {
-                        const real_t y = batch_coordination_number - local_coordination_number_compensate;
-                        const real_t t = local_coordination_number + y;
-                        local_coordination_number_compensate = (t - local_coordination_number) - y;
-                        local_coordination_number = t;
-                    }
-                    // update local dCN/dr
-                    {
-                        for (uint16_t i = 0; i < 3; ++i) {
-                            const real_t y = batch_dCN_dr[i] - local_dCN_dr_compensate[i];
-                            const real_t t = local_dCN_dr[i] + y;
-                            local_dCN_dr_compensate[i] = (t - local_dCN_dr[i]) - y;
-                            local_dCN_dr[i] = t;
-                        }
-                    }
-                    // reset batch variables
-                    batch_coordination_number = 0.0f;
-                    batch_coordination_number_compensate = 0.0f;
-                    batch_count = 0;
-                }
+                
             }
         }
     }
-    // update the remaining batch
-    if (batch_count > 0) {
-        // update local coordination number
-        {
-            const real_t y = batch_coordination_number - local_coordination_number_compensate;
-            const real_t t = local_coordination_number + y;
-            local_coordination_number_compensate = (t - local_coordination_number) - y;
-            local_coordination_number = t;
-        }
-        // update local dCN/dr
-        {
-            for (uint16_t i = 0; i < 3; ++i) {
-                const real_t y = batch_dCN_dr[i] - local_dCN_dr_compensate[i];
-                const real_t t = local_dCN_dr[i] + y;
-                local_dCN_dr_compensate[i] = (t - local_dCN_dr[i]) - y;
-                local_dCN_dr[i] = t;
-            }
-        }
-    }
-    // use atomicAdd to update the global coordination number
-    atomicAdd(&data->coordination_numbers[atom_1_index], local_coordination_number);  // accumulate the coordination number for the central atom
+    // // update the remaining batch
+    // if (batch_count > 0) {
+    //     // update local coordination number
+    //     {
+    //         const real_t y = batch_coordination_number - local_coordination_number_compensate;
+    //         const real_t t = local_coordination_number + y;
+    //         local_coordination_number_compensate = (t - local_coordination_number) - y;
+    //         local_coordination_number = t;
+    //     }
+    //     // update local dCN/dr
+    //     {
+    //         for (uint16_t i = 0; i < 3; ++i) {
+    //             const real_t y = batch_dCN_dr[i] - local_dCN_dr_compensate[i];
+    //             const real_t t = local_dCN_dr[i] + y;
+    //             local_dCN_dr_compensate[i] = (t - local_dCN_dr[i]) - y;
+    //             local_dCN_dr[i] = t;
+    //         }
+    //     }
+    // }
+    // use blockwise reduction to accumulate coordination number and dCN/dr from all threads
+    real_t CN_sum, dCN_dr_sum[3];
+    real_t local_CN_sum = CN_accumulator.get_sum();
+    real_t local_dCN_dr[3];
     for (uint16_t i = 0; i < 3; ++i) {
-        atomicAdd(&data->dCN_dr[atom_1_index * 3 + i], local_dCN_dr[i]);  // accumulate the dCN/dr for the central atom
+        local_dCN_dr[i] = dCN_dr_accumulators[i].get_sum();
+    }
+    blockReduceCNKernel(local_CN_sum, local_dCN_dr, &CN_sum, dCN_dr_sum);
+    // write back the results to global memory
+    if (threadIdx.x == 0) {
+        data->coordination_numbers[atom_1_index] = CN_sum;
+        for (uint16_t i = 0; i < 3; ++i) {
+            data->dCN_dr[atom_1_index * 3 + i] = dCN_dr_sum[i];
+        }
     }
     return;
 }
