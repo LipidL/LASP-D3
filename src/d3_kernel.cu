@@ -530,29 +530,40 @@ __global__ void two_body_kernel(device_data_t* data) {
     const atom_t atom_1 = data->atoms[atom_1_index];  // central atom
     const real_t coordination_number_1 = data->coordination_numbers[atom_1_index];  // coordination number of the central atom
 
-    // batch variables for energy, force and stress accumulation to reduce numeric error
-    real_t batch_energy = 0.0f;  // temporary batch energy
-    real_t batch_force[3] = {0.0f};   // temporary batch force vector
-    real_t batch_stress[9] = {0.0f};  // temporary batch stress matrix
-    real_t batch_dE_dCN = 0.0f;  // temporary dE/dCN
-    // compensation variables to perform Kahan addition in batched variables
-    real_t batch_energy_compensate = 0.0f;
-    real_t batch_dE_dCN_compensate = 0.0f;
-    real_t batch_force_compensate[3] = {0.0f};
-    real_t batch_stress_compensate[9] = {0.0f};
-    const uint32_t batch_size = 8;   // batch storage will be updated to local storage after this many accumulations
-    uint32_t batch_count = 0;   // number of accumulations in the current batch
+    // // batch variables for energy, force and stress accumulation to reduce numeric error
+    // real_t batch_energy = 0.0f;  // temporary batch energy
+    // real_t batch_force[3] = {0.0f};   // temporary batch force vector
+    // real_t batch_stress[9] = {0.0f};  // temporary batch stress matrix
+    // real_t batch_dE_dCN = 0.0f;  // temporary dE/dCN
+    // // compensation variables to perform Kahan addition in batched variables
+    // real_t batch_energy_compensate = 0.0f;
+    // real_t batch_dE_dCN_compensate = 0.0f;
+    // real_t batch_force_compensate[3] = {0.0f};
+    // real_t batch_stress_compensate[9] = {0.0f};
+    // const uint32_t batch_size = 8;   // batch storage will be updated to local storage after this many accumulations
+    // uint32_t batch_count = 0;   // number of accumulations in the current batch
 
-    // local variables for central atom
-    real_t local_energy = 0.0f; // local energy
-    real_t local_dE_dCN = 0.0f;  // local dE/dCN
-    real_t local_force[3] = {0.0f};   // local force for the central atom
-    real_t local_stress[9] = {0.0f};  // local stress matrix
-    // compensation variables for local variables
-    real_t local_energy_compensate = 0.0f;
-    real_t local_dE_dCN_compensate = 0.0f;
-    real_t local_force_compensate[3] = {0.0f};
-    real_t local_stress_compensate[9] = {0.0f};
+    // // local variables for central atom
+    // real_t local_energy = 0.0f; // local energy
+    // real_t local_dE_dCN = 0.0f;  // local dE/dCN
+    // real_t local_force[3] = {0.0f};   // local force for the central atom
+    // real_t local_stress[9] = {0.0f};  // local stress matrix
+    // // compensation variables for local variables
+    // real_t local_energy_compensate = 0.0f;
+    // real_t local_dE_dCN_compensate = 0.0f;
+    // real_t local_force_compensate[3] = {0.0f};
+    // real_t local_stress_compensate[9] = {0.0f};
+    Hierarchical_Kahan_Accumulator energy_accumulator, dE_dCN_accumulator;
+    Hierarchical_Kahan_Accumulator force_accumulators[3];
+    Hierarchical_Kahan_Accumulator stress_accumulators[9];
+    energy_accumulator.init();
+    dE_dCN_accumulator.init();
+    for (int i = 0; i < 3; ++i) {
+        force_accumulators[i].init();
+    }
+    for (int i = 0; i < 9; ++i) {
+        stress_accumulators[i].init();
+    }
 
     // prefetch and calculate necessary variables during calculation
     const real_t cell_volume = calculate_cell_volume(data->cell); // volume of the cell
@@ -727,9 +738,12 @@ __global__ void two_body_kernel(device_data_t* data) {
                         break;
                 }
                 // calculate the dispersion energy according to Grimme et al. 2010, eq3
-                const real_t dispersion_energy_6 = s6 * (c6_ab / distance_6) * f_dn_6;
-                const real_t dispersion_energy_8 = s8 * (c8_ab / distance_8) * f_dn_8;
+                const real_t dispersion_energy_6 = s6 * (c6_ab / distance_6) * f_dn_6;  // E_6
+                const real_t d_E6_dCN = s6 * f_dn_6 * dC6ab_dCN_1 / distance_6;  // dE_6/dCN
+                const real_t dispersion_energy_8 = s8 * (c8_ab / distance_8) * f_dn_8;  // E_8
+                const real_t d_E8_dCN = s8 * f_dn_8 * dC8ab_dCN_1 / distance_8;  // dE_8/dCN
                 const real_t dispersion_energy = (dispersion_energy_6 + dispersion_energy_8) / 2.0f;  // divide by 2 because each atom pair is counted twice
+                const real_t dE_dCN = (d_E6_dCN + d_E8_dCN); // dE/dCN
                 
                 /** the first entry of two-body force:
                  * $F_a = S_n C_n^{ab} f_{d,n}(r_{ab}) \frac{\partial}{\partial r_a} r_{ab}^{-n}$ 
@@ -747,129 +761,151 @@ __global__ void two_body_kernel(device_data_t* data) {
                  */
                 force += s6 * c6_ab / distance_6 * d_f_dn_6 / distance;  // dE_6/dr * 1/r
                 force += s8 * c8_ab / distance_8 * d_f_dn_8 / distance;  // dE_8/dr * 1/r
-                // accumulate the energy, use Kahan summation for higher accuracy
-                {
-                    const real_t y = dispersion_energy - batch_energy_compensate;
-                    const real_t t = batch_energy + y;
-                    batch_energy_compensate = (t - batch_energy) - y;
-                    batch_energy = t;
-                }
-                // accumulate dEij/dCNi to local variable
-                {
-                    const real_t y = ((s6 * f_dn_6 * distance_2 * dC6ab_dCN_1 + s8 * f_dn_8 * dC8ab_dCN_1) / distance_8) - batch_dE_dCN_compensate;
-                    const real_t t = batch_dE_dCN + y;
-                    batch_dE_dCN_compensate = (t - batch_dE_dCN) - y;
-                    batch_dE_dCN = t;
-                }
-                // accumulate force for the central atom
-                for (uint8_t i = 0; i < 3; ++i) {
-                    const real_t y = force * delta_r[i] - batch_force_compensate[i];
-                    const real_t t = batch_force[i] + y;
-                    batch_force_compensate[i] = (t - batch_force[i]) - y;
-                    batch_force[i] = t;
-                }
 
-                /* accumulate stress to local matrix instead of directly using
-                    * atomicAdd, divide by 2 becuase the same entry will be
-                    * calculated twice (when atom_2 is the central atom), use Kahan
-                    * summation for better accuracy */
+                // accumulate the energy, force, stress and dE/dCN using hierarchical Kahan summation
+                energy_accumulator.add(dispersion_energy);
+                dE_dCN_accumulator.add(dE_dCN);
+                for (uint8_t i = 0; i < 3; ++i) {
+                    force_accumulators[i].add(force * delta_r[i]);
+                }
                 for (uint8_t i = 0; i < 3; ++i) {
                     for (uint8_t j = 0; j < 3; ++j) {
-                        const real_t y = -1.0f * delta_r[i] * force * delta_r[j] / 2.0f / cell_volume - batch_stress_compensate[i * 3 + j];
-                        const real_t t = batch_stress[i * 3 + j] + y;
-                        batch_stress_compensate[i * 3 + j] = (t - batch_stress[i * 3 + j]) - y;
-                        batch_stress[i * 3 + j] = t;
+                        stress_accumulators[i * 3 + j].add(-1.0f * delta_r[i] * force * delta_r[j] / 2.0f / cell_volume);
                     }
                 }
-                batch_count++;  // increment the count of interactions for the central atom
-                if (batch_count >= batch_size) {
-                    // accumulate the batch variables to local variables
-                    {
-                        // dE/dCN
-                        const real_t y = batch_dE_dCN - local_dE_dCN_compensate;
-                        const real_t t = local_dE_dCN + y;
-                        local_dE_dCN_compensate = (t - local_dE_dCN) - y;
-                        local_dE_dCN = t;
-                    }
-                    {
-                        // energy
-                        const real_t y = batch_energy - local_energy_compensate;
-                        const real_t t = local_energy + y;
-                        local_energy_compensate = (t - local_energy) - y;
-                        local_energy = t;
-                    }
-                    {
-                        // force
-                        for (uint8_t i = 0; i < 3; ++i) {
-                            const real_t y = batch_force[i] - local_force_compensate[i];
-                            const real_t t = local_force[i] + y;
-                            local_force_compensate[i] = (t - local_force[i]) - y;
-                            local_force[i] = t;
-                        }
-                    }
-                    {
-                        // stress
-                        for (uint8_t i = 0; i < 9; ++i) {
-                            const real_t y = batch_stress[i] - local_stress_compensate[i];
-                            const real_t t = local_stress[i] + y;
-                            local_stress_compensate[i] = (t - local_stress[i]) - y;
-                            local_stress[i] = t;
-                        }
-                    }
-                    // reset the batch variables
-                    batch_dE_dCN = 0.0f;
-                    batch_energy = 0.0f;
-                    for (uint8_t i = 0; i < 3; ++i) {
-                        batch_force[i] = 0.0f;
-                    }
-                    for (uint8_t i = 0; i < 9; ++i) {
-                        batch_stress[i] = 0.0f;
-                    }
-                    batch_count = 0;
-                }
+                // // accumulate the energy, use Kahan summation for higher accuracy
+                // {
+                //     const real_t y = dispersion_energy - batch_energy_compensate;
+                //     const real_t t = batch_energy + y;
+                //     batch_energy_compensate = (t - batch_energy) - y;
+                //     batch_energy = t;
+                // }
+                // // accumulate dEij/dCNi to local variable
+                // {
+                //     const real_t y = ((s6 * f_dn_6 * distance_2 * dC6ab_dCN_1 + s8 * f_dn_8 * dC8ab_dCN_1) / distance_8) - batch_dE_dCN_compensate;
+                //     const real_t t = batch_dE_dCN + y;
+                //     batch_dE_dCN_compensate = (t - batch_dE_dCN) - y;
+                //     batch_dE_dCN = t;
+                // }
+                // // accumulate force for the central atom
+                // for (uint8_t i = 0; i < 3; ++i) {
+                //     const real_t y = force * delta_r[i] - batch_force_compensate[i];
+                //     const real_t t = batch_force[i] + y;
+                //     batch_force_compensate[i] = (t - batch_force[i]) - y;
+                //     batch_force[i] = t;
+                // }
+
+                // /* accumulate stress to local matrix instead of directly using
+                //     * atomicAdd, divide by 2 becuase the same entry will be
+                //     * calculated twice (when atom_2 is the central atom), use Kahan
+                //     * summation for better accuracy */
+                // for (uint8_t i = 0; i < 3; ++i) {
+                //     for (uint8_t j = 0; j < 3; ++j) {
+                //         const real_t y = -1.0f * delta_r[i] * force * delta_r[j] / 2.0f / cell_volume - batch_stress_compensate[i * 3 + j];
+                //         const real_t t = batch_stress[i * 3 + j] + y;
+                //         batch_stress_compensate[i * 3 + j] = (t - batch_stress[i * 3 + j]) - y;
+                //         batch_stress[i * 3 + j] = t;
+                //     }
+                // }
+                // batch_count++;  // increment the count of interactions for the central atom
+                // if (batch_count >= batch_size) {
+                //     // accumulate the batch variables to local variables
+                //     {
+                //         // dE/dCN
+                //         const real_t y = batch_dE_dCN - local_dE_dCN_compensate;
+                //         const real_t t = local_dE_dCN + y;
+                //         local_dE_dCN_compensate = (t - local_dE_dCN) - y;
+                //         local_dE_dCN = t;
+                //     }
+                //     {
+                //         // energy
+                //         const real_t y = batch_energy - local_energy_compensate;
+                //         const real_t t = local_energy + y;
+                //         local_energy_compensate = (t - local_energy) - y;
+                //         local_energy = t;
+                //     }
+                //     {
+                //         // force
+                //         for (uint8_t i = 0; i < 3; ++i) {
+                //             const real_t y = batch_force[i] - local_force_compensate[i];
+                //             const real_t t = local_force[i] + y;
+                //             local_force_compensate[i] = (t - local_force[i]) - y;
+                //             local_force[i] = t;
+                //         }
+                //     }
+                //     {
+                //         // stress
+                //         for (uint8_t i = 0; i < 9; ++i) {
+                //             const real_t y = batch_stress[i] - local_stress_compensate[i];
+                //             const real_t t = local_stress[i] + y;
+                //             local_stress_compensate[i] = (t - local_stress[i]) - y;
+                //             local_stress[i] = t;
+                //         }
+                //     }
+                //     // reset the batch variables
+                //     batch_dE_dCN = 0.0f;
+                //     batch_energy = 0.0f;
+                //     for (uint8_t i = 0; i < 3; ++i) {
+                //         batch_force[i] = 0.0f;
+                //     }
+                //     for (uint8_t i = 0; i < 9; ++i) {
+                //         batch_stress[i] = 0.0f;
+                //     }
+                //     batch_count = 0;
+                // }
             }
         }
     }
     // accumulate the remaining batch variables
-    {
-        // dE/dCN
-        const real_t y = batch_dE_dCN - local_dE_dCN_compensate;
-        const real_t t = local_dE_dCN + y;
-        local_dE_dCN_compensate = (t - local_dE_dCN) - y;
-        local_dE_dCN = t;
-    }
-    {
-        // energy
-        const real_t y = batch_energy - local_energy_compensate;
-        const real_t t = local_energy + y;
-        local_energy_compensate = (t - local_energy) - y;
-        local_energy = t;
-    }
-    {
-        // force
-        for (uint8_t i = 0; i < 3; ++i) {
-            const real_t y = batch_force[i] - local_force_compensate[i];
-            const real_t t = local_force[i] + y;
-            local_force_compensate[i] = (t - local_force[i]) - y;
-            local_force[i] = t;
-        }
-    }
-    {
-        // stress
-        for (uint8_t i = 0; i < 9; ++i) {
-            const real_t y = batch_stress[i] - local_stress_compensate[i];
-            const real_t t = local_stress[i] + y;
-            local_stress_compensate[i] = (t - local_stress[i]) - y;
-            local_stress[i] = t;
-        }
-    }
+    // {
+    //     // dE/dCN
+    //     const real_t y = batch_dE_dCN - local_dE_dCN_compensate;
+    //     const real_t t = local_dE_dCN + y;
+    //     local_dE_dCN_compensate = (t - local_dE_dCN) - y;
+    //     local_dE_dCN = t;
+    // }
+    // {
+    //     // energy
+    //     const real_t y = batch_energy - local_energy_compensate;
+    //     const real_t t = local_energy + y;
+    //     local_energy_compensate = (t - local_energy) - y;
+    //     local_energy = t;
+    // }
+    // {
+    //     // force
+    //     for (uint8_t i = 0; i < 3; ++i) {
+    //         const real_t y = batch_force[i] - local_force_compensate[i];
+    //         const real_t t = local_force[i] + y;
+    //         local_force_compensate[i] = (t - local_force[i]) - y;
+    //         local_force[i] = t;
+    //     }
+    // }
+    // {
+    //     // stress
+    //     for (uint8_t i = 0; i < 9; ++i) {
+    //         const real_t y = batch_stress[i] - local_stress_compensate[i];
+    //         const real_t t = local_stress[i] + y;
+    //         local_stress_compensate[i] = (t - local_stress[i]) - y;
+    //         local_stress[i] = t;
+    //     }
+    // }
 
+    real_t local_dE_dCN = dE_dCN_accumulator.get_sum();
+    real_t local_energ = energy_accumulator.get_sum();
+    real_t local_stress[9];
+    for (int i = 0; i < 9; ++i) {
+        local_stress[i] = stress_accumulators[i].get_sum();
+    }
+    real_t local_force[3];
+    for (int i = 0; i < 3; ++i) {
+        local_force[i] = force_accumulators[i].get_sum();
+    }
     real_t dE_dCN_sum = 0;  // sum of dE/dCN across the block
     real_t energy_sum = 0;  // sum of energy across the block
     real_t force_central_sum[3] = {0.0f};  // sum of force of central atom across the block
     real_t stress_sum[9] = {0.0f};  // sum of stress of central atom across the block
     // accumulate the results across the block
-    blockReduceTwoBodyKernel(local_dE_dCN, local_energy, local_force,
+    blockReduceTwoBodyKernel(local_dE_dCN, local_energ, local_force,
                              local_stress, &dE_dCN_sum, &energy_sum,
                              force_central_sum, stress_sum);
 
