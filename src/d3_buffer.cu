@@ -151,7 +151,7 @@ __host__ Device_Buffer::Device_Buffer(real_t coords[][3], uint16_t* elements, ui
         this->host_data_.num_elements = unique_elements.num_elements;  // number of unique elements in the system
 
         uint64_t* h_atom_types = (uint64_t*)malloc(sizeof(uint64_t) * length);
-        for (uint64_t i = 0; i < length_elements; ++i) {
+        for (uint64_t i = 0; i < length; ++i) {
             h_atom_types[i] = unique_elements.find(elements[i]);
         }
 
@@ -211,11 +211,11 @@ __host__ Device_Buffer::Device_Buffer(real_t coords[][3], uint16_t* elements, ui
             // calculate grid indices and handle periodic boundary conditions
             uint64_t grid_idx[3];
             for (uint8_t j = 0; j < 3; ++j) {
-                real_t coord = frac[j] - std::floor(frac[j]); // wrap to [0, 1)
-                coords[i][j] = coord * this->host_data_.cell[j][0] +
-                               coord * this->host_data_.cell[j][1] +
-                               coord * this->host_data_.cell[j][2]; // update the coordinates to wrapped ones
-                grid_idx[j] = (uint64_t)(coord * host_data_.num_grid_cells[j]);
+                real_t wrapped_frac = frac[j] - std::floor(frac[j]); // wrap to [0, 1)
+                coords[i][j] = wrapped_frac * this->host_data_.cell[j][0] +
+                               wrapped_frac * this->host_data_.cell[j][1] +
+                               wrapped_frac * this->host_data_.cell[j][2]; // update the coordinates to wrapped ones
+                grid_idx[j] = (uint64_t)(wrapped_frac * host_data_.num_grid_cells[j]);
                 if (grid_idx[j] == host_data_.num_grid_cells[j]) {
                     grid_idx[j] = 0; // handle the edge case where coord == 1.0
                 }
