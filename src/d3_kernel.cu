@@ -424,8 +424,7 @@ __device__ inline void calculate_CN(
     real_t CN_cutoff,
     HierarchicalKahanAccumulator<1> &CN_accumulator,
     HierarchicalKahanAccumulator<3> &dCN_dr_accumulator
-)
-{
+) {
     real_t delta_r[3] = {
         atom_1.x - atom_2.x,  // delta x
         atom_1.y - atom_2.y,  // delta y
@@ -574,8 +573,8 @@ __device__ inline void calculate_c6ab(
     device_data_t *data,
     uint64_t atom_1_type, uint64_t atom_2_type,
     real_t coordination_number_1, real_t coordination_number_2,
-    real_t &c6_ab_result, real_t &dC6_dCN_1_result)
-{
+    real_t &c6_ab_result, real_t &dC6_dCN_1_result
+) {
     /** calculate the coordination number based on 
      * the equation comes from Grimme et al. 2010, eq 16.
      * formula: $C_6^{ij} = Z/W$
@@ -942,6 +941,54 @@ __global__ void two_body_kernel(device_data_t *data)
     }
 }
 
+__device__ inline void calculate_three_body_interaction(
+    atom_t atom_1, atom_t atom_2,
+    real_t covalent_radii_1, real_t covalent_radii_2,
+    real_t CN_cutoff,
+    real_t dE_dCN,
+    HierarchicalKahanAccumulator<3> &force_accumulators,
+    HierarchicalKahanAccumulator<9> &stress_accumulators
+) {
+    real_t delta_r[3] = {
+        atom_1.x - atom_2.x,  // delta x
+        atom_1.y - atom_2.y,  // delta y
+        atom_1.z - atom_2.z   // delta z
+    }; // delta_r between atom 1 and atom 2
+    // calculate the distance between the two atoms
+    const real_t distance_square = delta_r[0] * delta_r[0] +
+                                        delta_r[1] * delta_r[1] +
+                                        delta_r[2] * delta_r[2];
+    real_t distance = sqrtf(distance_square);
+    /* if the distance is within cutoff range, update neighbor_flags */
+    if (distance <= CN_cutoff && distance > 0.0f) {
+        /**
+         * eq 15 in Grimme et al. 2010
+         * $CN^A = \sum_{B \neq A}^{N}
+         * \sqrt{1}{1+exp(-k_1(k_2(R_{A,cov}+R_{B,cov})/r_{AB}-1))}$
+         */
+        real_t exp = expf(-K1 * ((covalent_radii_1 + covalent_radii_2) / distance - 1.0f));  // $\exp(-k_1*(\frac{R_A+R_b}{r_{ab}}-1))$
+        real_t tanh_value = tanhf(CN_cutoff - distance);  // $\tanh(CN_cutoff - r_{ab})$
+        real_t smooth_cutoff = powf(tanh_value, 3);  // $\tanh^3(CN_cutoff- r_{ab}))$, this is a smooth cutoff function added in LASP code.
+        real_t d_smooth_cutoff_dr = 3.0f * powf(tanh_value, 2) * (1.0f - powf(tanh_value, 2)) * (-1.0f);  // d(smooth_cutoff)/dr
+        real_t dCN_datom = powf(1.0f + exp, -2.0f) * (-K1) * exp * (covalent_radii_1 + covalent_radii_2) * powf(distance, -3.0f) * smooth_cutoff + d_smooth_cutoff_dr * 1.0f / (1.0f + exp) / distance;  // dCN_ij/dr_ij * 1/r_ij
+        // dE/drik = dE/dCN * dCN/drik
+        real_t dE_drik = dE_dCN * dCN_datom;
+        // accumulate force for the central atom and neighboring atom
+        // force_central += dE/drik * delta_r
+        // use Kahan summation to improve numerical stability
+        real_t force_contribution[3];
+        real_t stress_contribution[9];
+        for (uint8_t i = 0; i < 3; ++i) {
+            force_contribution[i] = (dE_drik * delta_r[i]);
+            for (uint8_t j = 0; j < 3; ++j) {
+                stress_contribution[i * 3 + j] = (-1.0f * delta_r[i] * dE_drik * delta_r[j]);
+            }
+        }
+        force_accumulators.add(force_contribution);
+        stress_accumulators.add(stress_contribution);
+    }
+}
+
 /**
  * @brief this kernel is used to compute the three-body interactions between
  * atoms in the system.
@@ -1015,50 +1062,19 @@ __global__ void three_body_kernel(device_data_t *data)
 
             atom_t atom_2 = atom_2_original;
             // translate atom_2 due to periodic boundaries
-            atom_2.x += x_bias * cell[0][0] + y_bias * cell[1][0] + z_bias * cell[2][0]; // translate in x direction
-            atom_2.y += x_bias * cell[0][1] + y_bias * cell[1][1] + z_bias * cell[2][1]; // translate in y direction
-            atom_2.z += x_bias * cell[0][2] + y_bias * cell[1][2] + z_bias * cell[2][2]; // translate in z direction
-            real_t delta_r[3] = {
-                atom_1.x - atom_2.x, // delta x
-                atom_1.y - atom_2.y, // delta y
-                atom_1.z - atom_2.z  // delta z
-            }; // delta_r between atom 1 and atom 2
-            // calculate the distance between the two atoms
-            const real_t distance_square = delta_r[0] * delta_r[0] +
-                                           delta_r[1] * delta_r[1] +
-                                           delta_r[2] * delta_r[2];
-            real_t distance = sqrtf(distance_square);
-            /* if the distance is within cutoff range, update neighbor_flags */
-            if (distance <= CN_cutoff && distance > 0.0f)
-            {
-                /**
-                 * eq 15 in Grimme et al. 2010
-                 * $CN^A = \sum_{B \neq A}^{N}
-                 * \sqrt{1}{1+exp(-k_1(k_2(R_{A,cov}+R_{B,cov})/r_{AB}-1))}$
-                 */
-                real_t exp = expf(-K1 * ((covalent_radii_1 + covalent_radii_2) / distance - 1.0f));                                                                                                             // $\exp(-k_1*(\frac{R_A+R_b}{r_{ab}}-1))$
-                real_t tanh_value = tanhf(CN_cutoff - distance);                                                                                                                                                // $\tanh(CN_cutoff - r_{ab})$
-                real_t smooth_cutoff = powf(tanh_value, 3);                                                                                                                                                     // $\tanh^3(CN_cutoff- r_{ab}))$, this is a smooth cutoff function added in LASP code.
-                real_t d_smooth_cutoff_dr = 3.0f * powf(tanh_value, 2) * (1.0f - powf(tanh_value, 2)) * (-1.0f);                                                                                                // d(smooth_cutoff)/dr
-                real_t dCN_datom = powf(1.0f + exp, -2.0f) * (-K1) * exp * (covalent_radii_1 + covalent_radii_2) * powf(distance, -3.0f) * smooth_cutoff + d_smooth_cutoff_dr * 1.0f / (1.0f + exp) / distance; // dCN_ij/dr_ij * 1/r_ij
-                // dE/drik = dE/dCN * dCN/drik
-                real_t dE_drik = dE_dCN * dCN_datom;
-                // accumulate force for the central atom and neighboring atom
-                // force_central += dE/drik * delta_r
-                // use Kahan summation to improve numerical stability
-                real_t force_contribution[3];
-                real_t stress_contribution[9];
-                for (uint8_t i = 0; i < 3; ++i)
-                {
-                    force_contribution[i] = (dE_drik * delta_r[i]);
-                    for (uint8_t j = 0; j < 3; ++j)
-                    {
-                        stress_contribution[i * 3 + j] = (-1.0f * delta_r[i] * dE_drik * delta_r[j]);
-                    }
-                }
-                force_accumulators.add(force_contribution);
-                stress_accumulators.add(stress_contribution);
-            }
+            atom_2.x += x_bias * cell[0][0] + y_bias * cell[1][0] + z_bias * cell[2][0];  // translate in x direction
+            atom_2.y += x_bias * cell[0][1] + y_bias * cell[1][1] + z_bias * cell[2][1];  // translate in y direction
+            atom_2.z += x_bias * cell[0][2] + y_bias * cell[1][2] + z_bias * cell[2][2];  // translate in z direction
+
+            calculate_three_body_interaction(
+                atom_1, atom_2,
+                covalent_radii_1, covalent_radii_2,
+                CN_cutoff,
+                dE_dCN,
+                force_accumulators,
+                stress_accumulators
+            );
+
         }
     }
 
