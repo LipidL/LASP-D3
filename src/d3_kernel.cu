@@ -3,15 +3,16 @@
 #include "d3_kernel.cuh"
 #include "d3_types.h"
 
-#define ACCUMULATE_LEVELS 2
+#define ACCUMULATE_LEVELS 1
 #define ACCUMULATE_STRIDE 8
+template <uint64_t N>
 struct HierarchicalKahanAccumulator {
     // Kahan summation state for the base level
-    real_t base_sum; // current sum at the base level
-    real_t compensation; // compensation for lost low-order bits
+    real_t base_sum[N]; // current sum at the base level
+    real_t compensation[N]; // compensation for lost low-order bits
 
     // accumulation hierarchy levels
-    real_t levels[ACCUMULATE_LEVELS]; // higher-level accumulators
+    real_t levels[ACCUMULATE_LEVELS][N]; // higher-level accumulators
     uint64_t count; // number of additions made
 
     /**
@@ -19,10 +20,12 @@ struct HierarchicalKahanAccumulator {
      * Call this once at the start.
      */
     __inline__ __device__ void init() {
-        base_sum = 0.0f;
-        compensation = 0.0f;
-        for (uint32_t i = 0; i < ACCUMULATE_LEVELS; ++i) {
-            levels[i] = 0.0f;
+        for (uint8_t i = 0; i < N; ++i) {
+            base_sum[i] = 0.0f;
+            compensation[i] = 0.0f;
+            for (uint32_t level = 0; level < ACCUMULATE_LEVELS; ++level) {
+                levels[level][i] = 0.0f;
+            }
         }
         count = 0;
     }
@@ -30,26 +33,31 @@ struct HierarchicalKahanAccumulator {
     /**
      * @brief add a value to the accumulator
      */
-    __inline__ __device__ void add(real_t value) {
+    __inline__ __device__ void add(const real_t value[N]) {
         // Kahan summation for the base level
-        real_t y = value - compensation;
-        real_t t = base_sum + y;
-        compensation = (t - base_sum) - y;
-        base_sum = t;
+        for (uint8_t i = 0; i < N; ++i) {
+            real_t y = value[i] - compensation[i];
+            real_t t = base_sum[i] + y;
+            compensation[i] = (t - base_sum[i]) - y;
+            base_sum[i] = t;
+        }
         count += 1;
 
         // Hierarchical accumulation
         if (count % ACCUMULATE_STRIDE == 0) {
-            levels[0] += base_sum;
-            base_sum = 0.0f;
-            compensation = 0.0f;
-
+            for (uint8_t i = 0; i < N; ++i) {
+                levels[0][i] += base_sum[i];
+                base_sum[i] = 0.0f;
+                compensation[i] = 0.0f;
+            }
             // propagate to higher levels if needed
             uint32_t current_level = 0;
             uint32_t count_at_level = count / ACCUMULATE_STRIDE;
-            while (count_at_level % ACCUMULATE_STRIDE == 0 && current_level + 1 < ACCUMULATE_LEVELS) {
-                levels[current_level + 1] += levels[current_level];
-                levels[current_level] = 0.0f;
+            while (count_at_level % ACCUMULATE_STRIDE == 0 && count_at_level != 0 && current_level + 1 < ACCUMULATE_LEVELS) {
+                for (uint8_t i = 0; i < N; ++i) {
+                    levels[current_level + 1][i] += levels[current_level][i];
+                    levels[current_level][i] = 0.0f;
+                }
                 current_level += 1;
                 count_at_level /= ACCUMULATE_STRIDE;
             }
@@ -59,12 +67,15 @@ struct HierarchicalKahanAccumulator {
     /**
      * @brief get the final accumulated sum
      */
-    __inline__ __device__ real_t get_sum() {
-        real_t total = base_sum;
-        for (uint32_t i = 0; i < ACCUMULATE_LEVELS; ++i) {
-            total += levels[i];
+    __inline__ __device__ void get_sum(real_t result[N]) {
+        for (uint8_t i = 0; i < N; ++i) {
+            result[i] = base_sum[i];
         }
-        return total;
+        for (uint32_t i = 0; i < ACCUMULATE_LEVELS; ++i) {
+            for (uint8_t j = 0; j < N; ++j) {
+                result[j] += levels[i][j];
+            }
+        }
     }
 };
 
@@ -397,11 +408,10 @@ __global__ void coordination_number_kernel(device_data_t* data) {
     uint64_t end_bias_index;    // end bias index for this thread
     distribute_workload(data->num_atoms, total_cell_bias, &start_index, &end_index, &start_bias_index, &end_bias_index);
     real_t covalent_radii_1 = data->rcov[atom_1_type];  // covalent radii of the central atom
-    HierarchicalKahanAccumulator CN_accumulator, dCN_dr_accumulators[3];
+    HierarchicalKahanAccumulator<1> CN_accumulator;
+    HierarchicalKahanAccumulator<3> dCN_dr_accumulators; // accumulators for dCN/dr in x, y, z directions
     CN_accumulator.init();
-    for (int i = 0; i < 3; ++i) {
-        dCN_dr_accumulators[i].init();
-    }
+    dCN_dr_accumulators.init();
 
     for (uint64_t atom_2_index = start_index; atom_2_index < end_index; ++atom_2_index) {
         atom_t atom_2_original = data->atoms[atom_2_index];  // surrounding atom without supercell translation
@@ -436,23 +446,21 @@ __global__ void coordination_number_kernel(device_data_t* data) {
                 // the covalent radii table have already taken K2 coefficient into consideration
                 real_t coordination_number = 1.0f / (1.0f + exp); // * smooth_cutoff;
                 // accumulate coordination number and dCN/dr using Kahan summation with batching
-                CN_accumulator.add(coordination_number);
+                CN_accumulator.add(&coordination_number);
+                real_t dCN_dr_contribution[3] = {0.0f, 0.0f, 0.0f};
                 for (uint16_t i = 0; i < 3; ++i) {
-                    real_t dCN_dr_contribution = dCN_datom * delta_r[i];
-                    dCN_dr_accumulators[i].add(dCN_dr_contribution);
+                    dCN_dr_contribution[i] = dCN_datom * delta_r[i];
                 }
+                dCN_dr_accumulators.add(dCN_dr_contribution);
                 
             }
         }
     }
 
     // use blockwise reduction to accumulate coordination number and dCN/dr from all threads
-    real_t CN_sum, dCN_dr_sum[3];
-    real_t local_CN_sum = CN_accumulator.get_sum();
-    real_t local_dCN_dr[3];
-    for (uint16_t i = 0; i < 3; ++i) {
-        local_dCN_dr[i] = dCN_dr_accumulators[i].get_sum();
-    }
+    real_t CN_sum, dCN_dr_sum[3], local_CN_sum, local_dCN_dr[3];
+    CN_accumulator.get_sum(&local_CN_sum);
+    dCN_dr_accumulators.get_sum(local_dCN_dr);
     blockReduceCNKernel(local_CN_sum, local_dCN_dr, &CN_sum, dCN_dr_sum);
     // write back the results to global memory
     if (threadIdx.x == 0) {
@@ -503,17 +511,13 @@ __global__ void two_body_kernel(device_data_t* data) {
     const atom_t atom_1 = data->atoms[atom_1_index];  // central atom
     const real_t coordination_number_1 = data->coordination_numbers[atom_1_index];  // coordination number of the central atom
 
-    HierarchicalKahanAccumulator energy_accumulator, dE_dCN_accumulator;
-    HierarchicalKahanAccumulator force_accumulators[3];
-    HierarchicalKahanAccumulator stress_accumulators[9];
+    HierarchicalKahanAccumulator<1> energy_accumulator, dE_dCN_accumulator;
+    HierarchicalKahanAccumulator<3> force_accumulators;
+    HierarchicalKahanAccumulator<9> stress_accumulators;
     energy_accumulator.init();
     dE_dCN_accumulator.init();
-    for (int i = 0; i < 3; ++i) {
-        force_accumulators[i].init();
-    }
-    for (int i = 0; i < 9; ++i) {
-        stress_accumulators[i].init();
-    }
+    force_accumulators.init();
+    stress_accumulators.init();
 
     // prefetch and calculate necessary variables during calculation
     const real_t cell_volume = calculate_cell_volume(data->cell); // volume of the cell
@@ -713,30 +717,33 @@ __global__ void two_body_kernel(device_data_t* data) {
                 force += s8 * c8_ab / distance_8 * d_f_dn_8 / distance;  // dE_8/dr * 1/r
 
                 // accumulate the energy, force, stress and dE/dCN using hierarchical Kahan summation
-                energy_accumulator.add(dispersion_energy);
-                dE_dCN_accumulator.add(dE_dCN);
+                energy_accumulator.add(&dispersion_energy);
+                dE_dCN_accumulator.add(&dE_dCN);
+                real_t force_contribution[3] = {0.0f, 0.0f, 0.0f};
                 for (uint8_t i = 0; i < 3; ++i) {
-                    force_accumulators[i].add(force * delta_r[i]);
+                    force_contribution[i] = force * delta_r[i];
                 }
+                real_t stress_contribution[9];
                 for (uint8_t i = 0; i < 3; ++i) {
                     for (uint8_t j = 0; j < 3; ++j) {
-                        stress_accumulators[i * 3 + j].add(-1.0f * delta_r[i] * force * delta_r[j] / 2.0f / cell_volume);
+                        stress_contribution[i * 3 + j] = -1.0f * delta_r[i] * force * delta_r[j] / 2.0f / cell_volume;
                     }
                 }
+                force_accumulators.add(force_contribution);
+                stress_accumulators.add(stress_contribution);
             }
         }
     }
 
-    real_t local_dE_dCN = dE_dCN_accumulator.get_sum();
-    real_t local_energ = energy_accumulator.get_sum();
+    real_t local_dE_dCN;
+    real_t local_energ;
     real_t local_stress[9];
-    for (int i = 0; i < 9; ++i) {
-        local_stress[i] = stress_accumulators[i].get_sum();
-    }
     real_t local_force[3];
-    for (int i = 0; i < 3; ++i) {
-        local_force[i] = force_accumulators[i].get_sum();
-    }
+    dE_dCN_accumulator.get_sum(&local_dE_dCN);
+    energy_accumulator.get_sum(&local_energ);
+    force_accumulators.get_sum(local_force);
+    stress_accumulators.get_sum(local_stress);
+
     real_t dE_dCN_sum = 0;  // sum of dE/dCN across the block
     real_t energy_sum = 0;  // sum of energy across the block
     real_t force_central_sum[3] = {0.0f};  // sum of force of central atom across the block
@@ -788,14 +795,10 @@ __global__ void three_body_kernel(device_data_t* data) {
     uint64_t atom_1_type = data->atom_types[atom_1_index];  // type of the central atom
     real_t covalent_radii_1 = data->rcov[atom_1_type];  // covalent radius of the central atom
 
-    HierarchicalKahanAccumulator force_accumulators[3];
-    HierarchicalKahanAccumulator stress_accumulators[9];
-    for (int i = 0; i < 3; ++i) {
-        force_accumulators[i].init();
-    }
-    for (int i = 0; i < 9; ++i) {
-        stress_accumulators[i].init();
-    }
+    HierarchicalKahanAccumulator<3> force_accumulators;
+    HierarchicalKahanAccumulator<9> stress_accumulators;
+    force_accumulators.init();
+    stress_accumulators.init();
 
     uint64_t total_cell_bias = data->max_cell_bias[0] * data->max_cell_bias[1] * data->max_cell_bias[2];  // total number of cell biases
     const uint64_t mcb0 = data->max_cell_bias[0];  // maximum cell bias in x direction
@@ -869,12 +872,16 @@ __global__ void three_body_kernel(device_data_t* data) {
                 // accumulate force for the central atom and neighboring atom
                 // force_central += dE/drik * delta_r
                 // use Kahan summation to improve numerical stability
+                real_t force_contribution[3];
+                real_t stress_contribution[9];
                 for (uint8_t i = 0; i < 3; ++i) {
-                    force_accumulators[i].add(dE_drik * delta_r[i]);
+                    force_contribution[i] = (dE_drik * delta_r[i]);
                     for (uint8_t j = 0; j < 3; ++j) {
-                        stress_accumulators[i * 3 + j].add(-1.0f * delta_r[i] * dE_drik * delta_r[j]);
+                        stress_contribution[i * 3 + j] = (-1.0f * delta_r[i] * dE_drik * delta_r[j]);
                     }
                 }
+                force_accumulators.add(force_contribution);
+                stress_accumulators.add(stress_contribution);
             }
         }
     }
@@ -882,12 +889,9 @@ __global__ void three_body_kernel(device_data_t* data) {
     // accumulate force of central atom and stress
     real_t local_force_sum[3];
     real_t local_stress_sum[9];
-    for (int i = 0; i < 3; ++i) {
-        local_force_sum[i] = force_accumulators[i].get_sum();
-        for (int j = 0; j < 3; ++j) {
-            local_stress_sum[i * 3 + j] = stress_accumulators[i * 3 + j].get_sum();
-        }
-    }
+    force_accumulators.get_sum(local_force_sum);
+    stress_accumulators.get_sum(local_stress_sum);
+    
     real_t force_central_sum[3] = {0.0f};  // force sum for the central atom across the block
     real_t stress_sum[9] = {0.0f};  // stress sum across the block
     blockReduceSumThreeBodyKernel(local_force_sum, local_stress_sum, force_central_sum, stress_sum);
