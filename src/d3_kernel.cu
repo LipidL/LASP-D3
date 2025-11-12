@@ -418,6 +418,41 @@ __device__ void distribute_workload(uint64_t num_atoms, uint64_t total_cell_bias
     }
 }
 
+__device__ inline void calculate_CN(
+    atom_t atom_1, atom_t atom_2,
+    real_t covalent_radii_1, real_t covalent_radii_2,
+    real_t CN_cutoff,
+    HierarchicalKahanAccumulator<1> &CN_accumulator,
+    HierarchicalKahanAccumulator<3> &dCN_dr_accumulator
+)
+{
+    real_t delta_r[3] = {
+        atom_1.x - atom_2.x,  // delta x
+        atom_1.y - atom_2.y,  // delta y
+        atom_1.z - atom_2.z   // delta z
+    }; // delta_r between atom 1 and atom 2
+    // calculate the distance between the two atoms
+    real_t distance = sqrtf(powf(atom_1.x - atom_2.x, 2) + powf(atom_1.y - atom_2.y, 2) + powf(atom_1.z - atom_2.z, 2));
+    // if the distance is within cutoff range, calculate the coordination number
+    if (distance <= CN_cutoff && distance > 0.0f) {
+        real_t exp = expf(-K1 * ((covalent_radii_1 + covalent_radii_2) / distance - 1.0f));  // $\exp(-k_1*(\frac{R_A+R_b}{r_{ab}}-1))$
+        // real_t tanh_value = tanhf(CN_cutoff - distance);  // $\tanh(CN_cutoff - r_{ab})$
+        // real_t smooth_cutoff = powf(tanh_value, 3);  // $\tanh^3(CN_cutoff- r_{ab}))$, this is a smooth cutoff function added in LASP code.
+        // real_t d_smooth_cutoff_dr = 3.0f * powf(tanh_value, 2) * (1.0f - powf(tanh_value, 2)) * (-1.0f);  // d(smooth_cutoff)/dr
+        real_t dCN_datom = powf(1.0f + exp, -2.0f) * (-K1) * exp * (covalent_radii_1 + covalent_radii_2) * powf(distance, -3.0f); // * smooth_cutoff + d_smooth_cutoff_dr * 1.0f / (1.0f + exp) / distance;  // dCN_ij/dr_ij * 1/r_ij
+
+        // the covalent radii table have already taken K2 coefficient into consideration
+        real_t coordination_number = 1.0f / (1.0f + exp); // * smooth_cutoff;
+        // accumulate coordination number and dCN/dr using Kahan summation with batching
+        CN_accumulator.add(&coordination_number);
+        real_t dCN_dr_contribution[3] = {0.0f, 0.0f, 0.0f};
+        for (uint16_t i = 0; i < 3; ++i) {
+            dCN_dr_contribution[i] = dCN_datom * delta_r[i];
+        }
+        dCN_dr_accumulator.add(dCN_dr_contribution);
+    }
+}
+
 /**
  * @brief this kernel is used to compute the coordination number of each atom in
  * the system.
@@ -489,33 +524,14 @@ __global__ void coordination_number_kernel(device_data_t *data)
             atom_2.x += x_bias * cell[0][0] + y_bias * cell[1][0] + z_bias * cell[2][0];
             atom_2.y += x_bias * cell[0][1] + y_bias * cell[1][1] + z_bias * cell[2][1];
             atom_2.z += x_bias * cell[0][2] + y_bias * cell[1][2] + z_bias * cell[2][2];
-            real_t delta_r[3] = {
-                atom_1.x - atom_2.x, // delta x
-                atom_1.y - atom_2.y, // delta y
-                atom_1.z - atom_2.z  // delta z
-            }; // delta_r between atom 1 and atom 2
-            // calculate the distance between the two atoms
-            real_t distance = sqrtf(powf(atom_1.x - atom_2.x, 2) + powf(atom_1.y - atom_2.y, 2) + powf(atom_1.z - atom_2.z, 2));
-            // if the distance is within cutoff range, calculate the coordination number
-            if (distance <= CN_cutoff && distance > 0.0f)
-            {
-                real_t exp = expf(-K1 * ((covalent_radii_1 + covalent_radii_2) / distance - 1.0f)); // $\exp(-k_1*(\frac{R_A+R_b}{r_{ab}}-1))$
-                // real_t tanh_value = tanhf(CN_cutoff - distance);  // $\tanh(CN_cutoff - r_{ab})$
-                // real_t smooth_cutoff = powf(tanh_value, 3);  // $\tanh^3(CN_cutoff- r_{ab}))$, this is a smooth cutoff function added in LASP code.
-                // real_t d_smooth_cutoff_dr = 3.0f * powf(tanh_value, 2) * (1.0f - powf(tanh_value, 2)) * (-1.0f);  // d(smooth_cutoff)/dr
-                real_t dCN_datom = powf(1.0f + exp, -2.0f) * (-K1) * exp * (covalent_radii_1 + covalent_radii_2) * powf(distance, -3.0f); // * smooth_cutoff + d_smooth_cutoff_dr * 1.0f / (1.0f + exp) / distance;  // dCN_ij/dr_ij * 1/r_ij
 
-                // the covalent radii table have already taken K2 coefficient into consideration
-                real_t coordination_number = 1.0f / (1.0f + exp); // * smooth_cutoff;
-                // accumulate coordination number and dCN/dr using Kahan summation with batching
-                CN_accumulator.add(&coordination_number);
-                real_t dCN_dr_contribution[3] = {0.0f, 0.0f, 0.0f};
-                for (uint16_t i = 0; i < 3; ++i)
-                {
-                    dCN_dr_contribution[i] = dCN_datom * delta_r[i];
-                }
-                dCN_dr_accumulators.add(dCN_dr_contribution);
-            }
+            calculate_CN(
+                atom_1, atom_2,
+                covalent_radii_1, covalent_radii_2,
+                CN_cutoff,
+                CN_accumulator,
+                dCN_dr_accumulators
+            );
         }
     }
 
@@ -552,6 +568,100 @@ __global__ void print_coordination_number_kernel(device_data_t *data)
                    data->coordination_numbers[i]);
         }
     }
+}
+
+__device__ inline void calculate_c6ab(
+    device_data_t *data,
+    uint64_t atom_1_type, uint64_t atom_2_type,
+    real_t coordination_number_1, real_t coordination_number_2,
+    real_t &c6_ab_result, real_t &dC6_dCN_1_result)
+{
+    /** calculate the coordination number based on 
+     * the equation comes from Grimme et al. 2010, eq 16.
+     * formula: $C_6^{ij} = Z/W$
+     * where $Z = \sum_{a,b}C_{6,ref}^{i,j}L_{a,b}$
+     * $W = \sum_{a,b}L_{a,b}$
+     * $L_{a,b} = \exp(-k3((CN^A-CN^A_{ref,a})^2 + (CN^B-CN^B_{ref,b})^2))$
+     */
+    real_t max_exponent_arg = -FLT_MAX;  // maximum exponent argument for L_ij
+    for (uint8_t i = 0; i < NUM_REF_C6; ++i) {
+        for (uint8_t j = 0; j < NUM_REF_C6; ++j) {
+            // find the C6ref
+            uint32_t index = atom_1_type * data->c6_stride_1 +
+                                atom_2_type * data->c6_stride_2 + 
+                                i * data->c6_stride_3 +
+                                j * data->c6_stride_4;
+            // these entries could be -1.0f if they are not valid, but at least one should be valid
+            real_t coordination_number_ref_1 = data->c6_ab_ref[index + 1];
+            real_t coordination_number_ref_2 = data->c6_ab_ref[index + 2];
+            if (coordination_number_ref_1 > -1.0f &&
+                coordination_number_ref_2 > -1.0f) {
+                // if both coordination numbers are valid, we can use them
+                const real_t delta_CN_1 = coordination_number_1 - coordination_number_ref_1;
+                const real_t delta_CN_2 = coordination_number_2 - coordination_number_ref_2;
+                const real_t exponent_arg = -K3 * (delta_CN_1 * delta_CN_1 + delta_CN_2 * delta_CN_2);
+                max_exponent_arg =
+                    (max_exponent_arg > exponent_arg)
+                        ? max_exponent_arg
+                        : exponent_arg;  // update the maximum exponent argument
+            }
+        }
+    }
+    // calculate C6 value
+    real_t Z = 0.0f;
+    real_t W = 0.0f;
+    real_t c_ref_L_ij = 0.0f; // C6ab_ref * L_ij
+    real_t c_ref_dL_ij_1 = 0.0f; // C6ab_ref * dL_ij/dCN_1
+    real_t dL_ij_1 = 0.0f; // dL_ij/dCN_1
+    for (uint8_t i = 0; i < NUM_REF_C6; ++i) {
+        for (uint8_t j = 0; j < NUM_REF_C6; ++j) {
+            // find the C6ref
+            uint32_t index = atom_1_type * data->c6_stride_1 +
+                                atom_2_type * data->c6_stride_2 + 
+                                i * data->c6_stride_3 +
+                                j * data->c6_stride_4;
+            real_t c6_ref = data->c6_ab_ref[index + 0];
+            // these entries could be -1.0f if they are not valid, but at least one should be valid
+            real_t coordination_number_ref_1 = data->c6_ab_ref[index + 1];
+            real_t coordination_number_ref_2 = data->c6_ab_ref[index + 2];
+            if (coordination_number_ref_1 > -1.0f &&
+                coordination_number_ref_2 > -1.0f) {
+                // if both coordination numbers are valid, we can use them
+                const real_t delta_CN_1 = coordination_number_1 - coordination_number_ref_1;
+                const real_t delta_CN_2 = coordination_number_2 - coordination_number_ref_2;
+                const real_t exponent_arg = -K3 * (delta_CN_1 * delta_CN_1 + delta_CN_2 * delta_CN_2);
+                const real_t L_ij = expf(exponent_arg - max_exponent_arg);  // normalized the L_ij value
+                real_t dL_ij_1_part = -2.0f * K3 * (coordination_number_1 - coordination_number_ref_1) * L_ij;  // part of dL_ij/dCN_1 contributed by the current valid term
+                Z += c6_ref * L_ij;
+                W += L_ij;
+                c_ref_L_ij += c6_ref * L_ij;
+                c_ref_dL_ij_1 += c6_ref * dL_ij_1_part;
+                dL_ij_1 += dL_ij_1_part;
+            }
+        }
+    }
+
+    // avoid division by zero
+    real_t dC6ab_dCN_1 =
+        (W * W > 0.0f)
+            ? (c_ref_dL_ij_1 * W - c_ref_L_ij * dL_ij_1) / (W * W)
+            : 0.0f; // dC6ab/dCN_1
+    if (isnan(dC6ab_dCN_1) || isinf(dC6ab_dCN_1)) {
+        // NaN or inf encountered, bad result
+        printf("Error: dC6ab/dCN_1 is NaN or Inf\n");
+        printf("Z: %f, W: %f, c_ref_L_ij: %f, c_ref_dL_ij_1: %f, dL_ij_1: %f\n", Z, W, c_ref_L_ij, c_ref_dL_ij_1, dL_ij_1);
+        dC6ab_dCN_1 = 0.0f;  // reset to 0.0f if it's NaN or Inf
+    }
+    dC6_dCN_1_result = dC6ab_dCN_1;
+
+    // avoid division by zero
+    real_t c6_ab = (W > 0.0f) ? Z / W : 0.0f;   // C6_ab value between atom 1 and 2
+    if (isnan(c6_ab) || isinf(c6_ab)) {
+        printf("Error: C6_ab is NaN or Inf\n");
+        printf("Z: %f, W: %f, c_ref_L_ij: %f, c_ref_dL_ij_1: %f, dL_ij_1: %f\n", Z, W, c_ref_L_ij, c_ref_dL_ij_1, dL_ij_1);
+        c6_ab = 0.0f;  // reset to 0.0f if it's NaN or Inf
+    }
+    c6_ab_result = c6_ab;
 }
 
 __device__ inline void calculate_two_body_interaction(
@@ -721,98 +831,13 @@ __global__ void two_body_kernel(device_data_t *data)
         const uint64_t atom_2_type = data->atom_types[atom_2_index];                   // type of the surrounding atom
         const real_t coordination_number_2 = data->coordination_numbers[atom_2_index]; // coordination number of the surrounding atom
 
-        /** calculate the coordination number based on
-         * the equation comes from Grimme et al. 2010, eq 16.
-         * formula: $C_6^{ij} = Z/W$
-         * where $Z = \sum_{a,b}C_{6,ref}^{i,j}L_{a,b}$
-         * $W = \sum_{a,b}L_{a,b}$
-         * $L_{a,b} = \exp(-k3((CN^A-CN^A_{ref,a})^2 + (CN^B-CN^B_{ref,b})^2))$
-         */
-        real_t max_exponent_arg = -FLT_MAX; // maximum exponent argument for L_ij
-        for (uint8_t i = 0; i < NUM_REF_C6; ++i)
-        {
-            for (uint8_t j = 0; j < NUM_REF_C6; ++j)
-            {
-                // find the C6ref
-                uint32_t index = atom_1_type * data->c6_stride_1 +
-                                 atom_2_type * data->c6_stride_2 +
-                                 i * data->c6_stride_3 +
-                                 j * data->c6_stride_4;
-                // these entries could be -1.0f if they are not valid, but at least one should be valid
-                real_t coordination_number_ref_1 = data->c6_ab_ref[index + 1];
-                real_t coordination_number_ref_2 = data->c6_ab_ref[index + 2];
-                if (coordination_number_ref_1 > -1.0f &&
-                    coordination_number_ref_2 > -1.0f)
-                {
-                    // if both coordination numbers are valid, we can use them
-                    const real_t delta_CN_1 = coordination_number_1 - coordination_number_ref_1;
-                    const real_t delta_CN_2 = coordination_number_2 - coordination_number_ref_2;
-                    const real_t exponent_arg = -K3 * (delta_CN_1 * delta_CN_1 + delta_CN_2 * delta_CN_2);
-                    max_exponent_arg =
-                        (max_exponent_arg > exponent_arg)
-                            ? max_exponent_arg
-                            : exponent_arg; // update the maximum exponent argument
-                }
-            }
-        }
-        // calculate C6 value
-        real_t Z = 0.0f;
-        real_t W = 0.0f;
-        real_t c_ref_L_ij = 0.0f;    // C6ab_ref * L_ij
-        real_t c_ref_dL_ij_1 = 0.0f; // C6ab_ref * dL_ij/dCN_1
-        real_t dL_ij_1 = 0.0f;       // dL_ij/dCN_1
-        for (uint8_t i = 0; i < NUM_REF_C6; ++i)
-        {
-            for (uint8_t j = 0; j < NUM_REF_C6; ++j)
-            {
-                // find the C6ref
-                uint32_t index = atom_1_type * data->c6_stride_1 +
-                                 atom_2_type * data->c6_stride_2 +
-                                 i * data->c6_stride_3 +
-                                 j * data->c6_stride_4;
-                real_t c6_ref = data->c6_ab_ref[index + 0];
-                // these entries could be -1.0f if they are not valid, but at least one should be valid
-                real_t coordination_number_ref_1 = data->c6_ab_ref[index + 1];
-                real_t coordination_number_ref_2 = data->c6_ab_ref[index + 2];
-                if (coordination_number_ref_1 > -1.0f &&
-                    coordination_number_ref_2 > -1.0f)
-                {
-                    // if both coordination numbers are valid, we can use them
-                    const real_t delta_CN_1 = coordination_number_1 - coordination_number_ref_1;
-                    const real_t delta_CN_2 = coordination_number_2 - coordination_number_ref_2;
-                    const real_t exponent_arg = -K3 * (delta_CN_1 * delta_CN_1 + delta_CN_2 * delta_CN_2);
-                    const real_t L_ij = expf(exponent_arg - max_exponent_arg);                                     // normalized the L_ij value
-                    real_t dL_ij_1_part = -2.0f * K3 * (coordination_number_1 - coordination_number_ref_1) * L_ij; // part of dL_ij/dCN_1 contributed by the current valid term
-                    Z += c6_ref * L_ij;
-                    W += L_ij;
-                    c_ref_L_ij += c6_ref * L_ij;
-                    c_ref_dL_ij_1 += c6_ref * dL_ij_1_part;
-                    dL_ij_1 += dL_ij_1_part;
-                }
-            }
-        }
-
-        // avoid division by zero
-        real_t dC6ab_dCN_1 =
-            (W * W > 0.0f)
-                ? (c_ref_dL_ij_1 * W - c_ref_L_ij * dL_ij_1) / (W * W)
-                : 0.0f; // dC6ab/dCN_1
-        if (isnan(dC6ab_dCN_1) || isinf(dC6ab_dCN_1))
-        {
-            // NaN or inf encountered, bad result
-            printf("Error: dC6ab/dCN_1 is NaN or Inf for atom pair (%llu, %llu)\n", atom_1_index, atom_2_index);
-            printf("Z: %f, W: %f, c_ref_L_ij: %f, c_ref_dL_ij_1: %f, dL_ij_1: %f\n", Z, W, c_ref_L_ij, c_ref_dL_ij_1, dL_ij_1);
-            dC6ab_dCN_1 = 0.0f; // reset to 0.0f if it's NaN or Inf
-        }
-
-        // avoid division by zero
-        real_t c6_ab = (W > 0.0f) ? Z / W : 0.0f; // C6_ab value between atom 1 and 2
-        if (isnan(c6_ab) || isinf(c6_ab))
-        {
-            printf("Error: C6_ab is NaN or Inf for atom pair (%llu, %llu)\n", atom_1_index, atom_2_index);
-            printf("Z: %f, W: %f, c_ref_L_ij: %f, c_ref_dL_ij_1: %f, dL_ij_1: %f\n", Z, W, c_ref_L_ij, c_ref_dL_ij_1, dL_ij_1);
-            c6_ab = 0.0f; // reset to 0.0f if it's NaN or Inf
-        }
+        real_t c6_ab, dC6ab_dCN_1;
+        calculate_c6ab(
+            data,
+            atom_1_type, atom_2_type,
+            coordination_number_1, coordination_number_2,
+            c6_ab, dC6ab_dCN_1
+        );
 
         // calculate c8_ab by $C_8^{AB} = 3C_6^{AB}\sqrt{Q^AQ^B}$
         // the values in data->r2r4 is already squared
