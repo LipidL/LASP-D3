@@ -876,6 +876,11 @@ __global__ void two_body_kernel(device_data_t *data)
     const uint64_t atom_1_type = data->atom_types[atom_1_index];                   // type of the central atom
     const atom_t atom_1 = data->atoms[atom_1_index];                               // central atom
     const real_t coordination_number_1 = data->coordination_numbers[atom_1_index]; // coordination number of the central atom
+    const real_t cell_volume = calculate_cell_volume(data->cell); // volume of the cell
+    const real_t cell[3][3] = {
+        {data->cell[0][0], data->cell[0][1], data->cell[0][2]},
+        {data->cell[1][0], data->cell[1][1], data->cell[1][2]},
+        {data->cell[2][0], data->cell[2][1], data->cell[2][2]}}; // cell matrix
 
     HierarchicalKahanAccumulator<1> energy_accumulator, dE_dCN_accumulator;
     HierarchicalKahanAccumulator<3> force_accumulators;
@@ -885,113 +890,182 @@ __global__ void two_body_kernel(device_data_t *data)
     force_accumulators.init();
     stress_accumulators.init();
 
-    // prefetch and calculate necessary variables during calculation
-    const real_t cell_volume = calculate_cell_volume(data->cell); // volume of the cell
-    const uint64_t mcb0 = data->max_cell_bias[0];                 // maximum cell bias in x direction
-    const uint64_t mcb1 = data->max_cell_bias[1];                 // maximum cell bias in y direction
-    const uint64_t mcb2 = data->max_cell_bias[2];                 // maximum cell bias in z direction
-    const uint64_t total_cell_bias = mcb0 * mcb1 * mcb2;          // total number of cell bias
-    const real_t cell[3][3] = {
-        {data->cell[0][0], data->cell[0][1], data->cell[0][2]},
-        {data->cell[1][0], data->cell[1][1], data->cell[1][2]},
-        {data->cell[2][0], data->cell[2][1], data->cell[2][2]}}; // cell matrix
+    switch (data->workload_distribution_type) {
+        case CELL_LIST:
+            // each thread process a few atoms in neighboring cells and all bias indices
+            __shared__ uint64_t start_indices[27]; // start indices of atoms in neighboring cells
+            __shared__ uint64_t end_indices[27];   // end indices of atoms in neighboring cells
+            __shared__ int64_t neighbor_cells_shifts[27][3]; // shifts corresponding to the neighboring cells
+            calculate_neighboring_grids(
+                atom_1.home_grid_cell,
+                data->num_grid_cells,
+                data->grid_start_indices,
+                data->num_atoms,
+                start_indices,
+                end_indices,
+                neighbor_cells_shifts
+            );
 
-    // print some debug information
-    if (threadIdx.x == 0 && blockIdx.x == 0)
-    {
-        debug("Coordination number kernel launched with %llu atoms, cell: \n",
-              data->num_atoms);
-        for (int i = 0; i < 3; ++i)
-        {
-            for (int j = 0; j < 3; ++j)
-            {
-                debug("%f ", cell[i][j]);
+            for (uint8_t i = 0; i < 27; ++i) {
+                uint64_t start_index = start_indices[i];
+                uint64_t end_index = end_indices[i];
+                int64_t x_shift = neighbor_cells_shifts[i][0];
+                int64_t y_shift = neighbor_cells_shifts[i][1];
+                int64_t z_shift = neighbor_cells_shifts[i][2];
+                for (uint64_t atom_2_index = start_index + threadIdx.x; atom_2_index < end_index; atom_2_index += blockDim.x) {
+                    const atom_t atom_2_original = data->atoms[atom_2_index];                      // surrounding atom
+                    const uint64_t atom_2_type = data->atom_types[atom_2_index];                   // type of the surrounding atom
+                    const real_t coordination_number_2 = data->coordination_numbers[atom_2_index]; // coordination number of the surrounding atom
+
+                    real_t c6_ab, dC6ab_dCN_1;
+                    calculate_c6ab(
+                        data,
+                        atom_1_type, atom_2_type,
+                        coordination_number_1, coordination_number_2,
+                        c6_ab, dC6ab_dCN_1
+                    );
+
+                    // calculate c8_ab by $C_8^{AB} = 3C_6^{AB}\sqrt{Q^AQ^B}$
+                    // the values in data->r2r4 is already squared
+                    const real_t r2r4_1 = data->r2r4[atom_1_type];
+                    const real_t r2r4_2 = data->r2r4[atom_2_type];
+                    const real_t c8_ab = 3.0f * c6_ab * r2r4_1 * r2r4_2;             // C8ab value
+                    const real_t dC8ab_dCN_1 = 3.0f * dC6ab_dCN_1 * r2r4_1 * r2r4_2; // dC8ab/dCN_1
+                    // acquire the R0 cutoff radius between the two atoms
+                    const real_t r0_cutoff = data->r0ab[atom_1_type * data->num_elements + atom_2_type];
+
+                    atom_t atom_2 = atom_2_original; // the actual atom2 participated in the calculation
+                    // translate atom_2 due to periodic boundaries
+                    atom_2.x += x_shift * cell[0][0] + y_shift * cell[1][0] + z_shift * cell[2][0]; // translate in x direction
+                    atom_2.y += x_shift * cell[0][1] + y_shift * cell[1][1] + z_shift * cell[2][1]; // translate in y direction
+                    atom_2.z += x_shift * cell[0][2] + y_shift * cell[1][2] + z_shift * cell[2][2]; // translate in z direction
+                    switch (data->damping_type) {
+                    case ZERO_DAMPING:
+                        calculate_two_body_interaction(
+                            cell_volume,
+                            atom_1, atom_2,
+                            c6_ab, c8_ab,
+                            dC6ab_dCN_1, dC8ab_dCN_1,
+                            r0_cutoff, cutoff,
+                            ZERO_DAMPING,
+                            sr_6, sr_8,
+                            s6, s8,
+                            energy_accumulator,
+                            dE_dCN_accumulator,
+                            force_accumulators,
+                            stress_accumulators);
+                        break;
+                    case BJ_DAMPING:
+                        calculate_two_body_interaction(
+                            cell_volume,
+                            atom_1, atom_2,
+                            c6_ab, c8_ab,
+                            dC6ab_dCN_1, dC8ab_dCN_1,
+                            r0_cutoff, cutoff,
+                            BJ_DAMPING,
+                            a1, a2,
+                            s6, s8,
+                            energy_accumulator,
+                            dE_dCN_accumulator,
+                            force_accumulators,
+                            stress_accumulators);
+                        break;
+                    }
+                }
             }
-            debug("\n");
-        }
-        debug("max_cell_bias: %llu %llu %llu\n", mcb0, mcb1, mcb2);
+
+            break;
+        
+        case ALL_ITERATE:
+            // prefetch and calculate necessary variables during calculation
+            const uint64_t mcb0 = data->max_cell_bias[0];                 // maximum cell bias in x direction
+            const uint64_t mcb1 = data->max_cell_bias[1];                 // maximum cell bias in y direction
+            const uint64_t mcb2 = data->max_cell_bias[2];                 // maximum cell bias in z direction
+            const uint64_t total_cell_bias = mcb0 * mcb1 * mcb2;          // total number of cell bias
+
+            // distribute workload to threads
+            uint64_t start_index;      // start index for this thread
+            uint64_t end_index;        // end index for this thread
+            uint64_t start_bias_index; // start bias index for this thread
+            uint64_t end_bias_index;   // end bias index for this thread
+            distribute_workload(data->num_atoms, total_cell_bias, &start_index, &end_index, &start_bias_index, &end_bias_index);
+            // iterate over surrounding atoms
+            for (uint64_t atom_2_index = start_index; atom_2_index < end_index; ++atom_2_index)
+            {
+                const atom_t atom_2_original = data->atoms[atom_2_index];                      // surrounding atom
+                const uint64_t atom_2_type = data->atom_types[atom_2_index];                   // type of the surrounding atom
+                const real_t coordination_number_2 = data->coordination_numbers[atom_2_index]; // coordination number of the surrounding atom
+
+                real_t c6_ab, dC6ab_dCN_1;
+                calculate_c6ab(
+                    data,
+                    atom_1_type, atom_2_type,
+                    coordination_number_1, coordination_number_2,
+                    c6_ab, dC6ab_dCN_1
+                );
+
+                // calculate c8_ab by $C_8^{AB} = 3C_6^{AB}\sqrt{Q^AQ^B}$
+                // the values in data->r2r4 is already squared
+                const real_t r2r4_1 = data->r2r4[atom_1_type];
+                const real_t r2r4_2 = data->r2r4[atom_2_type];
+                const real_t c8_ab = 3.0f * c6_ab * r2r4_1 * r2r4_2;             // C8ab value
+                const real_t dC8ab_dCN_1 = 3.0f * dC6ab_dCN_1 * r2r4_1 * r2r4_2; // dC8ab/dCN_1
+                // acquire the R0 cutoff radius between the two atoms
+                const real_t r0_cutoff = data->r0ab[atom_1_type * data->num_elements + atom_2_type];
+                // loop over supercells
+                for (uint64_t bias_index = start_bias_index; bias_index < end_bias_index; ++bias_index)
+                {
+                    const int64_t x_bias = (bias_index % mcb0) - (mcb0 / 2);                 // x bias
+                    const int64_t y_bias = ((bias_index / mcb0) % mcb1) - (mcb1 / 2);        // y bias
+                    const int64_t z_bias = (bias_index / (mcb0 * mcb1) % mcb2) - (mcb2 / 2); // z bias
+                    assert_(atom_2_index < data->num_atoms);                                 // make sure the index is in bounds
+
+                    atom_t atom_2 = atom_2_original; // the actual atom2 participated in the calculation
+                    // translate atom_2 due to periodic boundaries
+                    atom_2.x += x_bias * cell[0][0] + y_bias * cell[1][0] + z_bias * cell[2][0]; // translate in x direction
+                    atom_2.y += x_bias * cell[0][1] + y_bias * cell[1][1] + z_bias * cell[2][1]; // translate in y direction
+                    atom_2.z += x_bias * cell[0][2] + y_bias * cell[1][2] + z_bias * cell[2][2]; // translate in z direction
+
+                    switch (data->damping_type)
+                    {
+                    case ZERO_DAMPING:
+                        calculate_two_body_interaction(
+                            cell_volume,
+                            atom_1, atom_2,
+                            c6_ab, c8_ab,
+                            dC6ab_dCN_1, dC8ab_dCN_1,
+                            r0_cutoff, cutoff,
+                            ZERO_DAMPING,
+                            sr_6, sr_8,
+                            s6, s8,
+                            energy_accumulator,
+                            dE_dCN_accumulator,
+                            force_accumulators,
+                            stress_accumulators);
+                        break;
+                    case BJ_DAMPING:
+                        calculate_two_body_interaction(
+                            cell_volume,
+                            atom_1, atom_2,
+                            c6_ab, c8_ab,
+                            dC6ab_dCN_1, dC8ab_dCN_1,
+                            r0_cutoff, cutoff,
+                            BJ_DAMPING,
+                            a1, a2,
+                            s6, s8,
+                            energy_accumulator,
+                            dE_dCN_accumulator,
+                            force_accumulators,
+                            stress_accumulators);
+                        break;
+                    default:
+                        break;
+                    }
+                }
+            }
+            break;
     }
 
-    // distribute workload to threads
-    uint64_t start_index;      // start index for this thread
-    uint64_t end_index;        // end index for this thread
-    uint64_t start_bias_index; // start bias index for this thread
-    uint64_t end_bias_index;   // end bias index for this thread
-    distribute_workload(data->num_atoms, total_cell_bias, &start_index, &end_index, &start_bias_index, &end_bias_index);
-    // iterate over surrounding atoms
-    for (uint64_t atom_2_index = start_index; atom_2_index < end_index; ++atom_2_index)
-    {
-        const atom_t atom_2_original = data->atoms[atom_2_index];                      // surrounding atom
-        const uint64_t atom_2_type = data->atom_types[atom_2_index];                   // type of the surrounding atom
-        const real_t coordination_number_2 = data->coordination_numbers[atom_2_index]; // coordination number of the surrounding atom
-
-        real_t c6_ab, dC6ab_dCN_1;
-        calculate_c6ab(
-            data,
-            atom_1_type, atom_2_type,
-            coordination_number_1, coordination_number_2,
-            c6_ab, dC6ab_dCN_1
-        );
-
-        // calculate c8_ab by $C_8^{AB} = 3C_6^{AB}\sqrt{Q^AQ^B}$
-        // the values in data->r2r4 is already squared
-        const real_t r2r4_1 = data->r2r4[atom_1_type];
-        const real_t r2r4_2 = data->r2r4[atom_2_type];
-        const real_t c8_ab = 3.0f * c6_ab * r2r4_1 * r2r4_2;             // C8ab value
-        const real_t dC8ab_dCN_1 = 3.0f * dC6ab_dCN_1 * r2r4_1 * r2r4_2; // dC8ab/dCN_1
-        // acquire the R0 cutoff radius between the two atoms
-        const real_t r0_cutoff = data->r0ab[atom_1_type * data->num_elements + atom_2_type];
-        // loop over supercells
-        for (uint64_t bias_index = start_bias_index; bias_index < end_bias_index; ++bias_index)
-        {
-            const int64_t x_bias = (bias_index % mcb0) - (mcb0 / 2);                 // x bias
-            const int64_t y_bias = ((bias_index / mcb0) % mcb1) - (mcb1 / 2);        // y bias
-            const int64_t z_bias = (bias_index / (mcb0 * mcb1) % mcb2) - (mcb2 / 2); // z bias
-            assert_(atom_2_index < data->num_atoms);                                 // make sure the index is in bounds
-
-            atom_t atom_2 = atom_2_original; // the actual atom2 participated in the calculation
-            // translate atom_2 due to periodic boundaries
-            atom_2.x += x_bias * cell[0][0] + y_bias * cell[1][0] + z_bias * cell[2][0]; // translate in x direction
-            atom_2.y += x_bias * cell[0][1] + y_bias * cell[1][1] + z_bias * cell[2][1]; // translate in y direction
-            atom_2.z += x_bias * cell[0][2] + y_bias * cell[1][2] + z_bias * cell[2][2]; // translate in z direction
-
-            switch (data->damping_type)
-            {
-            case ZERO_DAMPING:
-                calculate_two_body_interaction(
-                    cell_volume,
-                    atom_1, atom_2,
-                    c6_ab, c8_ab,
-                    dC6ab_dCN_1, dC8ab_dCN_1,
-                    r0_cutoff, cutoff,
-                    ZERO_DAMPING,
-                    sr_6, sr_8,
-                    s6, s8,
-                    energy_accumulator,
-                    dE_dCN_accumulator,
-                    force_accumulators,
-                    stress_accumulators);
-                break;
-            case BJ_DAMPING:
-                calculate_two_body_interaction(
-                    cell_volume,
-                    atom_1, atom_2,
-                    c6_ab, c8_ab,
-                    dC6ab_dCN_1, dC8ab_dCN_1,
-                    r0_cutoff, cutoff,
-                    BJ_DAMPING,
-                    a1, a2,
-                    s6, s8,
-                    energy_accumulator,
-                    dE_dCN_accumulator,
-                    force_accumulators,
-                    stress_accumulators);
-                break;
-            default:
-                break;
-            }
-        }
-    }
 
     real_t local_dE_dCN;
     real_t local_energ;
@@ -1123,58 +1197,91 @@ __global__ void three_body_kernel(device_data_t *data)
         {data->cell[1][0], data->cell[1][1], data->cell[1][2]},
         {data->cell[2][0], data->cell[2][1], data->cell[2][2]}}; // local cell matrix
     const real_t CN_cutoff = data->coordination_number_cutoff;
-    // print some debug information
-    if (threadIdx.x == 0 && blockIdx.x == 0)
-    {
-        debug("Coordination number kernel launched with %llu atoms, cell: \n", data->num_atoms);
-        for (int i = 0; i < 3; ++i)
-        {
-            for (int j = 0; j < 3; ++j)
-            {
-                debug("%f ", cell[i][j]);
-            }
-            debug("\n");
-        }
-        debug("max_cell_bias: %llu %llu %llu\n", mcb0, mcb1, mcb2);
-    }
-    // distribute workload
-    uint64_t start_index;
-    uint64_t end_index;
-    uint64_t start_bias_index;
-    uint64_t end_bias_index;
-    distribute_workload(data->num_atoms, total_cell_bias, &start_index, &end_index, &start_bias_index, &end_bias_index);
 
-    // iterate over surrounding atoms
-    for (uint64_t atom_2_index = start_index; atom_2_index < end_index; ++atom_2_index)
-    {
-        real_t dE_dCN = data->dE_dCN[atom_2_index];                           // dE/dCN of the surrounding atom
-        atom_t atom_2_original = data->atoms[atom_2_index];                   // original surrounding atom before translation
-        real_t covalent_radii_2 = data->rcov[data->atom_types[atom_2_index]]; // covalent radii of the surrounding atom
-
-        // iterate over cell biases
-        for (uint64_t bias_index = start_bias_index; bias_index < end_bias_index; ++bias_index)
-        {
-            int64_t x_bias = (bias_index % mcb0) - (mcb0 / 2);                 // x bias
-            int64_t y_bias = ((bias_index / mcb0) % mcb1) - (mcb1 / 2);        // y bias
-            int64_t z_bias = (bias_index / (mcb0 * mcb1) % mcb2) - (mcb2 / 2); // z bias
-            assert_(atom_2_index < data->num_atoms);                           // make sure the index is in bounds
-
-            atom_t atom_2 = atom_2_original;
-            // translate atom_2 due to periodic boundaries
-            atom_2.x += x_bias * cell[0][0] + y_bias * cell[1][0] + z_bias * cell[2][0];  // translate in x direction
-            atom_2.y += x_bias * cell[0][1] + y_bias * cell[1][1] + z_bias * cell[2][1];  // translate in y direction
-            atom_2.z += x_bias * cell[0][2] + y_bias * cell[1][2] + z_bias * cell[2][2];  // translate in z direction
-
-            calculate_three_body_interaction(
-                atom_1, atom_2,
-                covalent_radii_1, covalent_radii_2,
-                CN_cutoff,
-                dE_dCN,
-                force_accumulators,
-                stress_accumulators
+    switch (data->workload_distribution_type) {
+        case CELL_LIST:
+            // each thread process a few atoms in neighboring cells and all bias indices
+            __shared__ uint64_t start_indices[27]; // start indices of atoms in neighboring cells
+            __shared__ uint64_t end_indices[27];   // end indices of atoms in neighboring cells
+            __shared__ int64_t neighbor_cells_shifts[27][3]; // shifts corresponding to the neighboring cells
+            calculate_neighboring_grids(
+                atom_1.home_grid_cell,
+                data->num_grid_cells,
+                data->grid_start_indices,
+                data->num_atoms,
+                start_indices,
+                end_indices,
+                neighbor_cells_shifts
             );
 
-        }
+            for (uint8_t i = 0; i < 27; ++i) {
+                uint64_t start_index = start_indices[i];
+                uint64_t end_index = end_indices[i];
+                int64_t x_shift = neighbor_cells_shifts[i][0];
+                int64_t y_shift = neighbor_cells_shifts[i][1];
+                int64_t z_shift = neighbor_cells_shifts[i][2];
+                for (uint64_t atom_2_index = start_index + threadIdx.x; atom_2_index < end_index; atom_2_index += blockDim.x) {
+                    real_t dE_dCN = data->dE_dCN[atom_2_index]; // dE/dCN of the surrounding atom
+                    atom_t atom_2_original = data->atoms[atom_2_index]; // surrounding atom without supercell translation
+                    real_t covalent_radii_2 = data->rcov[data->atom_types[atom_2_index]]; // covalent radii of the surrounding atom
+
+                    atom_t atom_2 = atom_2_original;
+                    // translate atom_2 due to periodic boundaries
+                    atom_2.x += x_shift * cell[0][0] + y_shift * cell[1][0] + z_shift * cell[2][0];
+                    atom_2.y += x_shift * cell[0][1] + y_shift * cell[1][1] + z_shift * cell[2][1];
+                    atom_2.z += x_shift * cell[0][2] + y_shift * cell[1][2] + z_shift * cell[2][2];
+
+                    calculate_three_body_interaction(
+                        atom_1, atom_2,
+                        covalent_radii_1, covalent_radii_2,
+                        CN_cutoff,
+                        dE_dCN,
+                        force_accumulators,
+                        stress_accumulators
+                    );
+                }
+            }
+            break;
+        case ALL_ITERATE:
+            uint64_t start_index;
+            uint64_t end_index;
+            uint64_t start_bias_index;
+            uint64_t end_bias_index;
+            distribute_workload(data->num_atoms, total_cell_bias, &start_index, &end_index, &start_bias_index, &end_bias_index);
+
+            // iterate over surrounding atoms
+            for (uint64_t atom_2_index = start_index; atom_2_index < end_index; ++atom_2_index)
+            {
+                real_t dE_dCN = data->dE_dCN[atom_2_index];                           // dE/dCN of the surrounding atom
+                atom_t atom_2_original = data->atoms[atom_2_index];                   // original surrounding atom before translation
+                real_t covalent_radii_2 = data->rcov[data->atom_types[atom_2_index]]; // covalent radii of the surrounding atom
+
+                // iterate over cell biases
+                for (uint64_t bias_index = start_bias_index; bias_index < end_bias_index; ++bias_index)
+                {
+                    int64_t x_bias = (bias_index % mcb0) - (mcb0 / 2);                 // x bias
+                    int64_t y_bias = ((bias_index / mcb0) % mcb1) - (mcb1 / 2);        // y bias
+                    int64_t z_bias = (bias_index / (mcb0 * mcb1) % mcb2) - (mcb2 / 2); // z bias
+                    assert_(atom_2_index < data->num_atoms);                           // make sure the index is in bounds
+
+                    atom_t atom_2 = atom_2_original;
+                    // translate atom_2 due to periodic boundaries
+                    atom_2.x += x_bias * cell[0][0] + y_bias * cell[1][0] + z_bias * cell[2][0];  // translate in x direction
+                    atom_2.y += x_bias * cell[0][1] + y_bias * cell[1][1] + z_bias * cell[2][1];  // translate in y direction
+                    atom_2.z += x_bias * cell[0][2] + y_bias * cell[1][2] + z_bias * cell[2][2];  // translate in z direction
+
+                    calculate_three_body_interaction(
+                        atom_1, atom_2,
+                        covalent_radii_1, covalent_radii_2,
+                        CN_cutoff,
+                        dE_dCN,
+                        force_accumulators,
+                        stress_accumulators
+                    );
+
+                }
+            }            
+            break;
     }
 
     // accumulate force of central atom and stress
