@@ -163,7 +163,12 @@ __host__ Device_Buffer::Device_Buffer(
         this->host_data_.num_elements = unique_elements.num_elements; // number of unique elements in the system
 
         uint64_t *h_atom_types = (uint64_t *)malloc(sizeof(uint64_t) * length);
-        for (uint64_t i = 0; i < length; ++i) {
+        if (h_atom_types == NULL)
+        {
+            throw std::runtime_error("Error: failed to allocate host memory for atom types");
+        }
+        for (uint64_t i = 0; i < length; ++i)
+        {
             h_atom_types[i] = unique_elements.find(elements[i]);
         }
 
