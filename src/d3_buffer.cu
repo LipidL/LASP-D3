@@ -1,6 +1,7 @@
 #include <assert.h>
 
 #include <cmath>
+#include <stdexcept>
 
 #include "d3_buffer.cuh"
 #include "d3_internal.h"
@@ -71,18 +72,16 @@ void calculate_cell_repeats(real_t cell[3][3], real_t cutoff,
     }
 }
 
-// implementations for UniqueElements class
 Unique_Elements::Unique_Elements(uint16_t* elements, uint16_t length) {
     uint16_t* all_elements = (uint16_t*)malloc(MAX_ELEMENTS * sizeof(uint16_t));
     memset(all_elements, 0, MAX_ELEMENTS * sizeof(uint16_t));  // initialize all elements to 0
     this->num_elements = 0;
     /* bucket sort */
     for (uint16_t i = 0; i < length; ++i) {
+        // check that no element number exceed MAX_ELEMENTS
         if (elements[i] >= MAX_ELEMENTS) {
-            /* check that no element number exceed MAX_LEMENTS */
-            fprintf(stderr, "Error: element %d is out of range\n", elements[i]);
             free(all_elements);
-            exit(EXIT_FAILURE);
+            throw std::runtime_error("Error: element exceeds maximum allowed value");
         }
         if (all_elements[elements[i]] == 0) {
             this->num_elements++;
@@ -97,27 +96,31 @@ Unique_Elements::Unique_Elements(uint16_t* elements, uint16_t length) {
             index++;
         }
     }
-    assert_(index == this->num_elements);  // check if the number of unique
-                                           // elements is correct
-    free(all_elements);                    // free the temporary array
+    // sanity check
+    if (index != this->num_elements) {
+        free(this->elements_);
+        free(all_elements);
+        throw std::runtime_error("Error: failed to construct unique elements");
+    }
+    free(all_elements);  // free the temporary array
 }  // Unique_Elements constructor
+
 Unique_Elements::~Unique_Elements() {
     free(this->elements_);  // free the unique elements array
 }  // Unique_Elements destructor
+
 uint16_t Unique_Elements::find(uint16_t element) {
     for (uint16_t i = 0; i < this->num_elements; ++i) {
         if (this->elements_[i] == element) {
             return i;  // return the index of the element
         }
     }
-    fprintf(stderr, "Error: element %d not found\n", element);
-    exit(EXIT_FAILURE);
-}  // find the index of the element in the unique elements array, if not found,
-   // it will add the element to the array and return the index
+    throw std::runtime_error("Error: element not found in unique elements");
+}
+
 uint16_t Unique_Elements::operator[](uint16_t index) {
     if (index >= this->num_elements) {
-        fprintf(stderr, "Error: index %d is out of range\n", index);
-        exit(EXIT_FAILURE);
+        throw std::runtime_error("Error: index is out of range");
     }
     return this->elements_[index];  // return the element at the given index
 }  // operator to access the element at the given index
@@ -158,8 +161,7 @@ __host__ Device_Buffer::Device_Buffer(real_t coords[][3], uint16_t* elements, ui
         /* construct atoms */
         atom_t* h_atoms = (atom_t*)malloc(length * sizeof(atom_t));
         if (h_atoms == NULL) {
-            fprintf(stderr, "Error: failed to allocate memory for atoms on host");
-            exit(EXIT_FAILURE);
+            throw std::runtime_error("Error: failed to allocate host memory for atoms");
         }
         for (uint64_t i = 0; i < length; ++i) {
             h_atoms[i].element = elements[i];
@@ -183,6 +185,9 @@ __host__ Device_Buffer::Device_Buffer(real_t coords[][3], uint16_t* elements, ui
         this->host_data_.c6_stride_3 = NUM_REF_C6 * NUM_C6AB_ENTRIES;
         this->host_data_.c6_stride_4 = NUM_C6AB_ENTRIES;
         real_t* h_c6ab_ref = (real_t*)malloc(num_elements * num_elements * NUM_REF_C6 * NUM_REF_C6 * NUM_C6AB_ENTRIES * sizeof(real_t));
+        if (h_c6ab_ref == NULL) {
+            throw std::runtime_error("Error: failed to allocate host memory for c6ab_ref");
+        }
         for (uint16_t i = 0; i < num_elements; ++i) {
             for (uint16_t j = 0; j < num_elements; ++j) {
                 uint16_t element_i = unique_elements[i];
@@ -209,6 +214,9 @@ __host__ Device_Buffer::Device_Buffer(real_t coords[][3], uint16_t* elements, ui
     {
         /* r0ab array */
         real_t* h_r0ab = (real_t*)malloc(num_elements * num_elements * sizeof(real_t));
+        if (h_r0ab == NULL) {
+            throw std::runtime_error("Error: failed to allocate host memory for r0ab");
+        }
         for (uint16_t i = 0; i < num_elements; ++i) {
             for (uint16_t j = 0; j < num_elements; ++j) {
                 uint16_t element_i = unique_elements[i];
@@ -225,6 +233,9 @@ __host__ Device_Buffer::Device_Buffer(real_t coords[][3], uint16_t* elements, ui
     {
         /* rcov array */
         real_t* h_rcov = (real_t*)malloc(num_elements * sizeof(real_t));
+        if (h_rcov == NULL) {
+            throw std::runtime_error("Error: failed to allocate host memory for rcov");
+        }
         for (uint16_t i = 0; i < num_elements; ++i) {
             h_rcov[i] = rcov[unique_elements[i] - 1];
         }
@@ -237,6 +248,9 @@ __host__ Device_Buffer::Device_Buffer(real_t coords[][3], uint16_t* elements, ui
     {
         /* r2r4 array */
         real_t* h_r2r4 = (real_t*)malloc(num_elements * sizeof(real_t));
+        if (h_r2r4 == NULL) {
+            throw std::runtime_error("Error: failed to allocate host memory for r2r4");
+        }
         for (uint16_t i = 0; i < num_elements; ++i) {
             h_r2r4[i] = r2r4[unique_elements[i] - 1];
         }
@@ -293,6 +307,7 @@ __host__ Device_Buffer::Device_Buffer(real_t coords[][3], uint16_t* elements, ui
     CHECK_CUDA(cudaMemcpy(d_data, &this->host_data_, sizeof(device_data_t), cudaMemcpyHostToDevice));
     this->device_data_ = d_data;  // set the data pointer in the class
 }  // Device_Buffer constructor
+
 __host__ Device_Buffer::~Device_Buffer() {
     CHECK_CUDA(cudaFree(this->host_data_.atom_types));    // free the atom types array
     CHECK_CUDA(cudaFree(this->host_data_.atoms));  // free the atoms array
@@ -307,11 +322,13 @@ __host__ Device_Buffer::~Device_Buffer() {
     CHECK_CUDA(cudaFree(this->host_data_.stress));  // free the stress array
     CHECK_CUDA(cudaFree(this->device_data_));  // free the device data pointer
 }  // Device_Buffer destructor
+
 __host__ Device_Buffer::Device_Buffer(Device_Buffer&& other) noexcept
     : device_data_(other.device_data_), host_data_(other.host_data_) {
     other.device_data_ = nullptr;  // transfer ownership of the data pointer
     memset(&other.host_data_, 0, sizeof(device_data_t));  // reset the other host data to 0
 }  // move constructor
+
 __host__ Device_Buffer& Device_Buffer::operator=(
     Device_Buffer&& other) noexcept {
     if (this != &other) {
@@ -337,6 +354,7 @@ __host__ Device_Buffer& Device_Buffer::operator=(
     }
     return *this;
 }
+
 __host__ void Device_Buffer::set_atoms(uint16_t* elements, real_t coords[][3],
                                        uint64_t length) {
     /* check that then length doesn't exceed current length */
@@ -352,17 +370,14 @@ __host__ void Device_Buffer::set_atoms(uint16_t* elements, real_t coords[][3],
     Unique_Elements unique_elements(elements, length);  // create the unique elements object
     for (uint64_t i = 0; i < length; ++i) {
         if (elements[i] >= MAX_ELEMENTS) {
-            /* check that no element number exceed MAX_LEMENTS */
-            fprintf(stderr, "Error: element %d is out of range\n", elements[i]);
-            exit(EXIT_FAILURE);
+            throw std::runtime_error("Error: element exceeds maximum allowed value");
         }
         unique_elements.find(elements[i]);  // check that the element is in the unique elements array. if not found, it will crash.
     }
     /* set the atoms in the device data */
     atom_t* h_atoms = (atom_t*)malloc(length * sizeof(atom_t));
     if (h_atoms == NULL) {
-        fprintf(stderr, "Error: failed to allocate memory for atoms on host");
-        exit(EXIT_FAILURE);
+        throw std::runtime_error("Error: failed to allocate host memory for atoms");
     }
     debug("Setting atoms: \n");
     for (uint64_t i = 0; i < length; ++i) {
@@ -376,6 +391,7 @@ __host__ void Device_Buffer::set_atoms(uint16_t* elements, real_t coords[][3],
     CHECK_CUDA(cudaDeviceSynchronize());
     free(h_atoms);  // free the host atoms array
 }  // set atoms
+
 __host__ void Device_Buffer::set_cell(real_t cell[3][3]) {
     /* set the cell in the device data */
     debug("Setting cell: \n");
@@ -392,6 +408,7 @@ __host__ void Device_Buffer::set_cell(real_t cell[3][3]) {
     CHECK_CUDA(cudaMemcpy(this->device_data_, &this->host_data_, sizeof(device_data_t), cudaMemcpyHostToDevice));  // copy the host data to device
     CHECK_CUDA(cudaDeviceSynchronize());      // synchronize the device
 }  // set cell
+
 __host__ void Device_Buffer::clear() {
     CHECK_CUDA(cudaMemset(host_data_.coordination_numbers, 0, host_data_.num_atoms * sizeof(real_t)));  // clear the coordination numbers
     CHECK_CUDA(cudaMemset(host_data_.dE_dCN, 0, host_data_.num_atoms * sizeof(real_t)));  // clear the dE/dCN

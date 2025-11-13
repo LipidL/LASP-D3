@@ -288,7 +288,7 @@ __global__ void coordination_number_kernel(device_data_t* data) {
     uint64_t end_bias_index;    // end bias index for this thread
     distribute_workload(data->num_atoms, total_cell_bias, &start_index, &end_index, &start_bias_index, &end_bias_index);
     real_t covalent_radii_1 = data->rcov[atom_1_type];  // covalent radii of the central atom
-    real_t local_coordination_number_compensate = 0.0f; // compensation for Kahan summation
+    real_t local_coordination_number_compensate = 0.0f; // compensation for Kahan summation in coordination number
     real_t local_coordination_number = 0.0f;    // local coordination number for the central atom
     real_t local_dCN_dr_compensate[3] = {0.0f}; // compensation for Kahan summation in dCN/dr
     real_t local_dCN_dr[3] = {0.0f};    // local dCN/dr for the central atom
@@ -515,7 +515,6 @@ __global__ void two_body_kernel(device_data_t* data) {
                                  atom_2_type * data->c6_stride_2 + 
                                  i * data->c6_stride_3 +
                                  j * data->c6_stride_4;
-                real_t c6_ref = data->c6_ab_ref[index + 0];
                 // these entries could be -1.0f if they are not valid, but at least one should be valid
                 real_t coordination_number_ref_1 = data->c6_ab_ref[index + 1];
                 real_t coordination_number_ref_2 = data->c6_ab_ref[index + 2];
