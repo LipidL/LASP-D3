@@ -9,7 +9,8 @@
 #include "constants_include.h"
 
 // Calculate inverse of a 3x3 matrix
-void matrix_inverse(const real_t mat[3][3], real_t inv[3][3]) {
+void matrix_inverse(const real_t mat[3][3], real_t inv[3][3])
+{
     // Calculate determinant
     real_t det = mat[0][0] * (mat[1][1] * mat[2][2] - mat[1][2] * mat[2][1]) -
                  mat[0][1] * (mat[1][0] * mat[2][2] - mat[1][2] * mat[2][0]) +
@@ -32,17 +33,22 @@ void matrix_inverse(const real_t mat[3][3], real_t inv[3][3]) {
 }
 
 // Transpose a 3x3 matrix
-void matrix_transpose(const real_t mat[3][3], real_t trans[3][3]) {
-    for (int i = 0; i < 3; i++) {
-        for (int j = 0; j < 3; j++) {
+void matrix_transpose(const real_t mat[3][3], real_t trans[3][3])
+{
+    for (int i = 0; i < 3; i++)
+    {
+        for (int j = 0; j < 3; j++)
+        {
             trans[j][i] = mat[i][j];
         }
     }
 }
 
 // Calculate row-wise norm of a 3x3 matrix
-void row_norms(const real_t mat[3][3], real_t norms[3]) {
-    for (int i = 0; i < 3; i++) {
+void row_norms(const real_t mat[3][3], real_t norms[3])
+{
+    for (int i = 0; i < 3; i++)
+    {
         norms[i] = sqrt(mat[i][0] * mat[i][0] + mat[i][1] * mat[i][1] +
                         mat[i][2] * mat[i][2]);
     }
@@ -52,8 +58,8 @@ void row_norms(const real_t mat[3][3], real_t norms[3]) {
 void calculate_cell_repeats(
     real_t cell[3][3],
     real_t cutoff,
-    size_t max_cell_bias[3]
-) {
+    size_t max_cell_bias[3])
+{
     real_t inv[3][3];
     real_t trans[3][3];
     real_t norms[3];
@@ -67,7 +73,8 @@ void calculate_cell_repeats(
     // Calculate norms of each row
     row_norms(trans, norms);
     // Multiply by cutoff and round up to nearest integer
-    for (int i = 0; i < 3; i++) {
+    for (int i = 0; i < 3; i++)
+    {
         /**
          * The number of repeats need to be timed by 2 due to two directions,
          * and add 1 due to the central unit (no translation at all)
@@ -76,41 +83,50 @@ void calculate_cell_repeats(
     }
 }
 
-Unique_Elements::Unique_Elements(uint16_t *elements, uint16_t length) {
+Unique_Elements::Unique_Elements(uint16_t *elements, uint16_t length)
+{
     uint16_t *all_elements = (uint16_t *)malloc(MAX_ELEMENTS * sizeof(uint16_t));
-    if (all_elements == NULL) {
+    if (all_elements == NULL)
+    {
         throw std::runtime_error("Error: failed to allocate memory for unique elements");
     }
     memset(all_elements, 0, MAX_ELEMENTS * sizeof(uint16_t)); // initialize all elements to 0
     this->num_elements = 0;
     // bucket sort
-    for (uint16_t i = 0; i < length; ++i) {
+    for (uint16_t i = 0; i < length; ++i)
+    {
         // check that no element number exceed MAX_ELEMENTS
-        if (elements[i] >= MAX_ELEMENTS) {
+        if (elements[i] >= MAX_ELEMENTS)
+        {
             free(all_elements);
             throw std::runtime_error("Error: element exceeds maximum allowed value");
         }
-        if (all_elements[elements[i]] == 0) {
+        if (all_elements[elements[i]] == 0)
+        {
             this->num_elements++;
         }
         all_elements[elements[i]] = 1; // mark the element as present
     }
     // allocate memory for unique elements array
     this->elements_ = (uint16_t *)malloc(this->num_elements * sizeof(uint16_t));
-    if (this->elements_ == NULL) {
+    if (this->elements_ == NULL)
+    {
         free(all_elements);
         throw std::runtime_error("Error: failed to allocate memory for unique elements");
     }
     // fill the unique elements array
     uint16_t index = 0;
-    for (uint16_t i = 0; i < MAX_ELEMENTS; ++i) {
-        if (all_elements[i] == 1) {
+    for (uint16_t i = 0; i < MAX_ELEMENTS; ++i)
+    {
+        if (all_elements[i] == 1)
+        {
             this->elements_[index] = i;
             index++;
         }
     }
     // sanity check
-    if (index != this->num_elements) {
+    if (index != this->num_elements)
+    {
         free(this->elements_);
         free(all_elements);
         throw std::runtime_error("Error: failed to construct unique elements");
@@ -123,10 +139,13 @@ Unique_Elements::~Unique_Elements()
     free(this->elements_); // free the unique elements array
 } // Unique_Elements destructor
 
-uint16_t Unique_Elements::find(uint16_t element) {
+uint16_t Unique_Elements::find(uint16_t element)
+{
     // this could be faster with a hash map or binary search, but linear search is enough
-    for (uint16_t i = 0; i < this->num_elements; ++i) {
-        if (this->elements_[i] == element) {
+    for (uint16_t i = 0; i < this->num_elements; ++i)
+    {
+        if (this->elements_[i] == element)
+        {
             return i; // return the index of the element
         }
     }
@@ -136,7 +155,8 @@ uint16_t Unique_Elements::find(uint16_t element) {
 uint16_t Unique_Elements::operator[](uint16_t index)
 {
     // check that the index is within range
-    if (index >= this->num_elements) {
+    if (index >= this->num_elements)
+    {
         throw std::runtime_error("Error: index is out of range");
     }
     return this->elements_[index]; // return the element at the given index
@@ -152,8 +172,8 @@ __host__ Device_Buffer::Device_Buffer(
     real_t cutoff,
     real_t CN_cutoff,
     DampingType damping_type,
-    FunctionalType functional_type
-) {
+    FunctionalType functional_type)
+{
     memset(&this->host_data_, 0, sizeof(device_data_t));        // initialize the host data to 0
     this->device_data_ = nullptr;                               // initialize the device data pointer to null
     Unique_Elements unique_elements(elements, length_elements); // create the unique elements object
@@ -180,8 +200,10 @@ __host__ Device_Buffer::Device_Buffer(
     }
     {
         // construct cell
-        for (uint16_t i = 0; i < 3; ++i) {
-            for (uint16_t j = 0; j < 3; ++j) {
+        for (uint16_t i = 0; i < 3; ++i)
+        {
+            for (uint16_t j = 0; j < 3; ++j)
+            {
                 this->host_data_.cell[i][j] = cell[i][j];
             }
         }
@@ -196,7 +218,8 @@ __host__ Device_Buffer::Device_Buffer(
         // so only using the larger one to determine the grid size doesn't affect performace too much.
         real_t larger_cutoff = CN_cutoff > cutoff ? CN_cutoff : cutoff; // the larger cutoff value among CN cutoff and disp cutoff
         matrix_inverse(this->host_data_.cell, inversed_cell_matrix);
-        for (uint16_t i = 0; i < 3; ++i) {
+        for (uint16_t i = 0; i < 3; ++i)
+        {
             // calculate the norm of reciprocal lattice vector, note that in host_data_.cell, cell vectors are stored in rows
             real_t vec_norm = std::sqrt(
                 inversed_cell_matrix[i][0] * inversed_cell_matrix[i][0] +
@@ -242,20 +265,26 @@ __host__ Device_Buffer::Device_Buffer(
         this->host_data_.c6_stride_3 = NUM_REF_C6 * NUM_C6AB_ENTRIES;
         this->host_data_.c6_stride_4 = NUM_C6AB_ENTRIES;
         real_t *h_c6ab_ref = (real_t *)malloc(num_elements * num_elements * NUM_REF_C6 * NUM_REF_C6 * NUM_C6AB_ENTRIES * sizeof(real_t));
-        if (h_c6ab_ref == NULL) {
+        if (h_c6ab_ref == NULL)
+        {
             throw std::runtime_error("Error: failed to allocate host memory for c6ab_ref");
         }
-        for (uint16_t i = 0; i < num_elements; ++i) {
-            for (uint16_t j = 0; j < num_elements; ++j) {
+        for (uint16_t i = 0; i < num_elements; ++i)
+        {
+            for (uint16_t j = 0; j < num_elements; ++j)
+            {
                 uint16_t element_i = unique_elements[i];
                 uint16_t element_j = unique_elements[j];
-                for (uint16_t k = 0; k < NUM_REF_C6; ++k) {
-                    for (uint16_t l = 0; l < NUM_REF_C6; ++l) {
+                for (uint16_t k = 0; k < NUM_REF_C6; ++k)
+                {
+                    for (uint16_t l = 0; l < NUM_REF_C6; ++l)
+                    {
                         uint64_t index = this->host_data_.c6_stride_1 * i +
                                          this->host_data_.c6_stride_2 * j +
                                          this->host_data_.c6_stride_3 * k +
                                          this->host_data_.c6_stride_4 * l;
-                        for (uint16_t m = 0; m < NUM_C6AB_ENTRIES; ++m) {
+                        for (uint16_t m = 0; m < NUM_C6AB_ENTRIES; ++m)
+                        {
                             h_c6ab_ref[index + m] =
                                 c6ab_ref[element_i][element_j][k][l][m];
                         }
@@ -272,11 +301,14 @@ __host__ Device_Buffer::Device_Buffer(
     {
         // r0ab array
         real_t *h_r0ab = (real_t *)malloc(num_elements * num_elements * sizeof(real_t));
-        if (h_r0ab == NULL) {
+        if (h_r0ab == NULL)
+        {
             throw std::runtime_error("Error: failed to allocate host memory for r0ab");
         }
-        for (uint16_t i = 0; i < num_elements; ++i) {
-            for (uint16_t j = 0; j < num_elements; ++j) {
+        for (uint16_t i = 0; i < num_elements; ++i)
+        {
+            for (uint16_t j = 0; j < num_elements; ++j)
+            {
                 uint16_t element_i = unique_elements[i];
                 uint16_t element_j = unique_elements[j];
                 h_r0ab[i * num_elements + j] = r0ab[element_i][element_j];
@@ -291,10 +323,12 @@ __host__ Device_Buffer::Device_Buffer(
     {
         // rcov array
         real_t *h_rcov = (real_t *)malloc(num_elements * sizeof(real_t));
-        if (h_rcov == NULL) {
+        if (h_rcov == NULL)
+        {
             throw std::runtime_error("Error: failed to allocate host memory for rcov");
         }
-        for (uint16_t i = 0; i < num_elements; ++i) {
+        for (uint16_t i = 0; i < num_elements; ++i)
+        {
             h_rcov[i] = rcov[unique_elements[i]];
         }
         real_t *d_rcov;
@@ -306,10 +340,12 @@ __host__ Device_Buffer::Device_Buffer(
     {
         // r2r4 array
         real_t *h_r2r4 = (real_t *)malloc(num_elements * sizeof(real_t));
-        if (h_r2r4 == NULL) {
+        if (h_r2r4 == NULL)
+        {
             throw std::runtime_error("Error: failed to allocate host memory for r2r4");
         }
-        for (uint16_t i = 0; i < num_elements; ++i) {
+        for (uint16_t i = 0; i < num_elements; ++i)
+        {
             h_r2r4[i] = r2r4[unique_elements[i]];
         }
         real_t *d_r2r4;
@@ -365,14 +401,17 @@ __host__ Device_Buffer::Device_Buffer(
     this->device_data_ = d_data; // set the data pointer in the class
 } // Device_Buffer constructor
 
-__host__ Device_Buffer::~Device_Buffer() {
+__host__ Device_Buffer::~Device_Buffer()
+{
     CHECK_CUDA(cudaFree(this->host_data_.atom_types));           // free the atom types array
     CHECK_CUDA(cudaFree(this->host_data_.atoms));                // free the atoms array
     CHECK_CUDA(cudaFree(this->host_data_.c6_ab_ref));            // free the c6ab_ref array
     CHECK_CUDA(cudaFree(this->host_data_.r0ab));                 // free the r0ab array
     CHECK_CUDA(cudaFree(this->host_data_.rcov));                 // free the rcov array
     CHECK_CUDA(cudaFree(this->host_data_.r2r4));                 // free the r2r4 array
+    CHECK_CUDA(cudaFree(this->host_data_.grid_start_indices));   // free the grid start indices array
     CHECK_CUDA(cudaFree(this->host_data_.coordination_numbers)); // free the coordination numbers array
+    CHECK_CUDA(cudaFree(this->host_data_.dCN_dr));               // free the dCN/dr array
     CHECK_CUDA(cudaFree(this->host_data_.dE_dCN));               // free the dE/dCN array
     CHECK_CUDA(cudaFree(this->host_data_.energy));               // free the energy array
     CHECK_CUDA(cudaFree(this->host_data_.forces));               // free the forces array
@@ -390,7 +429,8 @@ __host__ Device_Buffer::Device_Buffer(Device_Buffer &&other) noexcept
 __host__ Device_Buffer &Device_Buffer::operator=(
     Device_Buffer &&other) noexcept
 {
-    if (this != &other) {
+    if (this != &other)
+    {
         // Free existing resources of *this* object FIRST
         CHECK_CUDA(cudaFree(this->host_data_.atom_types));
         CHECK_CUDA(cudaFree(this->host_data_.atoms));
@@ -398,7 +438,9 @@ __host__ Device_Buffer &Device_Buffer::operator=(
         CHECK_CUDA(cudaFree(this->host_data_.r0ab));
         CHECK_CUDA(cudaFree(this->host_data_.rcov));
         CHECK_CUDA(cudaFree(this->host_data_.r2r4));
+        CHECK_CUDA(cudaFree(this->host_data_.grid_start_indices));
         CHECK_CUDA(cudaFree(this->host_data_.coordination_numbers));
+        CHECK_CUDA(cudaFree(this->host_data_.dCN_dr));
         CHECK_CUDA(cudaFree(this->host_data_.dE_dCN));
         CHECK_CUDA(cudaFree(this->host_data_.energy));
         CHECK_CUDA(cudaFree(this->host_data_.forces));
@@ -417,33 +459,39 @@ __host__ Device_Buffer &Device_Buffer::operator=(
 __host__ void Device_Buffer::set_atoms(
     uint16_t *elements,
     real_t coords[][3],
-    uint64_t length
-) {
+    uint64_t length)
+{
     // check that then length doesn't exceed current length
-    if (length > this->host_data_.num_atoms) {
+    if (length > this->host_data_.num_atoms)
+    {
         fprintf(stderr, "Error: length %zu exceeds the current length %zu\n",
                 length, this->host_data_.num_atoms);
         exit(EXIT_FAILURE);
     }
     // update to host and device data
-    this->host_data_.num_atoms = length; // set the number of atoms in the system in host_data
+    this->host_data_.num_atoms = length;                                                                          // set the number of atoms in the system in host_data
     CHECK_CUDA(cudaMemcpy(this->device_data_, &this->host_data_, sizeof(device_data_t), cudaMemcpyHostToDevice)); // copy the host data to device
     // check that all elements are within scope
     Unique_Elements unique_elements(elements, length); // create the unique elements object
-    for (uint64_t i = 0; i < length; ++i) {
-        if (elements[i] >= MAX_ELEMENTS) {
+    for (uint64_t i = 0; i < length; ++i)
+    {
+        if (elements[i] >= MAX_ELEMENTS)
+        {
             throw std::runtime_error("Error: element exceeds maximum allowed value");
         }
         unique_elements.find(elements[i]); // check that the element is in the unique elements array. if not found, it will crash.
     }
     // set the atoms in the device data
     atom_t *h_atoms = (atom_t *)malloc(length * sizeof(atom_t));
-    if (h_atoms == NULL) {
+    if (h_atoms == NULL)
+    {
         throw std::runtime_error("Error: failed to allocate host memory for atoms");
     }
     debug("Setting atoms: \n");
-    for (uint64_t i = 0; i < length; ++i) {
+    for (uint64_t i = 0; i < length; ++i)
+    {
         h_atoms[i].element = elements[i];
+        h_atoms[i].original_index = i;
         h_atoms[i].x = coords[i][0];
         h_atoms[i].y = coords[i][1];
         h_atoms[i].z = coords[i][2];
@@ -458,8 +506,10 @@ __host__ void Device_Buffer::set_cell(real_t cell[3][3])
 {
     // set the cell in the device data
     debug("Setting cell: \n");
-    for (uint16_t i = 0; i < 3; ++i) {
-        for (uint16_t j = 0; j < 3; ++j) {
+    for (uint16_t i = 0; i < 3; ++i)
+    {
+        for (uint16_t j = 0; j < 3; ++j)
+        {
             this->host_data_.cell[i][j] = cell[i][j];
             debug("%f ", this->host_data_.cell[i][j]); // print the cell matrix
         }
@@ -499,7 +549,7 @@ __host__ void Device_Buffer::set_cell(real_t cell[3][3])
           this->host_data_.max_cell_bias[1],
           this->host_data_.max_cell_bias[2]);
     CHECK_CUDA(cudaMemcpy(this->device_data_, &this->host_data_, sizeof(device_data_t), cudaMemcpyHostToDevice)); // copy the host data to device
-    CHECK_CUDA(cudaDeviceSynchronize()); // synchronize the device
+    CHECK_CUDA(cudaDeviceSynchronize());                                                                          // synchronize the device
 } // set cell
 
 __host__ void Device_Buffer::clear()
@@ -511,12 +561,14 @@ __host__ void Device_Buffer::clear()
     CHECK_CUDA(cudaMemset(host_data_.forces, 0, host_data_.num_atoms * 3 * sizeof(real_t)));           // clear the forces
     CHECK_CUDA(cudaMemset(host_data_.stress, 0, 9 * sizeof(real_t)));                                  // clear the stress
     CHECK_CUDA(cudaMemcpy(device_data_, &host_data_, sizeof(device_data_t), cudaMemcpyHostToDevice));  // copy the host data to device
-    CHECK_CUDA(cudaDeviceSynchronize());  // synchronize the device
+    CHECK_CUDA(cudaDeviceSynchronize());                                                               // synchronize the device
 } // clear the device buffer
 
-__host__ void Device_Buffer::construct_grids() {
+__host__ void Device_Buffer::construct_grids()
+{
     // if the workload distribution type is ALL_ITERATE, return directly
-    if (this->host_data_.workload_distribution_type == ALL_ITERATE) {
+    if (this->host_data_.workload_distribution_type == ALL_ITERATE)
+    {
         return;
     }
     uint64_t num_atoms = this->host_data_.num_atoms;
@@ -539,7 +591,8 @@ __host__ void Device_Buffer::construct_grids() {
 
     // Allocate temporary storage for wrapped coordinates
     real_t(*wrapped_coords)[3] = (real_t(*)[3])malloc(num_atoms * sizeof(real_t[3]));
-    if (wrapped_coords == NULL) {
+    if (wrapped_coords == NULL)
+    {
         throw std::runtime_error("Error: failed to allocate memory for wrapped_coords");
     }
 
@@ -548,19 +601,23 @@ __host__ void Device_Buffer::construct_grids() {
     CHECK_CUDA(cudaMemcpy(original_atoms, this->host_data_.atoms, num_atoms * sizeof(atom_t), cudaMemcpyDeviceToHost));
     uint64_t *original_atom_types = (uint64_t *)malloc(num_atoms * sizeof(uint64_t));
     CHECK_CUDA(cudaMemcpy(original_atom_types, this->host_data_.atom_types, num_atoms * sizeof(uint64_t), cudaMemcpyDeviceToHost));
-    for (uint64_t i = 0; i < num_atoms; ++i) {
+    for (uint64_t i = 0; i < num_atoms; ++i)
+    {
         // transform the coordinates to fractional coordinates
         real_t frac[3] = {0.0, 0.0, 0.0};
-        for (uint8_t j = 0; j < 3; ++j) {
+        for (uint8_t j = 0; j < 3; ++j)
+        {
             frac[j] = inv_cell[j][0] * original_atoms[i].x + inv_cell[j][1] * original_atoms[i].y + inv_cell[j][2] * original_atoms[i].z;
         }
         // calculate grid indices and handle periodic boundary conditions
         uint64_t grid_idx[3];
-        for (uint8_t j = 0; j < 3; ++j) {
+        for (uint8_t j = 0; j < 3; ++j)
+        {
             real_t wrapped_frac = frac[j] - std::floor(frac[j]); // wrap to [0, 1)
             frac[j] = wrapped_frac;                              // update fractional coordinate to wrapped value
             grid_idx[j] = (uint64_t)(wrapped_frac * host_data_.num_grid_cells[j]);
-            if (grid_idx[j] == host_data_.num_grid_cells[j]) {
+            if (grid_idx[j] == host_data_.num_grid_cells[j])
+            {
                 grid_idx[j] = 0; // handle the edge case where coord == 1.0
             }
         }
@@ -585,18 +642,21 @@ __host__ void Device_Buffer::construct_grids() {
     // calculate the starting index of each grid in the sorted array
     uint64_t *h_grid_start_index = (uint64_t *)malloc(total_grids * sizeof(uint64_t)); // starting index of each grid
     h_grid_start_index[0] = 0;
-    for (uint64_t i = 1; i < total_grids; ++i) {
+    for (uint64_t i = 1; i < total_grids; ++i)
+    {
         h_grid_start_index[i] = h_grid_start_index[i - 1] + grid_counts[i - 1];
     }
     // sort atoms using counting sort
     atom_t *h_atoms = (atom_t *)malloc(num_atoms * sizeof(atom_t));
     uint64_t *h_atom_types = (uint64_t *)malloc(num_atoms * sizeof(uint64_t)); // rearranged atom type array
-    if (h_atoms == NULL || h_atom_types == NULL) {
+    if (h_atoms == NULL || h_atom_types == NULL)
+    {
         throw std::runtime_error("Error: failed to allocate host memory for atoms or atom types");
     }
     uint64_t *current_position = (uint64_t *)malloc(total_grids * sizeof(uint64_t));
     memcpy(current_position, h_grid_start_index, total_grids * sizeof(uint64_t));
-    for (uint64_t i = 0; i < num_atoms; ++i) {
+    for (uint64_t i = 0; i < num_atoms; ++i)
+    {
         uint64_t grid_idx = grid_indices[i];
         uint64_t pos = current_position[grid_idx];
         assert(pos < num_atoms);
@@ -613,10 +673,13 @@ __host__ void Device_Buffer::construct_grids() {
     CHECK_CUDA(cudaMemcpy(this->host_data_.atom_types, h_atom_types, num_atoms * sizeof(uint64_t), cudaMemcpyHostToDevice));
     CHECK_CUDA(cudaMemcpy(this->host_data_.atoms, h_atoms, num_atoms * sizeof(atom_t), cudaMemcpyHostToDevice));
     // the size of `grid_start_indices` might vary, so we need to reallocate the memory
-    uint64_t *d_grid_start_indices = this->host_data_.grid_start_indices;
-    CHECK_CUDA(cudaFree(this->host_data_.grid_start_indices)); // free the old
+    if (this->host_data_.grid_start_indices != nullptr)
+    {
+        CHECK_CUDA(cudaFree(this->host_data_.grid_start_indices)); // free the old memory
+    }
+    uint64_t *d_grid_start_indices;
     CHECK_CUDA(cudaMalloc((void **)&d_grid_start_indices, sizeof(uint64_t) * total_grids));
-    this->host_data_.grid_start_indices = d_grid_start_indices;
+    this->host_data_.grid_start_indices = d_grid_start_indices; // update the pointer
     CHECK_CUDA(cudaMemcpy(this->host_data_.grid_start_indices, h_grid_start_index, total_grids * sizeof(uint64_t), cudaMemcpyHostToDevice));
     CHECK_CUDA(cudaMemcpy(this->device_data_, &this->host_data_, sizeof(device_data_t), cudaMemcpyHostToDevice)); // copy the host data to device
 
