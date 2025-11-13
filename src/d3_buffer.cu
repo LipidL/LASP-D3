@@ -612,7 +612,11 @@ __host__ void Device_Buffer::construct_grids() {
     // copy data to device
     CHECK_CUDA(cudaMemcpy(this->host_data_.atom_types, h_atom_types, num_atoms * sizeof(uint64_t), cudaMemcpyHostToDevice));
     CHECK_CUDA(cudaMemcpy(this->host_data_.atoms, h_atoms, num_atoms * sizeof(atom_t), cudaMemcpyHostToDevice));
-    printf("grid_start_indices at %p, host data at %p, total_grids is %zu\n",this->host_data_.grid_start_indices, h_grid_start_index, total_grids);
+    // the size of `grid_start_indices` might vary, so we need to reallocate the memory
+    uint64_t *d_grid_start_indices = this->host_data_.grid_start_indices;
+    CHECK_CUDA(cudaFree(this->host_data_.grid_start_indices)); // free the old
+    CHECK_CUDA(cudaMalloc((void **)&d_grid_start_indices, sizeof(uint64_t) * total_grids));
+    this->host_data_.grid_start_indices = d_grid_start_indices;
     CHECK_CUDA(cudaMemcpy(this->host_data_.grid_start_indices, h_grid_start_index, total_grids * sizeof(uint64_t), cudaMemcpyHostToDevice));
     CHECK_CUDA(cudaMemcpy(this->device_data_, &this->host_data_, sizeof(device_data_t), cudaMemcpyHostToDevice)); // copy the host data to device
 
