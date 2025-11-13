@@ -7,6 +7,8 @@ typedef float real_t;
 
 typedef struct atom {
     uint16_t element;  // element type of the atom
+    uint64_t original_index; // original index of the atom in the input structure
+    uint64_t home_grid_cell; // the grid cell index where the atom is located
     real_t x, y, z;    // coordinates in Cartesian space
 } atom_t;
 
@@ -24,6 +26,11 @@ typedef enum {
     REVPBE = 5,
     CUSTOM = 99  // Special value for custom parameters
 } FunctionalType;
+
+typedef enum {
+    ALL_ITERATE = 0, // all atoms iterate over all other atoms over all supercell images
+    CELL_LIST = 1 // use cell list to accelerate the search for neighboring atoms
+} WorkloadDistributionType;
 
 typedef struct {
     real_t s6;
@@ -47,14 +54,17 @@ typedef struct device_data {
     uint64_t num_atoms;     // number of atoms in the system
     uint64_t num_elements;  // number of unique elements in the system
     uint64_t* atom_types;  // array of atom types, size: num_atoms. the entries is not the atomic number, but the index of the corresponding entry in constants.
-    atom_t* atoms;         // array of atom data
+    atom_t* atoms;         // array of atom data, sorted so atoms in the same grid are together. size: num_atoms.
     real_t* c6_ab_ref;  // size: num_elements*num_elements*NUM_REF_C6*NUM_REF_C6*NUM_C6AB_ENTRIES
     uint64_t c6_stride_1, c6_stride_2, c6_stride_3, c6_stride_4;    // strides for c6ab array
     real_t* r0ab;       // size: num_elements*num_elements
     real_t* rcov;       // size: num_elements
     real_t* r2r4;       // size: num_elements
     real_t cell[3][3];  // cell matrix, specify the three vectors of the cell
+    WorkloadDistributionType workload_distribution_type;  // the workload distribution type used for the calculation
     uint64_t max_cell_bias[3];  // the maximum bias of the cell in each direction, this must be an odd number (because of symmetry)
+    uint64_t num_grid_cells[3];  // number of grid cells in each direction
+    uint64_t *grid_start_indices;  // starting indices of each grid cell in the atoms array, size: num_grid_cells[0]*num_grid_cells[1]*num_grid_cells[2]
     real_t coordination_number_cutoff;  // the cutof radius for CN computation
     real_t cutoff;  // the cutoff radius for the dispersion energy calculation
     DampingType damping_type;  // the damping type used for the calculation

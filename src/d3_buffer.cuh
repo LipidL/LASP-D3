@@ -120,6 +120,12 @@ class Device_Buffer {
      * @note normally, you should always call it before start calculation
      */
     __host__ void clear();  // clear the device data
+
+    /**
+     * @brief divide the atoms into grid cells for neighbor list construction
+     * @note you should always call it before start calculation
+     */
+    __host__ void construct_grids();  // construct grid cells
    private:
     device_data_t* device_data_;  // pointer to the device data
     device_data_t host_data_;
