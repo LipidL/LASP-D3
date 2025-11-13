@@ -143,6 +143,8 @@ uint16_t compute_dispersion_energy_from_handle_status(
         CHECK_CUDA(cudaStreamCreate(&stream));
         Device_Buffer *buffer =
             (Device_Buffer *)handle; // cast the handle to Device_Buffer
+        // construct grid cells for neighbor list (if applicable)
+        buffer->construct_grids();
         // print debug information about cell
         for (int i = 0; i < 3; ++i) {
             for (int j = 0; j < 3; ++j) {
@@ -224,9 +226,9 @@ void compute_dispersion_energy_from_handle(
 }
 
 __host__ void compute_dispersion_energy(
-    real_t coords[][3], 
+    real_t coords[][3],
     uint16_t *elements,
-    uint64_t length, 
+    uint64_t length,
     real_t cell[3][3],
     real_t cutoff_radius,
     real_t coordination_number_cutoff,
@@ -253,15 +255,15 @@ __host__ void compute_dispersion_energy(
 int main() {
     // example usage of the compute_dispersion_energy function
     real_t atoms[10][3] = {
-        {5.1372f, 5.5512f, 10.1047f}, 
-        {4.5169f, 6.1365f, 11.3604f}, 
-        {6.1937f, 4.4752f, 10.2703f}, 
-        {4.7872f, 5.9358f, 8.9937f}, 
-        {6.7474f, 4.3475f, 9.3339f}, 
-        {5.6975f, 3.5214f, 10.5181f}, 
-        {6.8870f, 4.7006f, 11.0939f}, 
-        {4.8579f, 5.6442f, 12.2774f}, 
-        {3.4204f, 6.0677f, 11.2935f}, 
+        {5.1372f, 5.5512f, 10.1047f},
+        {4.5169f, 6.1365f, 11.3604f},
+        {6.1937f, 4.4752f, 10.2703f},
+        {4.7872f, 5.9358f, 8.9937f},
+        {6.7474f, 4.3475f, 9.3339f},
+        {5.6975f, 3.5214f, 10.5181f},
+        {6.8870f, 4.7006f, 11.0939f},
+        {4.8579f, 5.6442f, 12.2774f},
+        {3.4204f, 6.0677f, 11.2935f},
         {4.7678f, 7.2075f, 11.4098f}
     };
     uint16_t elements[10] = {6, 6, 6, 8, 1,
@@ -276,8 +278,8 @@ int main() {
     // fill the atoms array with Po element
     debug("Computing dispersion energy for %zu atoms...\n", sizeof(atoms) / sizeof(atoms[0]));
     real_t cell[3][3] = {
-        {200.0f, 0.0f, 0.0f}, 
-        {0.0f, 20.0f, 0.0f}, 
+        {200.0f, 0.0f, 0.0f},
+        {0.0f, 20.0f, 0.0f},
         {0.0f, 0.0f, 20.0f}
     };
     for (uint64_t i = 0; i < 3; ++i) {

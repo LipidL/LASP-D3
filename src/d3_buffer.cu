@@ -50,7 +50,7 @@ void row_norms(const real_t mat[3][3], real_t norms[3]) {
 
 // Equivalent to torch.ceil(cutoff * inv_distances).long()
 void calculate_cell_repeats(
-    real_t cell[3][3], 
+    real_t cell[3][3],
     real_t cutoff,
     size_t max_cell_bias[3]
 ) {
@@ -185,8 +185,11 @@ __host__ Device_Buffer::Device_Buffer(
                 this->host_data_.cell[i][j] = cell[i][j];
             }
         }
-    }
-    {
+
+        // set cutoff parameters
+        this->host_data_.coordination_number_cutoff = CN_cutoff;
+        this->host_data_.cutoff = cutoff;
+
         // construct number of grid cells in each direction
         real_t inversed_cell_matrix[3][3];
         // we hypothesize that the CN cutoff and dispersion cutoff is close,
@@ -202,107 +205,32 @@ __host__ Device_Buffer::Device_Buffer(
             real_t perpendicular_height = 1 / vec_norm;
             this->host_data_.num_grid_cells[i] = (uint64_t)std::ceil(perpendicular_height / larger_cutoff);
         }
-    }
+        // construct supercell information
+        calculate_cell_repeats(cell, larger_cutoff, this->host_data_.max_cell_bias);
+        debug("max_cell_bias: %zu %zu %zu\n",
+              this->host_data_.max_cell_bias[0],
+              this->host_data_.max_cell_bias[1],
+              this->host_data_.max_cell_bias[2]);
+    } // supercell information
     {
         // construct atoms
-        // now we need to figure out which grid each atom belongs to
-        // and sort the atoms according to the grid indices
-        // we use counting sort to achieve this
-        uint64_t total_grids = host_data_.num_grid_cells[0] *
-                               host_data_.num_grid_cells[1] *
-                               host_data_.num_grid_cells[2];
-        uint64_t *grid_indices = (uint64_t *)malloc(length * sizeof(uint64_t)); // array of the grid index of each atom
-        memset(grid_indices, 0, length * sizeof(uint64_t));
-        uint64_t *grid_counts = (uint64_t *)malloc(total_grids * sizeof(uint64_t)); // array of the counts of atoms in each grid
-        memset(grid_counts, 0, total_grids * sizeof(uint64_t));
-
-        // calculate grid indices of each atom and count atoms per grid
-        real_t inv_cell[3][3]; // inverse of the cell matrix
-        matrix_inverse(this->host_data_.cell, inv_cell);
-
-        // Allocate temporary storage for wrapped coordinates
-        real_t(*wrapped_coords)[3] = (real_t(*)[3])malloc(length * sizeof(real_t[3]));
-        if (wrapped_coords == NULL) {
-            throw std::runtime_error("Error: failed to allocate memory for wrapped_coords");
+        // the rearrangement of atoms is performed before calculation.
+        // here we just allocate memory and copy the data to device.
+        atom_t *h_atoms = (atom_t *)malloc(sizeof(atom_t) * length);
+        for (uint64_t i = 0; i < length; ++i)
+        {
+            h_atoms[i].element = elements[i];
+            h_atoms[i].original_index = i;
+            h_atoms[i].x = coords[i][0];
+            h_atoms[i].y = coords[i][1];
+            h_atoms[i].z = coords[i][2];
         }
-
-        for (uint64_t i = 0; i < length; ++i) {
-            // transform the coordinates to fractional coordinates
-            real_t frac[3] = {0.0, 0.0, 0.0};
-            for (uint8_t j = 0; j < 3; ++j) {
-                frac[j] = inv_cell[j][0] * coords[i][0] + inv_cell[j][1] * coords[i][1] + inv_cell[j][2] * coords[i][2];
-            }
-            // calculate grid indices and handle periodic boundary conditions
-            uint64_t grid_idx[3];
-            for (uint8_t j = 0; j < 3; ++j) {
-                real_t wrapped_frac = frac[j] - std::floor(frac[j]); // wrap to [0, 1)
-                frac[j] = wrapped_frac;                              // update fractional coordinate to wrapped value
-                grid_idx[j] = (uint64_t)(wrapped_frac * host_data_.num_grid_cells[j]);
-                if (grid_idx[j] == host_data_.num_grid_cells[j]) {
-                    grid_idx[j] = 0; // handle the edge case where coord == 1.0
-                }
-            }
-            // convert fractional coordinates back to Cartesian
-            // Note: cell vectors are stored in rows, so cell[i] is the i-th lattice vector
-            // Store in temporary buffer instead of modifying input coords
-            wrapped_coords[i][0] = frac[0] * this->host_data_.cell[0][0] +
-                                   frac[1] * this->host_data_.cell[1][0] +
-                                   frac[2] * this->host_data_.cell[2][0];
-            wrapped_coords[i][1] = frac[0] * this->host_data_.cell[0][1] +
-                                   frac[1] * this->host_data_.cell[1][1] +
-                                   frac[2] * this->host_data_.cell[2][1];
-            wrapped_coords[i][2] = frac[0] * this->host_data_.cell[0][2] +
-                                   frac[1] * this->host_data_.cell[1][2] +
-                                   frac[2] * this->host_data_.cell[2][2];
-            grid_indices[i] = grid_idx[0] +
-                              grid_idx[1] * host_data_.num_grid_cells[0] +
-                              grid_idx[2] * host_data_.num_grid_cells[0] * host_data_.num_grid_cells[1];
-            assert(grid_indices[i] < total_grids);
-            grid_counts[grid_indices[i]] += 1;
-        }
-        // calculate the starting index of each grid in the sorted array
-        uint64_t *grid_start_index = (uint64_t *)malloc(total_grids * sizeof(uint64_t)); // starting index of each grid
-        grid_start_index[0] = 0;
-        for (uint64_t i = 1; i < total_grids; ++i) {
-            grid_start_index[i] = grid_start_index[i - 1] + grid_counts[i - 1];
-        }
-        // sort atoms using counting sort
-        atom_t *h_atoms = (atom_t *)malloc(length * sizeof(atom_t));
-        if (h_atoms == NULL) {
-            throw std::runtime_error("Error: failed to allocate host memory for atoms");
-        }
-        uint64_t *current_position = (uint64_t *)malloc(total_grids * sizeof(uint64_t));
-        memcpy(current_position, grid_start_index, total_grids * sizeof(uint64_t));
-        for (uint64_t i = 0; i < length; ++i) {
-            uint64_t grid_idx = grid_indices[i];
-            uint64_t pos = current_position[grid_idx];
-            assert(pos < length);
-            h_atoms[pos].original_index = i; // store the original index
-            h_atoms[pos].element = elements[i];
-            h_atoms[pos].x = wrapped_coords[i][0];
-            h_atoms[pos].y = wrapped_coords[i][1];
-            h_atoms[pos].z = wrapped_coords[i][2];
-            assert(grid_idx < total_grids);
-            current_position[grid_idx] += 1;
-        }
-
-        // copy data to device
         atom_t *d_atoms;
-        CHECK_CUDA(cudaMalloc((void **)&d_atoms, length * sizeof(atom_t)));
-        CHECK_CUDA(cudaMemcpy(d_atoms, h_atoms, length * sizeof(atom_t), cudaMemcpyHostToDevice));
-        this->host_data_.atoms = d_atoms; // set the atoms pointer in device data
-        uint64_t *d_grid_start_indices;
-        CHECK_CUDA(cudaMalloc((void **)&d_grid_start_indices, total_grids * sizeof(uint64_t)));
-        CHECK_CUDA(cudaMemcpy(d_grid_start_indices, grid_start_index, total_grids * sizeof(uint64_t), cudaMemcpyHostToDevice));
-        this->host_data_.grid_start_indices = d_grid_start_indices;
-
+        CHECK_CUDA(cudaMalloc((void **)&d_atoms, sizeof(atom_t) * length));
+        CHECK_CUDA(cudaMemcpy(d_atoms, h_atoms, sizeof(atom_t) * length, cudaMemcpyHostToDevice));
+        this->host_data_.atoms = d_atoms;
         // cleanup
-        free(wrapped_coords);   // free the wrapped coordinates array
-        free(grid_start_index); // free the grid start index array
-        free(grid_counts);      // free the grid counts array
-        free(current_position); // free the current position array
-        free(grid_indices);     // free the temporary arrays
-        free(h_atoms);          // free the host atoms array
+        free(h_atoms);
     }
 
     // construct constants
@@ -391,22 +319,19 @@ __host__ Device_Buffer::Device_Buffer(
         free(h_r2r4);
     } // r2r4 array
     {
-        // construct supercell information
-        this->host_data_.coordination_number_cutoff = CN_cutoff;
-        this->host_data_.cutoff = cutoff;
-        real_t larger_cutoff = CN_cutoff > cutoff ? CN_cutoff : cutoff;
-        calculate_cell_repeats(cell, larger_cutoff, this->host_data_.max_cell_bias);
-        debug("max_cell_bias: %zu %zu %zu\n",
-            this->host_data_.max_cell_bias[0],
-            this->host_data_.max_cell_bias[1],
-            this->host_data_.max_cell_bias[2]
-        );
-    } // supercell information
-    {
         // construct other fields
         this->host_data_.damping_type = damping_type;
         this->host_data_.functional_type = functional_type;
+        this->host_data_.workload_distribution_type = ALL_ITERATE;               // default to all iterate
         this->host_data_.functional_params = FUNCTIONAL_PARAMS[functional_type]; // set the functional parameters
+        uint64_t num_grids =
+            this->host_data_.num_grid_cells[0] *
+            this->host_data_.num_grid_cells[1] *
+            this->host_data_.num_grid_cells[2];
+        uint64_t *d_grid_start_indices;
+        CHECK_CUDA(cudaMalloc((void **)&d_grid_start_indices, sizeof(uint64_t) * num_grids));
+        CHECK_CUDA(cudaMemset(d_grid_start_indices, 0, sizeof(uint64_t) * num_grids));
+        this->host_data_.grid_start_indices = d_grid_start_indices;
         real_t *coordination_numbers;
         CHECK_CUDA(cudaMalloc((void **)&coordination_numbers, length * sizeof(real_t)));
         CHECK_CUDA(cudaMemset(coordination_numbers, 0, length * sizeof(real_t)));
@@ -540,9 +465,39 @@ __host__ void Device_Buffer::set_cell(real_t cell[3][3])
         }
         debug("\n");
     }
-    // the cell size is changed, so the max_cell_bias will also change
-    calculate_cell_repeats(cell, this->host_data_.cutoff, this->host_data_.max_cell_bias); // calculate the new max_cell_bias
-    debug("max_cell_bias: %zu %zu %zu\n", this->host_data_.max_cell_bias[0], this->host_data_.max_cell_bias[1], this->host_data_.max_cell_bias[2]);
+
+    real_t CN_cutoff = this->host_data_.coordination_number_cutoff;
+    real_t cutoff = this->host_data_.cutoff;
+    // construct number of grid cells in each direction
+    real_t inversed_cell_matrix[3][3];
+    // we hypothesize that the CN cutoff and dispersion cutoff is close,
+    // so only using the larger one to determine the grid size doesn't affect performace too much.
+    WorkloadDistributionType distribution_type = CELL_LIST;
+    real_t larger_cutoff = CN_cutoff > cutoff ? CN_cutoff : cutoff; // the larger cutoff value among CN cutoff and disp cutoff
+    matrix_inverse(this->host_data_.cell, inversed_cell_matrix);
+    for (uint16_t i = 0; i < 3; ++i)
+    {
+        // calculate the norm of reciprocal lattice vector, note that in host_data_.cell, cell vectors are stored in rows
+        real_t vec_norm = std::sqrt(
+            inversed_cell_matrix[i][0] * inversed_cell_matrix[i][0] +
+            inversed_cell_matrix[i][1] * inversed_cell_matrix[i][1] +
+            inversed_cell_matrix[i][2] * inversed_cell_matrix[i][2]);
+        real_t perpendicular_height = 1 / vec_norm;
+        uint64_t num_grid_cell = (uint64_t)std::ceil(perpendicular_height / larger_cutoff);
+        this->host_data_.num_grid_cells[i] = num_grid_cell;
+        if (num_grid_cell < 2)
+        {
+            // if any direction has less than 2 grid cells, we have to use all iterate
+            distribution_type = ALL_ITERATE;
+        }
+    }
+    this->host_data_.workload_distribution_type = distribution_type;
+    // construct supercell information
+    calculate_cell_repeats(cell, larger_cutoff, this->host_data_.max_cell_bias);
+    debug("max_cell_bias: %zu %zu %zu\n",
+          this->host_data_.max_cell_bias[0],
+          this->host_data_.max_cell_bias[1],
+          this->host_data_.max_cell_bias[2]);
     CHECK_CUDA(cudaMemcpy(this->device_data_, &this->host_data_, sizeof(device_data_t), cudaMemcpyHostToDevice)); // copy the host data to device
     CHECK_CUDA(cudaDeviceSynchronize()); // synchronize the device
 } // set cell
@@ -550,10 +505,125 @@ __host__ void Device_Buffer::set_cell(real_t cell[3][3])
 __host__ void Device_Buffer::clear()
 {
     CHECK_CUDA(cudaMemset(host_data_.coordination_numbers, 0, host_data_.num_atoms * sizeof(real_t))); // clear the coordination numbers
+    CHECK_CUDA(cudaMemset(host_data_.dCN_dr, 0, host_data_.num_atoms * 3 * sizeof(real_t)));           // clear the dCN/dr
     CHECK_CUDA(cudaMemset(host_data_.dE_dCN, 0, host_data_.num_atoms * sizeof(real_t)));               // clear the dE/dCN
-    CHECK_CUDA(cudaMemset(host_data_.energy, 0, sizeof(real_t)));                                      // clear the energy
+    CHECK_CUDA(cudaMemset(host_data_.energy, 0, host_data_.num_atoms * sizeof(real_t)));               // clear the energy
     CHECK_CUDA(cudaMemset(host_data_.forces, 0, host_data_.num_atoms * 3 * sizeof(real_t)));           // clear the forces
     CHECK_CUDA(cudaMemset(host_data_.stress, 0, 9 * sizeof(real_t)));                                  // clear the stress
     CHECK_CUDA(cudaMemcpy(device_data_, &host_data_, sizeof(device_data_t), cudaMemcpyHostToDevice));  // copy the host data to device
-    CHECK_CUDA(cudaDeviceSynchronize());                                                               // synchronize the device
+    CHECK_CUDA(cudaDeviceSynchronize());  // synchronize the device
 } // clear the device buffer
+
+__host__ void Device_Buffer::construct_grids() {
+    // if the workload distribution type is ALL_ITERATE, return directly
+    if (this->host_data_.workload_distribution_type == ALL_ITERATE) {
+        return;
+    }
+    uint64_t num_atoms = this->host_data_.num_atoms;
+
+    // construct atoms
+    // now we need to figure out which grid each atom belongs to
+    // and sort the atoms according to the grid indices
+    // we use counting sort to achieve this
+    uint64_t total_grids = host_data_.num_grid_cells[0] *
+                           host_data_.num_grid_cells[1] *
+                           host_data_.num_grid_cells[2];
+    uint64_t *grid_indices = (uint64_t *)malloc(num_atoms * sizeof(uint64_t)); // array of the grid index of each atom
+    memset(grid_indices, 0, num_atoms * sizeof(uint64_t));
+    uint64_t *grid_counts = (uint64_t *)malloc(total_grids * sizeof(uint64_t)); // array of the counts of atoms in each grid
+    memset(grid_counts, 0, total_grids * sizeof(uint64_t));
+
+    // calculate grid indices of each atom and count atoms per grid
+    real_t inv_cell[3][3]; // inverse of the cell matrix
+    matrix_inverse(this->host_data_.cell, inv_cell);
+
+    // Allocate temporary storage for wrapped coordinates
+    real_t(*wrapped_coords)[3] = (real_t(*)[3])malloc(num_atoms * sizeof(real_t[3]));
+    if (wrapped_coords == NULL) {
+        throw std::runtime_error("Error: failed to allocate memory for wrapped_coords");
+    }
+
+    // copy atoms and atom types from device to host
+    atom_t *original_atoms = (atom_t *)malloc(num_atoms * sizeof(atom_t));
+    CHECK_CUDA(cudaMemcpy(original_atoms, this->host_data_.atoms, num_atoms * sizeof(atom_t), cudaMemcpyDeviceToHost));
+    uint64_t *original_atom_types = (uint64_t *)malloc(num_atoms * sizeof(uint64_t));
+    CHECK_CUDA(cudaMemcpy(original_atom_types, this->host_data_.atom_types, num_atoms * sizeof(uint64_t), cudaMemcpyDeviceToHost));
+    for (uint64_t i = 0; i < num_atoms; ++i) {
+        // transform the coordinates to fractional coordinates
+        real_t frac[3] = {0.0, 0.0, 0.0};
+        for (uint8_t j = 0; j < 3; ++j) {
+            frac[j] = inv_cell[j][0] * original_atoms[i].x + inv_cell[j][1] * original_atoms[i].y + inv_cell[j][2] * original_atoms[i].z;
+        }
+        // calculate grid indices and handle periodic boundary conditions
+        uint64_t grid_idx[3];
+        for (uint8_t j = 0; j < 3; ++j) {
+            real_t wrapped_frac = frac[j] - std::floor(frac[j]); // wrap to [0, 1)
+            frac[j] = wrapped_frac;                              // update fractional coordinate to wrapped value
+            grid_idx[j] = (uint64_t)(wrapped_frac * host_data_.num_grid_cells[j]);
+            if (grid_idx[j] == host_data_.num_grid_cells[j]) {
+                grid_idx[j] = 0; // handle the edge case where coord == 1.0
+            }
+        }
+        // convert fractional coordinates back to Cartesian
+        // Note: cell vectors are stored in rows, so cell[i] is the i-th lattice vector
+        // Store in temporary buffer instead of modifying input coords
+        wrapped_coords[i][0] = frac[0] * this->host_data_.cell[0][0] +
+                               frac[1] * this->host_data_.cell[1][0] +
+                               frac[2] * this->host_data_.cell[2][0];
+        wrapped_coords[i][1] = frac[0] * this->host_data_.cell[0][1] +
+                               frac[1] * this->host_data_.cell[1][1] +
+                               frac[2] * this->host_data_.cell[2][1];
+        wrapped_coords[i][2] = frac[0] * this->host_data_.cell[0][2] +
+                               frac[1] * this->host_data_.cell[1][2] +
+                               frac[2] * this->host_data_.cell[2][2];
+        grid_indices[i] = grid_idx[0] +
+                          grid_idx[1] * host_data_.num_grid_cells[0] +
+                          grid_idx[2] * host_data_.num_grid_cells[0] * host_data_.num_grid_cells[1];
+        assert(grid_indices[i] < total_grids);
+        grid_counts[grid_indices[i]] += 1;
+    }
+    // calculate the starting index of each grid in the sorted array
+    uint64_t *h_grid_start_index = (uint64_t *)malloc(total_grids * sizeof(uint64_t)); // starting index of each grid
+    h_grid_start_index[0] = 0;
+    for (uint64_t i = 1; i < total_grids; ++i) {
+        h_grid_start_index[i] = h_grid_start_index[i - 1] + grid_counts[i - 1];
+    }
+    // sort atoms using counting sort
+    atom_t *h_atoms = (atom_t *)malloc(num_atoms * sizeof(atom_t));
+    uint64_t *h_atom_types = (uint64_t *)malloc(num_atoms * sizeof(uint64_t)); // rearranged atom type array
+    if (h_atoms == NULL || h_atom_types == NULL) {
+        throw std::runtime_error("Error: failed to allocate host memory for atoms or atom types");
+    }
+    uint64_t *current_position = (uint64_t *)malloc(total_grids * sizeof(uint64_t));
+    memcpy(current_position, h_grid_start_index, total_grids * sizeof(uint64_t));
+    for (uint64_t i = 0; i < num_atoms; ++i) {
+        uint64_t grid_idx = grid_indices[i];
+        uint64_t pos = current_position[grid_idx];
+        assert(pos < num_atoms);
+        h_atoms[pos].original_index = i; // store the original index
+        h_atoms[pos].element = original_atoms[i].element;
+        h_atoms[pos].x = wrapped_coords[i][0];
+        h_atoms[pos].y = wrapped_coords[i][1];
+        h_atoms[pos].z = wrapped_coords[i][2];
+        h_atom_types[pos] = original_atom_types[i]; // rearranged atom type
+        assert(grid_idx < total_grids);
+        current_position[grid_idx] += 1;
+    }
+    // copy data to device
+    CHECK_CUDA(cudaMemcpy(this->host_data_.atom_types, h_atom_types, num_atoms * sizeof(uint64_t), cudaMemcpyHostToDevice));
+    CHECK_CUDA(cudaMemcpy(this->host_data_.atoms, h_atoms, num_atoms * sizeof(atom_t), cudaMemcpyHostToDevice));
+    printf("grid_start_indices at %p, host data at %p, total_grids is %zu\n",this->host_data_.grid_start_indices, h_grid_start_index, total_grids);
+    CHECK_CUDA(cudaMemcpy(this->host_data_.grid_start_indices, h_grid_start_index, total_grids * sizeof(uint64_t), cudaMemcpyHostToDevice));
+    CHECK_CUDA(cudaMemcpy(this->device_data_, &this->host_data_, sizeof(device_data_t), cudaMemcpyHostToDevice)); // copy the host data to device
+
+    // cleanup
+    free(grid_indices);
+    free(grid_counts);
+    free(h_grid_start_index);
+    free(current_position);
+    free(original_atoms);
+    free(original_atom_types);
+    free(h_atoms);
+    free(h_atom_types);
+    free(wrapped_coords);
+}

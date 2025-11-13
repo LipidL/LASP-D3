@@ -26,6 +26,11 @@ typedef enum {
     CUSTOM = 99  // Special value for custom parameters
 } FunctionalType;
 
+typedef enum {
+    ALL_ITERATE = 0, // all atoms iterate over all other atoms over all supercell images
+    CELL_LIST = 1 // use cell list to accelerate the search for neighboring atoms
+} WorkloadDistributionType;
+
 typedef struct {
     real_t s6;
     real_t s8;
@@ -55,6 +60,7 @@ typedef struct device_data {
     real_t* rcov;       // size: num_elements
     real_t* r2r4;       // size: num_elements
     real_t cell[3][3];  // cell matrix, specify the three vectors of the cell
+    WorkloadDistributionType workload_distribution_type;  // the workload distribution type used for the calculation
     uint64_t max_cell_bias[3];  // the maximum bias of the cell in each direction, this must be an odd number (because of symmetry)
     uint64_t num_grid_cells[3];  // number of grid cells in each direction
     uint64_t *grid_start_indices;  // starting indices of each grid cell in the atoms array, size: num_grid_cells[0]*num_grid_cells[1]*num_grid_cells[2]
