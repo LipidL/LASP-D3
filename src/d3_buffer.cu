@@ -244,6 +244,7 @@ __host__ Device_Buffer::Device_Buffer(
         {
             h_atoms[i].element = elements[i];
             h_atoms[i].original_index = i;
+            h_atoms[i].home_grid_cell = 0; // to be filled in later
             h_atoms[i].x = coords[i][0];
             h_atoms[i].y = coords[i][1];
             h_atoms[i].z = coords[i][2];
@@ -492,6 +493,7 @@ __host__ void Device_Buffer::set_atoms(
     {
         h_atoms[i].element = elements[i];
         h_atoms[i].original_index = i;
+        h_atoms[i].home_grid_cell = 0; // to be filled in later
         h_atoms[i].x = coords[i][0];
         h_atoms[i].y = coords[i][1];
         h_atoms[i].z = coords[i][2];
@@ -665,6 +667,7 @@ __host__ void Device_Buffer::construct_grids()
         h_atoms[pos].x = wrapped_coords[i][0];
         h_atoms[pos].y = wrapped_coords[i][1];
         h_atoms[pos].z = wrapped_coords[i][2];
+        h_atoms[pos].home_grid_cell = grid_idx; // store the grid cell index
         h_atom_types[pos] = original_atom_types[i]; // rearranged atom type
         assert(grid_idx < total_grids);
         current_position[grid_idx] += 1;

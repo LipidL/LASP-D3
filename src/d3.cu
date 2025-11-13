@@ -197,11 +197,9 @@ uint16_t compute_dispersion_energy_from_handle_status(
         // calculate coordination number
         coordination_number_kernel<<<length, MAX_BLOCK_SIZE, 0, stream>>>(buffer->get_device_data());
         CHECK_CUDA(cudaGetLastError()); // Check for kernel launch errors
-#ifdef DEBUG
         // print some debug information
         print_coordination_number_kernel<<<1, 1, 0, stream>>>(buffer->get_device_data());
         CHECK_CUDA(cudaGetLastError()); // Check for kernel launch errors
-#endif
         debug("launching two_body_kernel, size: %zu, %d\n", length, MAX_BLOCK_SIZE);
         // calculate energy and two-body part of force
         two_body_kernel<<<length, MAX_BLOCK_SIZE, 0, stream>>>(buffer->get_device_data());

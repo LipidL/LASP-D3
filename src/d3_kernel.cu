@@ -365,6 +365,67 @@ __device__ void damping(real_t distance, real_t cutoff_radius,
     }
 }
 
+__device__ inline void calculate_neighboring_grids(
+    uint64_t home_cell_index, uint64_t num_grids[3],
+    uint64_t *grid_start_indices, uint64_t num_atoms,
+    uint64_t start_indices[27], uint64_t end_indices[27],
+    int64_t shifts[27][3]
+) {
+    // Only first 27 threads populate the neighboring cell data
+    if (threadIdx.x < 27) {
+        uint64_t neighbor_cell_index; // the index of neighboring cell this thread calculates
+        uint64_t total_num_grids = num_grids[0] * num_grids[1] * num_grids[2];
+        // Calculate 3D offset for this neighboring cell (-1, 0, or +1 in each dimension)
+        int offset_x = (threadIdx.x % 3) - 1;
+        int offset_y = ((threadIdx.x / 3) % 3) - 1;
+        int offset_z = (threadIdx.x / 9) - 1;
+        
+        // Get home cell's 3D indices
+        uint64_t home_x = home_cell_index % num_grids[0];
+        uint64_t home_y = (home_cell_index / num_grids[0]) % num_grids[1];
+        uint64_t home_z = home_cell_index / (num_grids[0] * num_grids[1]);
+        
+        // Calculate neighbor cell indices with periodic boundaries
+        int64_t neighbor_x = (int64_t)home_x + offset_x;
+        int64_t neighbor_y = (int64_t)home_y + offset_y;
+        int64_t neighbor_z = (int64_t)home_z + offset_z;
+        
+        // Apply periodic boundary conditions and track shifts
+        shifts[threadIdx.x][0] = 0;
+        shifts[threadIdx.x][1] = 0;
+        shifts[threadIdx.x][2] = 0;
+        
+        if (neighbor_x < 0) {
+            neighbor_x += num_grids[0];
+            shifts[threadIdx.x][0] = -1;
+        } else if (neighbor_x >= (int64_t)num_grids[0]) {
+            neighbor_x -= num_grids[0];
+            shifts[threadIdx.x][0] = 1;
+        }
+        
+        if (neighbor_y < 0) {
+            neighbor_y += num_grids[1];
+            shifts[threadIdx.x][1] = -1;
+        } else if (neighbor_y >= (int64_t)num_grids[1]) {
+            neighbor_y -= num_grids[1];
+            shifts[threadIdx.x][1] = 1;
+        }
+        if (neighbor_z < 0) {
+            neighbor_z += num_grids[2];
+            shifts[threadIdx.x][2] = -1;
+        } else if (neighbor_z >= (int64_t)num_grids[2]) {
+            neighbor_z -= num_grids[2];
+            shifts[threadIdx.x][2] = 1;
+        }
+        
+        // Convert 3D indices back to 1D index
+        neighbor_cell_index = neighbor_x + neighbor_y * num_grids[0] + neighbor_z * num_grids[0] * num_grids[1];
+        start_indices[threadIdx.x] = grid_start_indices[neighbor_cell_index];
+        end_indices[threadIdx.x] = (neighbor_cell_index + 1 < total_num_grids) ? grid_start_indices[neighbor_cell_index + 1] : num_atoms; // handle last cell case
+    }
+    __syncthreads();
+}
+
 __device__ void distribute_workload(uint64_t num_atoms, uint64_t total_cell_bias, uint64_t *start_index, uint64_t *end_index, uint64_t *start_bias_index, uint64_t *end_bias_index)
 {
     // distribute workload to threads
@@ -470,68 +531,102 @@ __global__ void coordination_number_kernel(device_data_t *data)
     const uint64_t atom_1_index = blockIdx.x;                                                                  // each block is responsible for one central atom
     const uint64_t atom_1_type = data->atom_types[atom_1_index];                                               // type of the central atom
     const atom_t atom_1 = data->atoms[atom_1_index];                                                           // central atom
-    const uint64_t total_cell_bias = data->max_cell_bias[0] * data->max_cell_bias[1] * data->max_cell_bias[2]; // total number of cell bias
-    const uint64_t mcb0 = data->max_cell_bias[0];                                                              // maximum cell bias in x direction
-    const uint64_t mcb1 = data->max_cell_bias[1];                                                              // maximum cell bias in y direction
-    const uint64_t mcb2 = data->max_cell_bias[2];                                                              // maximum cell bias in z direction
     const real_t cell[3][3] = {
         {data->cell[0][0], data->cell[0][1], data->cell[0][2]},
         {data->cell[1][0], data->cell[1][1], data->cell[1][2]},
         {data->cell[2][0], data->cell[2][1], data->cell[2][2]}}; // cell matrix
     const real_t CN_cutoff = data->coordination_number_cutoff;   // cutoff radius of coordination number
-    // print some debug information
-    if (threadIdx.x == 0 && blockIdx.x == 0)
-    {
-        debug("Coordination number kernel launched with %llu atoms, cell: \n",
-              data->num_atoms);
-        for (int i = 0; i < 3; ++i)
-        {
-            for (int j = 0; j < 3; ++j)
-            {
-                debug("%f ", cell[i][j]);
-            }
-            debug("\n");
-        }
-        debug("max_cell_bias: %llu %llu %llu\n", mcb0, mcb1, mcb2);
-    }
-    // distribute workload to threads
-    uint64_t start_index;      // start atom index for this thread
-    uint64_t end_index;        // end atom index for this thread
-    uint64_t start_bias_index; // start bias index for this thread
-    uint64_t end_bias_index;   // end bias index for this thread
-    distribute_workload(data->num_atoms, total_cell_bias, &start_index, &end_index, &start_bias_index, &end_bias_index);
     real_t covalent_radii_1 = data->rcov[atom_1_type]; // covalent radii of the central atom
     HierarchicalKahanAccumulator<1> CN_accumulator;
     HierarchicalKahanAccumulator<3> dCN_dr_accumulators; // accumulators for dCN/dr in x, y, z directions
     CN_accumulator.init();
     dCN_dr_accumulators.init();
 
-    for (uint64_t atom_2_index = start_index; atom_2_index < end_index; ++atom_2_index)
-    {
-        atom_t atom_2_original = data->atoms[atom_2_index];                   // surrounding atom without supercell translation
-        real_t covalent_radii_2 = data->rcov[data->atom_types[atom_2_index]]; // covalent radii of the surrounding atom
-        for (uint64_t bias_index = start_bias_index; bias_index < end_bias_index; ++bias_index)
-        {
-            // iterate over the bias indices
-            int64_t x_bias = (bias_index % mcb0) - (mcb0 / 2);                 // x bias
-            int64_t y_bias = ((bias_index / mcb0) % mcb1) - (mcb1 / 2);        // y bias
-            int64_t z_bias = (bias_index / (mcb0 * mcb1) % mcb2) - (mcb2 / 2); // z bias
-            assert_(atom_2_index < data->num_atoms);                           // make sure the index is in bounds
-
-            atom_t atom_2 = atom_2_original;
-            // translate atom_2 due to periodic boundaries
-            atom_2.x += x_bias * cell[0][0] + y_bias * cell[1][0] + z_bias * cell[2][0];
-            atom_2.y += x_bias * cell[0][1] + y_bias * cell[1][1] + z_bias * cell[2][1];
-            atom_2.z += x_bias * cell[0][2] + y_bias * cell[1][2] + z_bias * cell[2][2];
-
-            calculate_CN(
-                atom_1, atom_2,
-                covalent_radii_1, covalent_radii_2,
-                CN_cutoff,
-                CN_accumulator,
-                dCN_dr_accumulators
+    // distribute workload
+    switch (data->workload_distribution_type) {
+        case CELL_LIST:
+            // each thread process a few atoms in neighboring cells and all bias indices
+            __shared__ uint64_t start_indices[27]; // start indices of atoms in neighboring cells
+            __shared__ uint64_t end_indices[27];   // end indices of atoms in neighboring cells
+            __shared__ int64_t neighbor_cells_shifts[27][3]; // shifts corresponding to the neighboring cells
+            calculate_neighboring_grids(
+                atom_1.home_grid_cell,
+                data->num_grid_cells,
+                data->grid_start_indices,
+                data->num_atoms,
+                start_indices,
+                end_indices,
+                neighbor_cells_shifts
             );
-        }
+
+            for (uint8_t i = 0; i < 27; ++i) {
+                uint64_t start_index = start_indices[i];
+                uint64_t end_index = end_indices[i];
+                int64_t x_shift = neighbor_cells_shifts[i][0];
+                int64_t y_shift = neighbor_cells_shifts[i][1];
+                int64_t z_shift = neighbor_cells_shifts[i][2];
+                for (uint64_t atom_2_index = start_index + threadIdx.x; atom_2_index < end_index; atom_2_index += blockDim.x) {
+                    atom_t atom_2_original = data->atoms[atom_2_index];                   // surrounding atom without supercell translation
+                    real_t covalent_radii_2 = data->rcov[data->atom_types[atom_2_index]]; // covalent radii of the surrounding atom
+
+                    atom_t atom_2 = atom_2_original;
+                    // translate atom_2 due to periodic boundaries
+                    atom_2.x += x_shift * cell[0][0] + y_shift * cell[1][0] + z_shift * cell[2][0];
+                    atom_2.y += x_shift * cell[0][1] + y_shift * cell[1][1] + z_shift * cell[2][1];
+                    atom_2.z += x_shift * cell[0][2] + y_shift * cell[1][2] + z_shift * cell[2][2];
+
+                    calculate_CN(
+                        atom_1, atom_2,
+                        covalent_radii_1, covalent_radii_2,
+                        CN_cutoff,
+                        CN_accumulator,
+                        dCN_dr_accumulators
+                    );
+                }
+            }
+
+            break;
+        case ALL_ITERATE:
+            // no special preparation needed
+            const uint64_t total_cell_bias = data->max_cell_bias[0] * data->max_cell_bias[1] * data->max_cell_bias[2]; // total number of cell bias
+            const uint64_t mcb0 = data->max_cell_bias[0];                                                              // maximum cell bias in x direction
+            const uint64_t mcb1 = data->max_cell_bias[1];                                                              // maximum cell bias in y direction
+            const uint64_t mcb2 = data->max_cell_bias[2];                                                              // maximum cell bias in z direction
+            // distribute workload to threads
+            uint64_t start_index;      // start atom index for this thread
+            uint64_t end_index;        // end atom index for this thread
+            uint64_t start_bias_index; // start bias index for this thread
+            uint64_t end_bias_index;   // end bias index for this thread
+            distribute_workload(data->num_atoms, total_cell_bias, &start_index, &end_index, &start_bias_index, &end_bias_index);
+
+            for (uint64_t atom_2_index = start_index; atom_2_index < end_index; ++atom_2_index)
+            {
+                atom_t atom_2_original = data->atoms[atom_2_index];                   // surrounding atom without supercell translation
+                real_t covalent_radii_2 = data->rcov[data->atom_types[atom_2_index]]; // covalent radii of the surrounding atom
+                for (uint64_t bias_index = start_bias_index; bias_index < end_bias_index; ++bias_index)
+                {
+                    // iterate over the bias indices
+                    int64_t x_bias = (bias_index % mcb0) - (mcb0 / 2);                 // x bias
+                    int64_t y_bias = ((bias_index / mcb0) % mcb1) - (mcb1 / 2);        // y bias
+                    int64_t z_bias = (bias_index / (mcb0 * mcb1) % mcb2) - (mcb2 / 2); // z bias
+                    assert_(atom_2_index < data->num_atoms);                           // make sure the index is in bounds
+
+                    atom_t atom_2 = atom_2_original;
+                    // translate atom_2 due to periodic boundaries
+                    atom_2.x += x_bias * cell[0][0] + y_bias * cell[1][0] + z_bias * cell[2][0];
+                    atom_2.y += x_bias * cell[0][1] + y_bias * cell[1][1] + z_bias * cell[2][1];
+                    atom_2.z += x_bias * cell[0][2] + y_bias * cell[1][2] + z_bias * cell[2][2];
+
+                    calculate_CN(
+                        atom_1, atom_2,
+                        covalent_radii_1, covalent_radii_2,
+                        CN_cutoff,
+                        CN_accumulator,
+                        dCN_dr_accumulators
+                    );
+                }
+            }
+            break;
     }
 
     // use blockwise reduction to accumulate coordination number and dCN/dr from all threads

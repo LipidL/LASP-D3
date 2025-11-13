@@ -8,6 +8,7 @@ typedef float real_t;
 typedef struct atom {
     uint16_t element;  // element type of the atom
     uint64_t original_index; // original index of the atom in the input structure
+    uint64_t home_grid_cell; // the grid cell index where the atom is located
     real_t x, y, z;    // coordinates in Cartesian space
 } atom_t;
 
