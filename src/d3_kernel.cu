@@ -922,17 +922,21 @@ __global__ void two_body_kernel(device_data_t *data)
          * We directly write to global memory for dE/dCN, energy, and force without atomic operations.
          * This is safe because each block processes a single atom, therefore no data race :).
          * However, stress accumulation requires atomic operations to avoid data races.
+         * Note that the atoms are rearranged, so when writing to result arrays(energy and force),
+         * we use orginal index instead of atom_1_index, which is the rearranged index.
+         * However, for intermediates like dE/dCN, we still use atom_1_index for convenience
          */
+        uint64_t original_atom_1_index = atom_1.original_index;
         // dE/dCN
         data->dE_dCN[atom_1_index] = dE_dCN_sum;
         // energy
-        data->energy[atom_1_index] = energy_sum;
+        data->energy[original_atom_1_index] = energy_sum;
         // force and stress
         for (uint8_t i = 0; i < 3; ++i)
         {
             force_central_sum[i] += dE_dCN_sum * data->dCN_dr[atom_1_index * 3 + i]; // another force entry: $F_i = dE/dCN_i * dCN_i/dr_i$
             // write back the force without atomic operation, safe because no other thread writes to this memory
-            data->forces[atom_1_index * 3 + i] = force_central_sum[i];
+            data->forces[original_atom_1_index * 3 + i] = force_central_sum[i];
             for (uint8_t j = 0; j < 3; ++j)
             {
                 atomicAdd(&data->stress[i * 3 + j], stress_sum[i * 3 + j]); // atomic operation here to avoid data races
@@ -1089,12 +1093,18 @@ __global__ void three_body_kernel(device_data_t *data)
     blockReduceSumThreeBodyKernel(local_force_sum, local_stress_sum, force_central_sum, stress_sum);
 
     // the first thread accumulates the results back to global memory
+    /**
+     * note that the atoms are rearranged, so when writing to result arrays(energy and force),
+     * we use orginal index instead of atom_1_index, which is the rearranged index.
+     * However, for intermediates like dE/dCN, we still use atom_1_index for convenience
+     */
     if (threadIdx.x == 0)
     {
+        uint64_t original_atom_1_index = atom_1.original_index;
         for (uint8_t i = 0; i < 3; ++i)
         {
             // accumulate force
-            data->forces[atom_1_index * 3 + i] += force_central_sum[i];
+            data->forces[original_atom_1_index * 3 + i] += force_central_sum[i];
             for (uint8_t j = 0; j < 3; ++j)
             {
                 // accumulate stress
