@@ -569,8 +569,8 @@ __host__ void Device_Buffer::clear()
 __host__ void Device_Buffer::construct_grids()
 {
     // for debug
-    this->host_data_.workload_distribution_type = ALL_ITERATE;
-    CHECK_CUDA(cudaMemcpy(this->device_data_, &this->host_data_, sizeof(device_data_t), cudaMemcpyHostToDevice));
+    // this->host_data_.workload_distribution_type = ALL_ITERATE;
+    // CHECK_CUDA(cudaMemcpy(this->device_data_, &this->host_data_, sizeof(device_data_t), cudaMemcpyHostToDevice));
 
     // print the workload distribution type
     debug("Workload distribution type: %d\n", this->host_data_.workload_distribution_type);
