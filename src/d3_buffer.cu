@@ -537,9 +537,11 @@ __host__ void Device_Buffer::set_cell(real_t cell[3][3])
         real_t perpendicular_height = 1 / vec_norm;
         uint64_t num_grid_cell = (uint64_t)std::ceil(perpendicular_height / larger_cutoff);
         this->host_data_.num_grid_cells[i] = num_grid_cell;
-        if (num_grid_cell < 2)
+        if (num_grid_cell <= 2)
         {
-            // if any direction has less than 2 grid cells, we have to use all iterate
+            // if any direction has less than 3 grid cells, we have to use all iterate
+            // for directions with only 1 grid cells, the cell list method may miss some interactions
+            // for directions with 2 grid cells, the cell list method will double-count some interactions
             distribution_type = ALL_ITERATE;
         }
     }
