@@ -51,7 +51,7 @@ int main(int argc, char* argv[])
                 float *stress = (float *)malloc(sizeof(float) * 9); // allocate memory for stress
                 // Start measuring execution time
                 auto start_time = std::chrono::high_resolution_clock::now();
-                compute_dispersion_energy((float (*)[3])atoms, elements, num_atoms, cell, cutoff_radius, CN_cutoff_radius, ZERO_DAMPING, PBE0, &energy, force, stress);
+                compute_dispersion_energy((float (*)[3])atoms, elements, num_atoms, cell, cutoff_radius, CN_cutoff_radius, ZERO_DAMPING, PBE, &energy, force, stress);
                 auto end_time = std::chrono::high_resolution_clock::now();
                 std::chrono::duration<double> elapsed_time = end_time - start_time;
                 std::cout << "Elapsed time: " << elapsed_time.count() << " seconds" << std::endl;
