@@ -4,6 +4,7 @@
 #include <iomanip>
 #include "parser.cpp"
 #include "d3.h"
+#include <iomanip>
 
 int main(int argc, char* argv[])
 {

@@ -9,15 +9,15 @@
 #include "constants_include.h"
 
 // Calculate inverse of a 3x3 matrix
-void matrix_inverse(const real_t mat[3][3], real_t inv[3][3])
+template <typename T1, typename T2>
+void matrix_inverse(const T1 mat[3][3], T2 inv[3][3])
 {
     // Calculate determinant
-    real_t det = mat[0][0] * (mat[1][1] * mat[2][2] - mat[1][2] * mat[2][1]) -
+    T2 det = mat[0][0] * (mat[1][1] * mat[2][2] - mat[1][2] * mat[2][1]) -
                  mat[0][1] * (mat[1][0] * mat[2][2] - mat[1][2] * mat[2][0]) +
                  mat[0][2] * (mat[1][0] * mat[2][1] - mat[1][1] * mat[2][0]);
 
-    real_t inv_det = 1.0 / det;
-
+    T2 inv_det = 1.0 / det;
     // Calculate cofactor matrix (transposed)
     inv[0][0] = (mat[1][1] * mat[2][2] - mat[1][2] * mat[2][1]) * inv_det;
     inv[0][1] = (mat[0][2] * mat[2][1] - mat[0][1] * mat[2][2]) * inv_det;
@@ -33,7 +33,8 @@ void matrix_inverse(const real_t mat[3][3], real_t inv[3][3])
 }
 
 // Transpose a 3x3 matrix
-void matrix_transpose(const real_t mat[3][3], real_t trans[3][3])
+template <typename T1, typename T2>
+void matrix_transpose(const T1 mat[3][3], T2 trans[3][3])
 {
     for (int i = 0; i < 3; i++)
     {
@@ -45,7 +46,8 @@ void matrix_transpose(const real_t mat[3][3], real_t trans[3][3])
 }
 
 // Calculate row-wise norm of a 3x3 matrix
-void row_norms(const real_t mat[3][3], real_t norms[3])
+template <typename T1, typename T2>
+void row_norms(const T1 mat[3][3], T2 norms[3])
 {
     for (int i = 0; i < 3; i++)
     {
@@ -58,20 +60,20 @@ void row_norms(const real_t mat[3][3], real_t norms[3])
 void calculate_cell_repeats(
     real_t cell[3][3],
     real_t cutoff,
-    size_t max_cell_bias[3])
+    uint64_t max_cell_bias[3])
 {
-    real_t inv[3][3];
-    real_t trans[3][3];
-    real_t norms[3];
+    double inv[3][3];
+    double trans[3][3];
+    double norms[3];
 
     // Calculate inverse of cell matrix
-    matrix_inverse(cell, inv);
+    matrix_inverse<real_t, double>(cell, inv);
 
     // Transpose the inverse matrix
-    matrix_transpose(inv, trans);
+    matrix_transpose<double, double>(inv, trans);
 
     // Calculate norms of each row
-    row_norms(trans, norms);
+    row_norms<double, double>(trans, norms);
     // Multiply by cutoff and round up to nearest integer
     for (int i = 0; i < 3; i++)
     {
@@ -213,19 +215,19 @@ __host__ Device_Buffer::Device_Buffer(
         this->host_data_.cutoff = cutoff;
 
         // construct number of grid cells in each direction
-        real_t inversed_cell_matrix[3][3];
+        double inversed_cell_matrix[3][3];
         // we hypothesize that the CN cutoff and dispersion cutoff is close,
         // so only using the larger one to determine the grid size doesn't affect performace too much.
-        real_t larger_cutoff = CN_cutoff > cutoff ? CN_cutoff : cutoff; // the larger cutoff value among CN cutoff and disp cutoff
-        matrix_inverse(this->host_data_.cell, inversed_cell_matrix);
+        double larger_cutoff = CN_cutoff > cutoff ? CN_cutoff : cutoff; // the larger cutoff value among CN cutoff and disp cutoff
+        matrix_inverse<real_t, double>(this->host_data_.cell, inversed_cell_matrix);
         for (uint16_t i = 0; i < 3; ++i)
         {
             // calculate the norm of reciprocal lattice vector, note that in host_data_.cell, cell vectors are stored in rows
-            real_t vec_norm = std::sqrt(
+            double vec_norm = std::sqrt(
                 inversed_cell_matrix[i][0] * inversed_cell_matrix[i][0] +
                 inversed_cell_matrix[i][1] * inversed_cell_matrix[i][1] +
                 inversed_cell_matrix[i][2] * inversed_cell_matrix[i][2]);
-            real_t perpendicular_height = 1 / vec_norm;
+            double perpendicular_height = 1 / vec_norm;
             this->host_data_.num_grid_cells[i] = (uint64_t)std::ceil(perpendicular_height / larger_cutoff);
         }
         // construct supercell information
@@ -517,25 +519,27 @@ __host__ void Device_Buffer::set_cell(real_t cell[3][3])
     real_t CN_cutoff = this->host_data_.coordination_number_cutoff;
     real_t cutoff = this->host_data_.cutoff;
     // construct number of grid cells in each direction
-    real_t inversed_cell_matrix[3][3];
+    double inversed_cell_matrix[3][3];
     // we hypothesize that the CN cutoff and dispersion cutoff is close,
     // so only using the larger one to determine the grid size doesn't affect performace too much.
     WorkloadDistributionType distribution_type = CELL_LIST;
-    real_t larger_cutoff = CN_cutoff > cutoff ? CN_cutoff : cutoff; // the larger cutoff value among CN cutoff and disp cutoff
-    matrix_inverse(this->host_data_.cell, inversed_cell_matrix);
+    double larger_cutoff = CN_cutoff > cutoff ? CN_cutoff : cutoff; // the larger cutoff value among CN cutoff and disp cutoff
+    matrix_inverse<real_t, double>(this->host_data_.cell, inversed_cell_matrix);
     for (uint16_t i = 0; i < 3; ++i)
     {
         // calculate the norm of reciprocal lattice vector, note that in host_data_.cell, cell vectors are stored in rows
-        real_t vec_norm = std::sqrt(
+        double vec_norm = std::sqrt(
             inversed_cell_matrix[i][0] * inversed_cell_matrix[i][0] +
             inversed_cell_matrix[i][1] * inversed_cell_matrix[i][1] +
             inversed_cell_matrix[i][2] * inversed_cell_matrix[i][2]);
-        real_t perpendicular_height = 1 / vec_norm;
+        double perpendicular_height = 1 / vec_norm;
         uint64_t num_grid_cell = (uint64_t)std::ceil(perpendicular_height / larger_cutoff);
         this->host_data_.num_grid_cells[i] = num_grid_cell;
-        if (num_grid_cell < 2)
+        if (num_grid_cell <= 2)
         {
-            // if any direction has less than 2 grid cells, we have to use all iterate
+            // if any direction has less than 3 grid cells, we have to use all iterate
+            // for directions with only 1 grid cells, the cell list method may miss some interactions
+            // for directions with 2 grid cells, the cell list method will double-count some interactions
             distribution_type = ALL_ITERATE;
         }
     }
@@ -564,6 +568,12 @@ __host__ void Device_Buffer::clear()
 
 __host__ void Device_Buffer::construct_grids()
 {
+    // for debug
+    this->host_data_.workload_distribution_type = ALL_ITERATE;
+    CHECK_CUDA(cudaMemcpy(this->device_data_, &this->host_data_, sizeof(device_data_t), cudaMemcpyHostToDevice));
+
+    // print the workload distribution type
+    debug("Workload distribution type: %d\n", this->host_data_.workload_distribution_type);
     // if the workload distribution type is ALL_ITERATE, return directly
     if (this->host_data_.workload_distribution_type == ALL_ITERATE)
     {
@@ -584,11 +594,11 @@ __host__ void Device_Buffer::construct_grids()
     memset(grid_counts, 0, total_grids * sizeof(uint64_t));
 
     // calculate grid indices of each atom and count atoms per grid
-    real_t inv_cell[3][3]; // inverse of the cell matrix
-    matrix_inverse(this->host_data_.cell, inv_cell);
+    double inv_cell[3][3]; // inverse of the cell matrix
+    matrix_inverse<real_t, double>(this->host_data_.cell, inv_cell);
 
     // Allocate temporary storage for wrapped coordinates
-    real_t(*wrapped_coords)[3] = (real_t(*)[3])malloc(num_atoms * sizeof(real_t[3]));
+    double(*wrapped_coords)[3] = (double(*)[3])malloc(num_atoms * sizeof(double[3]));
     if (wrapped_coords == NULL)
     {
         throw std::runtime_error("Error: failed to allocate memory for wrapped_coords");
@@ -602,16 +612,16 @@ __host__ void Device_Buffer::construct_grids()
     for (uint64_t i = 0; i < num_atoms; ++i)
     {
         // transform the coordinates to fractional coordinates
-        real_t frac[3] = {0.0, 0.0, 0.0};
+        double frac[3] = {0.0, 0.0, 0.0};
         for (uint8_t j = 0; j < 3; ++j)
         {
-            frac[j] = inv_cell[j][0] * original_atoms[i].x + inv_cell[j][1] * original_atoms[i].y + inv_cell[j][2] * original_atoms[i].z;
+            frac[j] = inv_cell[0][j] * original_atoms[i].x + inv_cell[1][j] * original_atoms[i].y + inv_cell[2][j] * original_atoms[i].z;
         }
         // calculate grid indices and handle periodic boundary conditions
         uint64_t grid_idx[3];
         for (uint8_t j = 0; j < 3; ++j)
         {
-            real_t wrapped_frac = frac[j] - std::floor(frac[j]); // wrap to [0, 1)
+            double wrapped_frac = frac[j] - std::floor(frac[j]); // wrap to [0, 1)
             frac[j] = wrapped_frac;                              // update fractional coordinate to wrapped value
             grid_idx[j] = (uint64_t)(wrapped_frac * host_data_.num_grid_cells[j]);
             if (grid_idx[j] == host_data_.num_grid_cells[j])
