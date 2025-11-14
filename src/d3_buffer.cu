@@ -570,6 +570,12 @@ __host__ void Device_Buffer::clear()
 
 __host__ void Device_Buffer::construct_grids()
 {
+    // for debug
+    // this->host_data_.workload_distribution_type = ALL_ITERATE;
+    // CHECK_CUDA(cudaMemcpy(this->device_data_, &this->host_data_, sizeof(device_data_t), cudaMemcpyHostToDevice));
+
+    // print the workload distribution type
+    debug("Workload distribution type: %d\n", this->host_data_.workload_distribution_type);
     // if the workload distribution type is ALL_ITERATE, return directly
     if (this->host_data_.workload_distribution_type == ALL_ITERATE)
     {
@@ -611,7 +617,7 @@ __host__ void Device_Buffer::construct_grids()
         real_t frac[3] = {0.0, 0.0, 0.0};
         for (uint8_t j = 0; j < 3; ++j)
         {
-            frac[j] = inv_cell[j][0] * original_atoms[i].x + inv_cell[j][1] * original_atoms[i].y + inv_cell[j][2] * original_atoms[i].z;
+            frac[j] = inv_cell[0][j] * original_atoms[i].x + inv_cell[1][j] * original_atoms[i].y + inv_cell[2][j] * original_atoms[i].z;
         }
         // calculate grid indices and handle periodic boundary conditions
         uint64_t grid_idx[3];

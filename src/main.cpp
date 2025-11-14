@@ -3,6 +3,7 @@
 #include <ctime>
 #include "parser.cpp"
 #include "d3.h"
+#include <iomanip>
 
 int main(int argc, char* argv[])
 {
@@ -54,7 +55,7 @@ int main(int argc, char* argv[])
                 auto end_time = std::chrono::high_resolution_clock::now();
                 std::chrono::duration<double> elapsed_time = end_time - start_time;
                 std::cout << "Elapsed time: " << elapsed_time.count() << " seconds" << std::endl;
-                std::cout << "Energy: " << energy << " eV" << std::endl; // convert to eV
+                std::cout << std::fixed << std::setprecision(9) << "Energy: " << energy << " eV" << std::endl; // convert to eV
                 float force_sum[3] = {0.0f, 0.0f, 0.0f};
                 for (size_t i = 0; i < num_atoms; ++i) {
                     float force_x = force[0 + i * 3];
