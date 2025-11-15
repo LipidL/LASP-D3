@@ -614,13 +614,13 @@ __host__ void Device_Buffer::construct_grids()
     {
         // transform the coordinates to fractional coordinates
         double frac[3] = {0.0, 0.0, 0.0};
-        uint64_t supercell_idx[3] = {0, 0, 0}; // the supercell index of the atom, used for wrapping the atom back to home cell
-        uint64_t grid_idx[3];
+        int64_t supercell_idx[3] = {0, 0, 0}; // the supercell index of the atom, used for wrapping the atom back to home cell
+        uint64_t grid_idx[3]; // the grid index of the atom in each direction
         // calculate grid indices and handle periodic boundary conditions
         for (uint8_t j = 0; j < 3; ++j)
         {
             frac[j] = inv_cell[0][j] * original_atoms[i].x + inv_cell[1][j] * original_atoms[i].y + inv_cell[2][j] * original_atoms[i].z;
-            supercell_idx[j] = (uint64_t)std::floor(frac[j]);
+            supercell_idx[j] = (int64_t)std::floor(frac[j]);
             double wrapped_frac = frac[j] - std::floor(frac[j]); // wrap to [0, 1)
             frac[j] = wrapped_frac;                              // update fractional coordinate to wrapped value for grid index calculation
             grid_idx[j] = (uint64_t)(wrapped_frac * host_data_.num_grid_cells[j]);
