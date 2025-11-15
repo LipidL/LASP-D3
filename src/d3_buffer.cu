@@ -624,9 +624,19 @@ __host__ void Device_Buffer::construct_grids()
             double wrapped_frac = frac[j] - std::floor(frac[j]); // wrap to [0, 1)
             frac[j] = wrapped_frac;                              // update fractional coordinate to wrapped value for grid index calculation
             grid_idx[j] = (uint64_t)(wrapped_frac * host_data_.num_grid_cells[j]);
+            /**
+             * when frac = -0.0001 (a really small negative number caused by floating-point precision), 
+             * supercell_idx can be wrapped to -1, and wrapped_frac becomes 1.0 after subtraction
+             * this will lead to grid_idx == num_grid_cells, which is out of range
+             * to fix this, we check if grid_idx == num_grid_cells, and if so
+             * we set grid_idx to 0 and increment supercell_idx by 1
+             * (increment the supercell_idx to avoid atom in the same grid but actually have different supercell indices being wrapped to different grids)
+             */
             if (grid_idx[j] == host_data_.num_grid_cells[j])
             {
-                grid_idx[j] = 0; // handle the edge case where coord == 1.0
+                // handle the edge case where coord == 1.0
+                supercell_idx[j] += 1; // adjust the supercell index accordingly
+                grid_idx[j] = 0; // wrap around to the first grid
             }
         }
 
