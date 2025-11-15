@@ -27,7 +27,7 @@ class Unique_Elements {
      * 
      * @throws std::runtime_error if any element exceeds MAX_ELEMENTS
      */
-    Unique_Elements(uint16_t* elements, uint16_t length);
+    Unique_Elements(uint16_t* elements, uint64_t length);
     /**
      * @brief destructor of `Unique_Elements` class
      */
