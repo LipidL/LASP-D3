@@ -14,8 +14,8 @@ void matrix_inverse(const T1 mat[3][3], T2 inv[3][3])
 {
     // Calculate determinant
     T2 det = mat[0][0] * (mat[1][1] * mat[2][2] - mat[1][2] * mat[2][1]) -
-                 mat[0][1] * (mat[1][0] * mat[2][2] - mat[1][2] * mat[2][0]) +
-                 mat[0][2] * (mat[1][0] * mat[2][1] - mat[1][1] * mat[2][0]);
+             mat[0][1] * (mat[1][0] * mat[2][2] - mat[1][2] * mat[2][0]) +
+             mat[0][2] * (mat[1][0] * mat[2][1] - mat[1][1] * mat[2][0]);
 
     T2 inv_det = 1.0 / det;
     // Calculate cofactor matrix (transposed)
@@ -573,9 +573,6 @@ __host__ void Device_Buffer::clear()
 __host__ void Device_Buffer::construct_grids()
 {
     // for debug
-    // this->host_data_.workload_distribution_type = ALL_ITERATE;
-    // CHECK_CUDA(cudaMemcpy(this->device_data_, &this->host_data_, sizeof(device_data_t), cudaMemcpyHostToDevice));
-
     // print the workload distribution type
     debug("Workload distribution type: %d\n", this->host_data_.workload_distribution_type);
     // if the workload distribution type is ALL_ITERATE, return directly
@@ -602,7 +599,7 @@ __host__ void Device_Buffer::construct_grids()
     matrix_inverse<real_t, double>(this->host_data_.cell, inv_cell);
 
     // Allocate temporary storage for wrapped coordinates
-    double(*wrapped_coords)[3] = (double(*)[3])malloc(num_atoms * sizeof(double[3]));
+    double (*wrapped_coords)[3] = (double (*)[3])malloc(num_atoms * sizeof(double[3]));
     if (wrapped_coords == NULL)
     {
         throw std::runtime_error("Error: failed to allocate memory for wrapped_coords");
@@ -617,34 +614,37 @@ __host__ void Device_Buffer::construct_grids()
     {
         // transform the coordinates to fractional coordinates
         double frac[3] = {0.0, 0.0, 0.0};
+        uint64_t supercell_idx[3] = {0, 0, 0}; // the supercell index of the atom, used for wrapping the atom back to home cell
+        uint64_t grid_idx[3];
+        // calculate grid indices and handle periodic boundary conditions
         for (uint8_t j = 0; j < 3; ++j)
         {
             frac[j] = inv_cell[0][j] * original_atoms[i].x + inv_cell[1][j] * original_atoms[i].y + inv_cell[2][j] * original_atoms[i].z;
-        }
-        // calculate grid indices and handle periodic boundary conditions
-        uint64_t grid_idx[3];
-        for (uint8_t j = 0; j < 3; ++j)
-        {
+            supercell_idx[j] = (uint64_t)std::floor(frac[j]);
             double wrapped_frac = frac[j] - std::floor(frac[j]); // wrap to [0, 1)
-            frac[j] = wrapped_frac;                              // update fractional coordinate to wrapped value
+            frac[j] = wrapped_frac;                              // update fractional coordinate to wrapped value for grid index calculation
             grid_idx[j] = (uint64_t)(wrapped_frac * host_data_.num_grid_cells[j]);
             if (grid_idx[j] == host_data_.num_grid_cells[j])
             {
                 grid_idx[j] = 0; // handle the edge case where coord == 1.0
             }
         }
+
         // convert fractional coordinates back to Cartesian
         // Note: cell vectors are stored in rows, so cell[i] is the i-th lattice vector
         // Store in temporary buffer instead of modifying input coords
-        wrapped_coords[i][0] = frac[0] * this->host_data_.cell[0][0] +
-                               frac[1] * this->host_data_.cell[1][0] +
-                               frac[2] * this->host_data_.cell[2][0];
-        wrapped_coords[i][1] = frac[0] * this->host_data_.cell[0][1] +
-                               frac[1] * this->host_data_.cell[1][1] +
-                               frac[2] * this->host_data_.cell[2][1];
-        wrapped_coords[i][2] = frac[0] * this->host_data_.cell[0][2] +
-                               frac[1] * this->host_data_.cell[1][2] +
-                               frac[2] * this->host_data_.cell[2][2];
+        wrapped_coords[i][0] = original_atoms[i].x -
+                               supercell_idx[0] * this->host_data_.cell[0][0] -
+                               supercell_idx[1] * this->host_data_.cell[1][0] -
+                               supercell_idx[2] * this->host_data_.cell[2][0];
+        wrapped_coords[i][1] = original_atoms[i].y -
+                               supercell_idx[0] * this->host_data_.cell[0][1] -
+                               supercell_idx[1] * this->host_data_.cell[1][1] -
+                               supercell_idx[2] * this->host_data_.cell[2][1];
+        wrapped_coords[i][2] = original_atoms[i].z -
+                               supercell_idx[0] * this->host_data_.cell[0][2] -
+                               supercell_idx[1] * this->host_data_.cell[1][2] -
+                               supercell_idx[2] * this->host_data_.cell[2][2];
         grid_indices[i] = grid_idx[0] +
                           grid_idx[1] * host_data_.num_grid_cells[0] +
                           grid_idx[2] * host_data_.num_grid_cells[0] * host_data_.num_grid_cells[1];
@@ -677,7 +677,7 @@ __host__ void Device_Buffer::construct_grids()
         h_atoms[pos].x = wrapped_coords[i][0];
         h_atoms[pos].y = wrapped_coords[i][1];
         h_atoms[pos].z = wrapped_coords[i][2];
-        h_atoms[pos].home_grid_cell = grid_idx; // store the grid cell index
+        h_atoms[pos].home_grid_cell = grid_idx;     // store the grid cell index
         h_atom_types[pos] = original_atom_types[i]; // rearranged atom type
         assert(grid_idx < total_grids);
         current_position[grid_idx] += 1;
