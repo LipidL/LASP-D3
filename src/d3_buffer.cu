@@ -85,7 +85,7 @@ void calculate_cell_repeats(
     }
 }
 
-Unique_Elements::Unique_Elements(uint16_t *elements, uint16_t length)
+Unique_Elements::Unique_Elements(uint16_t *elements, uint64_t length)
 {
     uint16_t *all_elements = (uint16_t *)malloc(MAX_ELEMENTS * sizeof(uint16_t));
     if (all_elements == NULL)
@@ -95,7 +95,7 @@ Unique_Elements::Unique_Elements(uint16_t *elements, uint16_t length)
     memset(all_elements, 0, MAX_ELEMENTS * sizeof(uint16_t)); // initialize all elements to 0
     this->num_elements = 0;
     // bucket sort
-    for (uint16_t i = 0; i < length; ++i)
+    for (uint64_t i = 0; i < length; ++i)
     {
         // check that no element number exceed MAX_ELEMENTS
         if (elements[i] >= MAX_ELEMENTS)
