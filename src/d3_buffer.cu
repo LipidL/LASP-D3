@@ -228,7 +228,7 @@ __host__ Device_Buffer::Device_Buffer(
                 inversed_cell_matrix[i][1] * inversed_cell_matrix[i][1] +
                 inversed_cell_matrix[i][2] * inversed_cell_matrix[i][2]);
             double perpendicular_height = 1 / vec_norm;
-            this->host_data_.num_grid_cells[i] = (uint64_t)std::ceil(perpendicular_height / larger_cutoff);
+            this->host_data_.num_grid_cells[i] = (uint64_t)std::floor(perpendicular_height / larger_cutoff);
         }
         // construct supercell information
         calculate_cell_repeats(cell, larger_cutoff, this->host_data_.max_cell_bias);
@@ -537,7 +537,7 @@ __host__ void Device_Buffer::set_cell(real_t cell[3][3])
             inversed_cell_matrix[i][1] * inversed_cell_matrix[i][1] +
             inversed_cell_matrix[i][2] * inversed_cell_matrix[i][2]);
         double perpendicular_height = 1 / vec_norm;
-        uint64_t num_grid_cell = (uint64_t)std::ceil(perpendicular_height / larger_cutoff);
+        uint64_t num_grid_cell = (uint64_t)std::floor(perpendicular_height / larger_cutoff);
         this->host_data_.num_grid_cells[i] = num_grid_cell;
         if (num_grid_cell <= 2)
         {
