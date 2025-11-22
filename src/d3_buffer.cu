@@ -184,7 +184,7 @@ __host__ Device_Buffer::Device_Buffer(
         this->host_data_.num_atoms = length;                          // number of atoms in the system
         this->host_data_.num_elements = unique_elements.num_elements; // number of unique elements in the system
 
-        uint64_t *h_atom_types = (uint64_t *)malloc(sizeof(uint64_t) * length);
+        uint16_t *h_atom_types = (uint16_t *)malloc(sizeof(uint16_t) * length);
         if (h_atom_types == NULL)
         {
             throw std::runtime_error("Error: failed to allocate host memory for atom types");
@@ -194,9 +194,9 @@ __host__ Device_Buffer::Device_Buffer(
             h_atom_types[i] = unique_elements.find(elements[i]);
         }
 
-        uint64_t *d_atom_types;
-        CHECK_CUDA(cudaMalloc((void **)&d_atom_types, sizeof(uint64_t) * length));
-        CHECK_CUDA(cudaMemcpy(d_atom_types, h_atom_types, sizeof(uint64_t) * length, cudaMemcpyHostToDevice));
+        uint16_t *d_atom_types;
+        CHECK_CUDA(cudaMalloc((void **)&d_atom_types, sizeof(uint16_t) * length));
+        CHECK_CUDA(cudaMemcpy(d_atom_types, h_atom_types, sizeof(uint16_t) * length, cudaMemcpyHostToDevice));
         free(h_atom_types);
         this->host_data_.atom_types = d_atom_types;
     }
@@ -608,8 +608,8 @@ __host__ void Device_Buffer::construct_grids()
     // copy atoms and atom types from device to host
     atom_t *original_atoms = (atom_t *)malloc(num_atoms * sizeof(atom_t));
     CHECK_CUDA(cudaMemcpy(original_atoms, this->host_data_.atoms, num_atoms * sizeof(atom_t), cudaMemcpyDeviceToHost));
-    uint64_t *original_atom_types = (uint64_t *)malloc(num_atoms * sizeof(uint64_t));
-    CHECK_CUDA(cudaMemcpy(original_atom_types, this->host_data_.atom_types, num_atoms * sizeof(uint64_t), cudaMemcpyDeviceToHost));
+    uint16_t *original_atom_types = (uint16_t *)malloc(num_atoms * sizeof(uint16_t));
+    CHECK_CUDA(cudaMemcpy(original_atom_types, this->host_data_.atom_types, num_atoms * sizeof(uint16_t), cudaMemcpyDeviceToHost));
     for (uint64_t i = 0; i < num_atoms; ++i)
     {
         // transform the coordinates to fractional coordinates
@@ -670,7 +670,7 @@ __host__ void Device_Buffer::construct_grids()
     }
     // sort atoms using counting sort
     atom_t *h_atoms = (atom_t *)malloc(num_atoms * sizeof(atom_t));
-    uint64_t *h_atom_types = (uint64_t *)malloc(num_atoms * sizeof(uint64_t)); // rearranged atom type array
+    uint16_t *h_atom_types = (uint16_t *)malloc(num_atoms * sizeof(uint16_t)); // rearranged atom type array
     if (h_atoms == NULL || h_atom_types == NULL)
     {
         throw std::runtime_error("Error: failed to allocate host memory for atoms or atom types");

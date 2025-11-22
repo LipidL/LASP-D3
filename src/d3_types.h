@@ -53,7 +53,7 @@ static const functional_params_t FUNCTIONAL_PARAMS[] = {
 typedef struct device_data {
     uint64_t num_atoms;     // number of atoms in the system
     uint64_t num_elements;  // number of unique elements in the system
-    uint64_t* atom_types;  // array of atom types, size: num_atoms. the entries is not the atomic number, but the index of the corresponding entry in constants.
+    uint16_t* atom_types;  // array of atom types, size: num_atoms. the entries is not the atomic number, but the index of the corresponding entry in constants.
     atom_t* atoms;         // array of atom data, sorted so atoms in the same grid are together. size: num_atoms.
     real_t* c6_ab_ref;  // size: num_elements*num_elements*NUM_REF_C6*NUM_REF_C6*NUM_C6AB_ENTRIES
     uint64_t c6_stride_1, c6_stride_2, c6_stride_3, c6_stride_4;    // strides for c6ab array
