@@ -8,16 +8,16 @@ namespace periodic_table {
  */
 template <typename T>
 class Element {
-   public:
-    std::string name;            // Name of the element
-    std::string symbol;          // Symbol of the element
-    uint16_t atomic_number;      // Atomic number of the element
-    T mass;                      // Atomic weight of the element
-    T valence_radius;            // Valence radius of the element
-    T covalent_radius;           // Covalent radius of the element
-    uint16_t valence_electrons;  // Number of valence electrons
-    uint16_t group;   // Group number of the element in the periodic table
-    uint16_t period;  // Period number of the element in the periodic table
+  public:
+    std::string name; // Name of the element
+    std::string symbol; // Symbol of the element
+    uint16_t atomic_number; // Atomic number of the element
+    T mass; // Atomic weight of the element
+    T valence_radius; // Valence radius of the element
+    T covalent_radius; // Covalent radius of the element
+    uint16_t valence_electrons; // Number of valence electrons
+    uint16_t group; // Group number of the element in the periodic table
+    uint16_t period; // Period number of the element in the periodic table
 };
 
 /**
@@ -25,10 +25,10 @@ class Element {
  */
 template <typename T>
 class PeriodicTable {
-   public:
-   /**
-    * @brief Constructs the periodic table and initializes it with elements.
-    */
+  public:
+    /**
+     * @brief Constructs the periodic table and initializes it with elements.
+     */
     PeriodicTable() {
         // Initialize the periodic table with some elements
         elements.push_back(Element<T>{"Hydrogen", "H", 1, 1.008, 0.53, 0.37, 1, 1, 1});
@@ -150,13 +150,13 @@ class PeriodicTable {
         elements.push_back(Element<T>{"Tennessine", "Ts", 117, 294.0, 1.60, 1.65, 7, 17, 7});
         elements.push_back(Element<T>{"Oganesson", "Og", 118, 294.0, 1.55, 1.57, 8, 18, 7});
     }
-    ~PeriodicTable() = default;  // Default destructor
+    ~PeriodicTable() = default; // Default destructor
 
     /**
      * @brief Adds a new element to the periodic table.
      */
-    void addElement(const Element<T>& element) {
-        elements.push_back(element);  // Add element to the vector
+    void addElement(const Element<T> &element) {
+        elements.push_back(element); // Add element to the vector
     }
 
     /**
@@ -166,12 +166,12 @@ class PeriodicTable {
      * @throws std::runtime_error if the element is not found.
      */
     Element<T> getElementByAtomicNumber(uint16_t atomic_number) const {
-        for (const auto& element : elements) {
+        for (const auto &element : elements) {
             if (element.atomic_number == atomic_number) {
-                return element;  // Return the element with the specified atomic number
+                return element; // Return the element with the specified atomic number
             }
         }
-        throw std::runtime_error("Element not found");  // Throw an error if not found
+        throw std::runtime_error("Element not found"); // Throw an error if not found
     }
 
     /**
@@ -180,19 +180,19 @@ class PeriodicTable {
      * @return The element with the specified symbol.
      * @throws std::runtime_error if the element is not found.
      */
-    Element<T> getElementBySymbol(const std::string& symbol) const {
-        for (const auto& element : elements) {
+    Element<T> getElementBySymbol(const std::string &symbol) const {
+        for (const auto &element : elements) {
             if (element.symbol == symbol) {
-                return element;  // Return the element with the specified symbol
+                return element; // Return the element with the specified symbol
             }
         }
-        throw std::runtime_error("Element not found");  // Throw an error if not found
+        throw std::runtime_error("Element not found"); // Throw an error if not found
     }
 
-   private:
-    std::vector<Element<T>> elements;  // Vector to store elements
+  private:
+    std::vector<Element<T>> elements; // Vector to store elements
 };
-}  // namespace periodic_table
+} // namespace periodic_table
 
 namespace structures {
 template <typename T>
@@ -209,23 +209,21 @@ struct Coordinate {
  */
 template <typename T>
 class Atom {
-   public:
-    periodic_table::Element<T> element;  // Element of the atom
+  public:
+    periodic_table::Element<T> element; // Element of the atom
     Coordinate<T> position;
 
     /**
      * @brief Constructs an Atom with the specified element and position.
      */
-    Atom(const periodic_table::Element<T>& element, const Coordinate<T>& position)
+    Atom(const periodic_table::Element<T> &element, const Coordinate<T> &position)
         : element(element), position(position) {}
 
     /**
      * @brief Sets the position of the atom.
      * @param newPosition The new position to set.
      */
-    void setPosition(const Coordinate<T>& newPosition) {
-        position = newPosition;
-    }
+    void setPosition(const Coordinate<T> &newPosition) { position = newPosition; }
 };
 
 /**
@@ -233,14 +231,14 @@ class Atom {
  */
 template <typename T>
 class Cell {
-   public:
+  public:
     T x;
     T y;
     T z;
     T alpha;
     T beta;
     T gamma;
-    T cell[3][3];  // 3x3 matrix to store vectors of the cell
+    T cell[3][3]; // 3x3 matrix to store vectors of the cell
 
     /**
      * @brief Constructs a Cell with the specified dimensions and angles.
@@ -251,8 +249,7 @@ class Cell {
      * @param beta The beta angle of the cell.
      * @param gamma The gamma angle of the cell.
      */
-    Cell(T x, T y, T z, T alpha, T beta, T gamma)
-        : x(x), y(y), z(z), alpha(alpha), beta(beta), gamma(gamma) {
+    Cell(T x, T y, T z, T alpha, T beta, T gamma) : x(x), y(y), z(z), alpha(alpha), beta(beta), gamma(gamma) {
         // Initialize the cell matrix
         // Convert angles from degrees to radians
         const T pi = std::acos(-1.0);
@@ -272,14 +269,9 @@ class Cell {
 
         // Third vector
         cell[2][0] = z * std::cos(beta_rad);
-        cell[2][1] =
-            z *
-            (std::cos(alpha_rad) - std::cos(beta_rad) * std::cos(gamma_rad)) /
-            std::sin(gamma_rad);
-        T tmp =
-            1.0 - std::pow(std::cos(alpha_rad), 2) -
-            std::pow(std::cos(beta_rad), 2) - std::pow(std::cos(gamma_rad), 2) +
-            2 * std::cos(alpha_rad) * std::cos(beta_rad) * std::cos(gamma_rad);
+        cell[2][1] = z * (std::cos(alpha_rad) - std::cos(beta_rad) * std::cos(gamma_rad)) / std::sin(gamma_rad);
+        T tmp = 1.0 - std::pow(std::cos(alpha_rad), 2) - std::pow(std::cos(beta_rad), 2) -
+                std::pow(std::cos(gamma_rad), 2) + 2 * std::cos(alpha_rad) * std::cos(beta_rad) * std::cos(gamma_rad);
         cell[2][2] = z * std::sqrt(std::max(tmp, T(0.0))) / std::sin(gamma_rad);
     }
 };
@@ -289,34 +281,33 @@ class Cell {
  */
 template <typename T>
 class StructureBlock {
-   public:
+  public:
     T energy;
     std::string symmetry;
     Cell<T> cell;
-    std::vector<Atom<T>> atoms;  // Vector to store atoms
+    std::vector<Atom<T>> atoms; // Vector to store atoms
 
     /**
      * @brief Constructs a StructureBlock with the specified energy and symmetry.
      * @param energy The energy of the structure block.
      * @param symmetry The symmetry of the structure block.
      */
-    StructureBlock(T energy, std::string symmetry)
-        : energy(energy), symmetry(symmetry), cell(0, 0, 0, 90, 90, 90) {}
+    StructureBlock(T energy, std::string symmetry) : energy(energy), symmetry(symmetry), cell(0, 0, 0, 90, 90, 90) {}
 
     /**
      * @brief Adds an atom to the structure block.
      * @param atom The atom to add.
      */
-    void addatom(const Atom<T>& atom) {
-        atoms.push_back(atom);  // Add atom to the vector
+    void addatom(const Atom<T> &atom) {
+        atoms.push_back(atom); // Add atom to the vector
     }
 
     /**
      * @brief Sets the cell of the structure block.
      * @param newCell The new cell to set.
      */
-    void set_cell(const Cell<T>& newCell) {
-        cell = newCell;  // Set the cell
+    void set_cell(const Cell<T> &newCell) {
+        cell = newCell; // Set the cell
     }
 };
-}  // namespace structures
+} // namespace structures

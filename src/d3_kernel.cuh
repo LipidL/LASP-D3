@@ -4,14 +4,9 @@
 
 /* global parameters */
 /* cuda kernel launch parameters */
-#define MAX_BLOCK_SIZE 256  // number of threads per block
-#define MAX_LOCAL_NEIGHBORS \
-    256  // the maximum neighbor of one thread, equal to max_supercell_size *
-         // (num_atoms / num_threads)
-#define FLT_MAX \
-    3.402823466e+38F  // maximum float value, used to initialize distances
-
-
+#define MAX_BLOCK_SIZE 256 // number of threads per block
+#define MAX_LOCAL_NEIGHBORS 256 // the maximum neighbor of one thread
+#define FLT_MAX 3.402823466e+38F // maximum float value, used to initialize distances
 
 /*
 constants used in the simulation
@@ -23,8 +18,7 @@ Journal of Chemical Physics 132, 154104 (2010).
 #define K3 4.0f
 #define ALPHA_N(N) (N + 8.0f)
 
-
-__global__ void coordination_number_kernel(device_data_t* data);
-__global__ void print_coordination_number_kernel(device_data_t* data);
-__global__ void two_body_kernel(device_data_t* data);
-__global__ void three_body_kernel(device_data_t* data);
+__global__ void coordination_number_kernel(device_data_t *data);
+__global__ void print_coordination_number_kernel(device_data_t *data);
+__global__ void two_body_kernel(device_data_t *data);
+__global__ void three_body_kernel(device_data_t *data);
