@@ -496,13 +496,18 @@ __device__ inline void calculate_CN(
     // if the distance is within cutoff range, calculate the coordination number
     if (distance <= CN_cutoff && distance > 0.0f) {
         real_t exp = expf(-K1 * ((covalent_radii_1 + covalent_radii_2) / distance - 1.0f));  // $\exp(-k_1*(\frac{R_A+R_b}{r_{ab}}-1))$
+        #ifdef SMOOTH_CUTOFF_CN
         real_t tanh_value = tanhf(CN_cutoff - distance);  // $\tanh(CN_cutoff - r_{ab})$
         real_t smooth_cutoff = powf(tanh_value, 3);  // $\tanh^3(CN_cutoff- r_{ab}))$, this is a smooth cutoff function added in LASP code.
         real_t d_smooth_cutoff_dr = 3.0f * powf(tanh_value, 2) * (1.0f - powf(tanh_value, 2)) * (-1.0f);  // d(smooth_cutoff)/dr
-        real_t dCN_datom = powf(1.0f + exp, -2.0f) * (-K1) * exp * (covalent_radii_1 + covalent_radii_2) * powf(distance, -3.0f); // * smooth_cutoff + d_smooth_cutoff_dr * 1.0f / (1.0f + exp) / distance;  // dCN_ij/dr_ij * 1/r_ij
-
+        real_t dCN_datom = powf(1.0f + exp, -2.0f) * (-K1) * exp * (covalent_radii_1 + covalent_radii_2) * powf(distance, -3.0f) * smooth_cutoff + d_smooth_cutoff_dr * 1.0f / (1.0f + exp) / distance;  // dCN_ij/dr_ij * 1/r_ij
         // the covalent radii table have already taken K2 coefficient into consideration
-        real_t coordination_number = 1.0f / (1.0f + exp); // * smooth_cutoff;
+        real_t coordination_number = 1.0f / (1.0f + exp) * smooth_cutoff;
+        #else
+        real_t dCN_datom = powf(1.0f + exp, -2.0f) * (-K1) * exp * (covalent_radii_1 + covalent_radii_2) * powf(distance, -3.0f);  // dCN_ij/dr_ij * 1/r_ij
+        // the covalent radii table have already taken K2 coefficient into consideration
+        real_t coordination_number = 1.0f / (1.0f + exp);
+        #endif
         // accumulate coordination number and dCN/dr using Kahan summation with batching
         CN_accumulator.add(&coordination_number);
         real_t dCN_dr_contribution[3] = {0.0f, 0.0f, 0.0f};
@@ -1140,10 +1145,16 @@ __device__ inline void calculate_three_body_interaction(
          * \sqrt{1}{1+exp(-k_1(k_2(R_{A,cov}+R_{B,cov})/r_{AB}-1))}$
          */
         real_t exp = expf(-K1 * ((covalent_radii_1 + covalent_radii_2) / distance - 1.0f));  // $\exp(-k_1*(\frac{R_A+R_b}{r_{ab}}-1))$
+        #ifdef SMOOTH_CUTOFF_CN
         real_t tanh_value = tanhf(CN_cutoff - distance);  // $\tanh(CN_cutoff - r_{ab})$
         real_t smooth_cutoff = powf(tanh_value, 3);  // $\tanh^3(CN_cutoff- r_{ab}))$, this is a smooth cutoff function added in LASP code.
         real_t d_smooth_cutoff_dr = 3.0f * powf(tanh_value, 2) * (1.0f - powf(tanh_value, 2)) * (-1.0f);  // d(smooth_cutoff)/dr
+        // the covalent radii table have already taken K2 coefficient into consideration
         real_t dCN_datom = powf(1.0f + exp, -2.0f) * (-K1) * exp * (covalent_radii_1 + covalent_radii_2) * powf(distance, -3.0f) * smooth_cutoff + d_smooth_cutoff_dr * 1.0f / (1.0f + exp) / distance;  // dCN_ij/dr_ij * 1/r_ij
+        #else
+        // the covalent radii table have already taken K2 coefficient into consideration
+        real_t dCN_datom = powf(1.0f + exp, -2.0f) * (-K1) * exp * (covalent_radii_1 + covalent_radii_2) * powf(distance, -3.0f);  // dCN_ij/dr_ij * 1/r_ij
+        #endif
         // dE/drik = dE/dCN * dCN/drik
         real_t dE_drik = dE_dCN * dCN_datom;
         // accumulate force for the central atom and neighboring atom
