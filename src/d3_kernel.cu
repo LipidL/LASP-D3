@@ -19,7 +19,7 @@ struct HierarchicalKahanAccumulator {
      * @brief initializes an accumulator
      * Call this once at the start.
      */
-    __inline__ __device__ void init() {
+    __device__ inline void init() {
         for (uint8_t i = 0; i < N; ++i) {
             base_sum[i] = 0.0f;
             compensation[i] = 0.0f;
@@ -33,7 +33,7 @@ struct HierarchicalKahanAccumulator {
     /**
      * @brief add a value to the accumulator
      */
-    __inline__ __device__ void add(const real_t value[N]) {
+    __device__ inline void add(const real_t value[N]) {
         // Kahan summation for the base level
         for (uint8_t i = 0; i < N; ++i) {
             real_t y = value[i] - compensation[i];
@@ -68,7 +68,7 @@ struct HierarchicalKahanAccumulator {
     /**
      * @brief get the final accumulated sum
      */
-    __inline__ __device__ void get_sum(real_t result[N]) {
+    __device__ inline void get_sum(real_t result[N]) {
         for (uint8_t i = 0; i < N; ++i) {
             result[i] = base_sum[i];
         }
@@ -251,13 +251,25 @@ __device__ void damping(real_t distance, real_t cutoff_radius, real_t param_1,
                                         // when using BJ damping, they are a1 and a2, respectively
                         real_t *damping_6, real_t *damping_8, real_t *d_damping_6, real_t *d_damping_8) {
     if constexpr (damping_type == ZERO_DAMPING) {
+        // calculate powers of distance/cutoff_radius
+        const real_t base_6 = param_1 * cutoff_radius / distance;
+        const real_t base_6_2 = base_6 * base_6;
+        const real_t base_6_4 = base_6_2 * base_6_2;
+        const real_t base_6_8 = base_6_4 * base_6_4;
+        const real_t base_6_14 = base_6_8 * base_6_4 * base_6_2;
+        const real_t base_6_15 = base_6_14 * base_6;
+        const real_t base_8 = param_2 * cutoff_radius / distance;
+        const real_t base_8_2 = base_8 * base_8;
+        const real_t base_8_4 = base_8_2 * base_8_2;
+        const real_t base_8_8 = base_8_4 * base_8_4;
+        const real_t base_8_16 = base_8_8 * base_8_8;
+        const real_t base_8_17 = base_8_16 * base_8;
+
         // calculate damping
-        const real_t f_dn_6 = 1 / (1 + 6.0f * powf(param_1 * cutoff_radius / distance, 14.0f)); // alpha_n = 14
-        const real_t f_dn_8 = 1 / (1 + 6.0f * powf(param_2 * cutoff_radius / distance, 16.0f)); // alpha_n = 16
-        const real_t d_f_dn_6 =
-            6.0f * 14.0f * f_dn_6 * f_dn_6 * powf(param_1 * cutoff_radius / distance, 15.0f) / param_1 / cutoff_radius;
-        const real_t d_f_dn_8 =
-            6.0f * 16.0f * f_dn_8 * f_dn_8 * powf(param_2 * cutoff_radius / distance, 17.0f) / param_2 / cutoff_radius;
+        const real_t f_dn_6 = 1 / (1 + 6.0f * base_6_14); // alpha_n = 14
+        const real_t f_dn_8 = 1 / (1 + 6.0f * base_8_16); // alpha_n = 16
+        const real_t d_f_dn_6 = 6.0f * 14.0f * f_dn_6 * f_dn_6 * base_6_15 / param_1 / cutoff_radius;
+        const real_t d_f_dn_8 = 6.0f * 16.0f * f_dn_8 * f_dn_8 * base_8_17 / param_2 / cutoff_radius;
         // write the result back
         *damping_6 = f_dn_6;
         *damping_8 = f_dn_8;
@@ -409,25 +421,27 @@ __device__ inline void calculate_CN(atom_t atom_1, atom_t atom_2, real_t covalen
         atom_1.z - atom_2.z // delta z
     }; // delta_r between atom 1 and atom 2
     // calculate the distance between the two atoms
-    real_t distance = sqrtf(powf(atom_1.x - atom_2.x, 2) + powf(atom_1.y - atom_2.y, 2) + powf(atom_1.z - atom_2.z, 2));
+    real_t distance_square = delta_r[0] * delta_r[0] + delta_r[1] * delta_r[1] + delta_r[2] * delta_r[2];
     // if the distance is within cutoff range, calculate the coordination number
-    if (distance <= CN_cutoff && distance > 0.0f) {
+    if (distance_square <= CN_cutoff * CN_cutoff && distance_square > 0.0f) {
+        real_t distance = sqrtf(distance_square);
         real_t exp = expf(
             -K1 * ((covalent_radii_1 + covalent_radii_2) / distance - 1.0f)); // $\exp(-k_1*(\frac{R_A+R_b}{r_{ab}}-1))$
 #ifdef SMOOTH_CUTOFF_CN
         real_t tanh_value = tanhf(CN_cutoff - distance); // $\tanh(CN_cutoff - r_{ab})$
         real_t smooth_cutoff =
-            powf(tanh_value, 3); // $\tanh^3(CN_cutoff- r_{ab}))$, this is a smooth cutoff function added in LASP code.
+            tanh_value * tanh_value *
+            tanh_value; // $\tanh^3(CN_cutoff- r_{ab}))$, this is a smooth cutoff function added in LASP code.
         real_t d_smooth_cutoff_dr =
-            3.0f * powf(tanh_value, 2) * (1.0f - powf(tanh_value, 2)) * (-1.0f); // d(smooth_cutoff)/dr
-        real_t dCN_datom = powf(1.0f + exp, -2.0f) * (-K1) * exp * (covalent_radii_1 + covalent_radii_2) *
-                               powf(distance, -3.0f) * smooth_cutoff +
+            3.0f * tanh_value * tanh_value * (1.0f - tanh_value * tanh_value) * (-1.0f); // d(smooth_cutoff)/dr
+        real_t dCN_datom = 1 / (1.0f + exp) / (1.0f + exp) * (-K1) * exp * (covalent_radii_1 + covalent_radii_2) /
+                               (distance * distance * distance) * smooth_cutoff +
                            d_smooth_cutoff_dr * 1.0f / (1.0f + exp) / distance; // dCN_ij/dr_ij * 1/r_ij
         // the covalent radii table have already taken K2 coefficient into consideration
         real_t coordination_number = 1.0f / (1.0f + exp) * smooth_cutoff;
 #else
-        real_t dCN_datom = powf(1.0f + exp, -2.0f) * (-K1) * exp * (covalent_radii_1 + covalent_radii_2) *
-                           powf(distance, -3.0f); // dCN_ij/dr_ij * 1/r_ij
+        real_t dCN_datom = 1 / (1.0f + exp) / (1.0f + exp) * (-K1) * exp * (covalent_radii_1 + covalent_radii_2) /
+                           (distance * distance * distance); // dCN_ij/dr_ij * 1/r_ij
         // the covalent radii table have already taken K2 coefficient into consideration
         real_t coordination_number = 1.0f / (1.0f + exp);
 #endif
@@ -669,8 +683,7 @@ __device__ inline void calculate_two_body_interaction(real_t cell_volume, atom_t
     }; // delta_r between atom 1 and atom 2
     const real_t distance_2 = delta_r[0] * delta_r[0] + delta_r[1] * delta_r[1] +
                               delta_r[2] * delta_r[2]; // distance^2 between atom 1 and atom 2
-    const real_t cutoff_square = cutoff_radius * cutoff_radius; // global cutoff for distance check
-    if (distance_2 <= cutoff_square && distance_2 > 0.0f) {
+    if (distance_2 <= cutoff_radius * cutoff_radius && distance_2 > 0.0f) {
         const real_t distance = sqrtf(distance_2); // distance between atom 1 and atom 2
         // calculate distance^6 and distance^8 using fast power
         const real_t distance_3 = distance_2 * distance; // distance^3
@@ -752,6 +765,7 @@ __global__ void two_body_kernel(device_data_t *data) {
     const real_t a1 = data->functional_params.a1;
     const real_t a2 = data->functional_params.a2;
     const real_t cutoff = data->cutoff;
+    const uint64_t num_elements = data->num_elements;
 
     // load the central atom data
     const uint64_t atom_1_index = blockIdx.x; // index of the central atom
@@ -805,7 +819,7 @@ __global__ void two_body_kernel(device_data_t *data) {
                 const real_t c8_ab = 3.0f * c6_ab * r2r4_1 * r2r4_2; // C8ab value
                 const real_t dC8ab_dCN_1 = 3.0f * dC6ab_dCN_1 * r2r4_1 * r2r4_2; // dC8ab/dCN_1
                 // acquire the R0 cutoff radius between the two atoms
-                const real_t r0_cutoff = data->r0ab[atom_1_type * data->num_elements + atom_2_type];
+                const real_t r0_cutoff = data->r0ab[atom_1_type * num_elements + atom_2_type];
 
                 atom_t atom_2 = atom_2_original; // the actual atom2 participated in the calculation
                 // translate atom_2 due to periodic boundaries
