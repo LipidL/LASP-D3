@@ -13,23 +13,13 @@
 D3Handle_t *init_d3_handle(uint16_t *elements, uint64_t length_elements, uint64_t max_length, real_t cutoff_radius,
                            real_t coordination_number_cutoff, DampingType damping_type,
                            FunctionalType functional_type) {
-    real_t *coords = (real_t *)malloc(max_length * 3 * sizeof(real_t)); // allocate memory for coordinates
-    if (coords == NULL) {
-        fprintf(stderr, "Error: failed to allocate memory for coordinates in init_d3_handle\n");
-        return NULL;
-    }
-    // Zero-initialize coordinates to avoid uninitialized memory
-    memset(coords, 0, max_length * 3 * sizeof(real_t));
-    real_t cell[3][3] = {10, 0, 0, 0, 10, 0, 0, 0, 10}; // initialize the cell matrix
     try {
-        Device_Buffer *buffer = new Device_Buffer((real_t(*)[3])coords, elements, length_elements, cell, max_length,
+        Device_Buffer *buffer = new Device_Buffer(elements, length_elements, max_length,
                                                   cutoff_radius, coordination_number_cutoff, damping_type,
                                                   functional_type); // create a buffer to hold the data
-        free(coords); // free the coordinates array
         return (D3Handle_t *)buffer; // return the pointer to the handle
     } catch (const std::exception &e) {
         fprintf(stderr, "Error: %s\n", e.what());
-        free(coords); // free the coordinates array
         return NULL;
     }
 }
@@ -133,6 +123,7 @@ uint16_t compute_dispersion_energy_from_handle_status(D3Handle_t *handle, real_t
         cudaStream_t stream;
         CHECK_CUDA(cudaStreamCreate(&stream));
         Device_Buffer *buffer = (Device_Buffer *)handle; // cast the handle to Device_Buffer
+        buffer->clear(); // clear previous intermediate results
         // construct grid cells for neighbor list (if applicable)
         buffer->construct_grids();
         // print debug information about cell

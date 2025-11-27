@@ -53,9 +53,8 @@ class Device_Buffer {
     /**
      * @brief constructor of `Device_Buffer` class
      */
-    __host__ Device_Buffer(real_t coords[][3], uint16_t *elements, uint64_t length_elements, real_t cell[3][3],
-                           uint64_t length, real_t cutoff, real_t CN_cutoff, DampingType damping_type,
-                           FunctionalType functional_type);
+    __host__ Device_Buffer(uint16_t *elements, uint64_t length_elements, uint64_t length, real_t cutoff,
+                           real_t CN_cutoff, DampingType damping_type, FunctionalType functional_type);
 
     /**
      * @brief destructor of `Device_Buffer` class
