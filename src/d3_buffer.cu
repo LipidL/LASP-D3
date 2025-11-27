@@ -138,85 +138,37 @@ uint16_t Unique_Elements::operator[](uint16_t index) {
 } // operator to access the element at the given index
 
 // implementation for Device_Buffer class
-__host__ Device_Buffer::Device_Buffer(real_t coords[][3], uint16_t *elements, uint64_t length_elements,
-                                      real_t cell[3][3], uint64_t length, real_t cutoff, real_t CN_cutoff,
-                                      DampingType damping_type, FunctionalType functional_type) {
+__host__ Device_Buffer::Device_Buffer(uint16_t *elements, uint64_t length_elements, uint64_t length, real_t cutoff,
+                                      real_t CN_cutoff, DampingType damping_type, FunctionalType functional_type) {
     memset(&this->host_data_, 0, sizeof(device_data_t)); // initialize the host data to 0
     this->device_data_ = nullptr; // initialize the device data pointer to null
     Unique_Elements unique_elements(elements,
                                     length_elements); // create the unique elements object
     {
         // construct elements
-        this->host_data_.num_atoms = length; // number of atoms in the system
         this->host_data_.num_elements = unique_elements.num_elements; // number of unique elements in the system
-
-        uint16_t *h_atom_types = (uint16_t *)malloc(sizeof(uint16_t) * length);
-        if (h_atom_types == NULL) {
-            throw std::runtime_error("Error: failed to allocate host memory for atom types");
-        }
-        for (uint64_t i = 0; i < length; ++i) {
-            h_atom_types[i] = unique_elements.find(elements[i]);
-        }
 
         uint16_t *d_atom_types;
         CHECK_CUDA(cudaMalloc((void **)&d_atom_types, sizeof(uint16_t) * length));
-        CHECK_CUDA(cudaMemcpy(d_atom_types, h_atom_types, sizeof(uint16_t) * length, cudaMemcpyHostToDevice));
-        free(h_atom_types);
+        CHECK_CUDA(cudaMemset(d_atom_types, 0, sizeof(uint16_t) * length));
         this->host_data_.atom_types = d_atom_types;
     }
     {
-        // construct cell
-        for (uint16_t i = 0; i < 3; ++i) {
-            for (uint16_t j = 0; j < 3; ++j) {
-                this->host_data_.cell[i][j] = cell[i][j];
-            }
-        }
-
         // set cutoff parameters
         this->host_data_.coordination_number_cutoff = CN_cutoff;
         this->host_data_.cutoff = cutoff;
-
-        // construct number of grid cells in each direction
-        double inversed_cell_matrix[3][3];
-        // we hypothesize that the CN cutoff and dispersion cutoff is close,
-        // so only using the larger one to determine the grid size doesn't affect performace too
-        // much.
-        double larger_cutoff =
-            CN_cutoff > cutoff ? CN_cutoff : cutoff; // the larger cutoff value among CN cutoff and disp cutoff
-        matrix_inverse<real_t, double>(this->host_data_.cell, inversed_cell_matrix);
-        for (uint16_t i = 0; i < 3; ++i) {
-            // calculate the norm of reciprocal lattice vector, note that in host_data_.cell, cell
-            // vectors are stored in rows
-            double vec_norm = std::sqrt(inversed_cell_matrix[i][0] * inversed_cell_matrix[i][0] +
-                                        inversed_cell_matrix[i][1] * inversed_cell_matrix[i][1] +
-                                        inversed_cell_matrix[i][2] * inversed_cell_matrix[i][2]);
-            double perpendicular_height = 1 / vec_norm;
-            this->host_data_.num_grid_cells[i] = (uint64_t)std::floor(perpendicular_height / larger_cutoff);
-        }
-        // construct supercell information
-        calculate_cell_repeats(cell, larger_cutoff, this->host_data_.max_cell_bias);
-        debug("max_cell_bias: %zu %zu %zu\n", this->host_data_.max_cell_bias[0], this->host_data_.max_cell_bias[1],
-              this->host_data_.max_cell_bias[2]);
-    } // supercell information
+    } // cutoff parameters
     {
         // construct atoms
         // the rearrangement of atoms is performed before calculation.
-        // here we just allocate memory and copy the data to device.
-        atom_t *h_atoms = (atom_t *)malloc(sizeof(atom_t) * length);
-        for (uint64_t i = 0; i < length; ++i) {
-            h_atoms[i].element = elements[i];
-            h_atoms[i].original_index = i;
-            h_atoms[i].home_grid_cell = 0; // to be filled in later
-            h_atoms[i].x = coords[i][0];
-            h_atoms[i].y = coords[i][1];
-            h_atoms[i].z = coords[i][2];
-        }
+        // here we just allocate memory
+        this->host_data_.num_atoms = length; // number of atoms in the system
+
         atom_t *d_atoms;
         CHECK_CUDA(cudaMalloc((void **)&d_atoms, sizeof(atom_t) * length));
-        CHECK_CUDA(cudaMemcpy(d_atoms, h_atoms, sizeof(atom_t) * length, cudaMemcpyHostToDevice));
+        CHECK_CUDA(cudaMemset(d_atoms, 0, sizeof(atom_t) * length));
         this->host_data_.atoms = d_atoms;
         // cleanup
-        free(h_atoms);
     }
 
     // construct constants
@@ -311,16 +263,20 @@ __host__ Device_Buffer::Device_Buffer(real_t coords[][3], uint16_t *elements, ui
         this->host_data_.functional_type = functional_type;
         this->host_data_.workload_distribution_type = ALL_ITERATE; // default to all iterate
         this->host_data_.functional_params = FUNCTIONAL_PARAMS[functional_type]; // set the functional parameters
+        // default cell parameters
+        this->host_data_.num_grid_cells[0] = 1;
+        this->host_data_.num_grid_cells[1] = 1;
+        this->host_data_.num_grid_cells[2] = 1;
         uint64_t num_grids = this->host_data_.num_grid_cells[0] * this->host_data_.num_grid_cells[1] *
                              this->host_data_.num_grid_cells[2];
         uint64_t *d_grid_start_indices;
         CHECK_CUDA(cudaMalloc((void **)&d_grid_start_indices, sizeof(uint64_t) * num_grids));
         CHECK_CUDA(cudaMemset(d_grid_start_indices, 0, sizeof(uint64_t) * num_grids));
         this->host_data_.grid_start_indices = d_grid_start_indices;
-        real_t *coordination_numbers;
-        CHECK_CUDA(cudaMalloc((void **)&coordination_numbers, length * sizeof(real_t)));
-        CHECK_CUDA(cudaMemset(coordination_numbers, 0, length * sizeof(real_t)));
-        this->host_data_.coordination_numbers = coordination_numbers;
+        real_t *d_coordination_numbers;
+        CHECK_CUDA(cudaMalloc((void **)&d_coordination_numbers, length * sizeof(real_t)));
+        CHECK_CUDA(cudaMemset(d_coordination_numbers, 0, length * sizeof(real_t)));
+        this->host_data_.coordination_numbers = d_coordination_numbers;
         this->host_data_.status = COMPUTE_SUCCESS; // set the status to normal
         real_t *dCN_dr;
         CHECK_CUDA(cudaMalloc((void **)&dCN_dr, length * 3 * sizeof(real_t)));
@@ -436,6 +392,20 @@ __host__ void Device_Buffer::set_atoms(uint16_t *elements, real_t coords[][3], u
         debug("Atom %zu: %d %f %f %f\n", i, h_atoms[i].element, h_atoms[i].x, h_atoms[i].y, h_atoms[i].z);
     }
     CHECK_CUDA(cudaMemcpy(this->host_data_.atoms, h_atoms, length * sizeof(atom_t), cudaMemcpyHostToDevice));
+
+    // Also need to update atom_types array to match the new atoms
+    uint16_t *h_atom_types = (uint16_t *)malloc(length * sizeof(uint16_t));
+    if (h_atom_types == NULL) {
+        free(h_atoms);
+        throw std::runtime_error("Error: failed to allocate host memory for atom types");
+    }
+    for (uint64_t i = 0; i < length; ++i) {
+        h_atom_types[i] = unique_elements.find(elements[i]);
+    }
+    CHECK_CUDA(
+        cudaMemcpy(this->host_data_.atom_types, h_atom_types, length * sizeof(uint16_t), cudaMemcpyHostToDevice));
+    free(h_atom_types);
+
     CHECK_CUDA(cudaDeviceSynchronize());
     free(h_atoms); // free the host atoms array
 } // set atoms
