@@ -10,21 +10,21 @@
 #include "d3_buffer.cuh"
 #include "d3_kernel.cuh"
 
-D3Handle_t *init_d3_handle(uint16_t *elements, uint64_t length_elements, uint64_t max_length, real_t cutoff_radius,
-                           real_t coordination_number_cutoff, DampingType damping_type,
-                           FunctionalType functional_type) {
+d3_handle_t *init_d3_handle(uint16_t *elements, uint64_t length_elements, uint64_t max_length, real_t cutoff_radius,
+                            real_t coordination_number_cutoff, damping_type_t damping_type,
+                            functional_t functional_type) {
     try {
-        Device_Buffer *buffer = new Device_Buffer(elements, length_elements, max_length,
-                                                  cutoff_radius, coordination_number_cutoff, damping_type,
+        Device_Buffer *buffer = new Device_Buffer(elements, length_elements, max_length, cutoff_radius,
+                                                  coordination_number_cutoff, damping_type,
                                                   functional_type); // create a buffer to hold the data
-        return (D3Handle_t *)buffer; // return the pointer to the handle
+        return (d3_handle_t *)buffer; // return the pointer to the handle
     } catch (const std::exception &e) {
         fprintf(stderr, "Error: %s\n", e.what());
         return NULL;
     }
 }
 
-void set_atoms(D3Handle_t *handle, real_t *coords, uint16_t *elements, uint64_t length) {
+void set_atoms(d3_handle_t *handle, real_t *coords, uint16_t *elements, uint64_t length) {
     if (handle == NULL) {
         fprintf(stderr, "Error: handle is NULL in set_atoms\n");
         return;
@@ -54,7 +54,7 @@ void set_atoms(D3Handle_t *handle, real_t *coords, uint16_t *elements, uint64_t 
     }
 }
 
-void set_cell(D3Handle_t *handle, real_t cell[3][3]) {
+void set_cell(d3_handle_t *handle, real_t cell[3][3]) {
     if (handle == NULL) {
         fprintf(stderr, "Error: handle is NULL in set_cell\n");
         return;
@@ -77,7 +77,7 @@ void set_cell(D3Handle_t *handle, real_t cell[3][3]) {
     }
 }
 
-void clear_d3_handle(D3Handle_t *handle) {
+void clear_d3_handle(d3_handle_t *handle) {
     if (handle == NULL) {
         fprintf(stderr, "Error: handle is NULL in clear_d3_handle\n");
         return;
@@ -92,7 +92,7 @@ void clear_d3_handle(D3Handle_t *handle) {
     }
 }
 
-void free_d3_handle(D3Handle_t *handle) {
+void free_d3_handle(d3_handle_t *handle) {
     if (handle == NULL) {
         fprintf(stderr, "Error: handle is NULL in free_d3_handle\n");
         return;
@@ -112,7 +112,7 @@ void free_d3_handle(D3Handle_t *handle) {
     }
 }
 
-uint16_t compute_dispersion_energy_from_handle_status(D3Handle_t *handle, real_t *energy, real_t *force,
+uint16_t compute_dispersion_energy_from_handle_status(d3_handle_t *handle, real_t *energy, real_t *force,
                                                       real_t *stress) {
     if (handle == NULL) {
         fprintf(stderr, "Error: handle is NULL in compute_dispersion_energy_from_handle\n");
@@ -203,7 +203,7 @@ uint16_t compute_dispersion_energy_from_handle_status(D3Handle_t *handle, real_t
     }
 }
 
-void compute_dispersion_energy_from_handle(D3Handle_t *handle, real_t *energy, real_t *force, real_t *stress) {
+void compute_dispersion_energy_from_handle(d3_handle_t *handle, real_t *energy, real_t *force, real_t *stress) {
     uint16_t status = compute_dispersion_energy_from_handle_status(
         handle, energy, force, stress); // compute the dispersion energy from the handle
     if (status != COMPUTE_SUCCESS) {
@@ -213,12 +213,12 @@ void compute_dispersion_energy_from_handle(D3Handle_t *handle, real_t *energy, r
 
 __host__ void compute_dispersion_energy(real_t coords[][3], uint16_t *elements, uint64_t length, real_t cell[3][3],
                                         real_t cutoff_radius, real_t coordination_number_cutoff,
-                                        DampingType damping_type, FunctionalType functional_type, real_t *energy,
+                                        damping_type_t damping_type, functional_t functional_type, real_t *energy,
                                         real_t *force, real_t *stress) {
     // compute dispersion energy
     try {
-        D3Handle_t *handle = init_d3_handle(elements, length, length, cutoff_radius, coordination_number_cutoff,
-                                            damping_type, functional_type);
+        d3_handle_t *handle = init_d3_handle(elements, length, length, cutoff_radius, coordination_number_cutoff,
+                                             damping_type, functional_type);
         set_atoms(handle, (real_t *)coords, elements, length);
         set_cell(handle, cell);
         clear_d3_handle(handle);

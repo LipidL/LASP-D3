@@ -15,7 +15,7 @@ typedef struct atom {
 typedef enum {
     ZERO_DAMPING = 0, // original DFT-D3 damping
     BJ_DAMPING = 1, // Becke-Johnson damping
-} DampingType;
+} damping_type_t;
 
 typedef enum {
     PBE = 0,
@@ -25,12 +25,12 @@ typedef enum {
     BP86 = 4,
     REVPBE = 5,
     CUSTOM = 99 // Special value for custom parameters
-} FunctionalType;
+} functional_t;
 
 typedef enum {
     ALL_ITERATE = 0, // all atoms iterate over all other atoms over all supercell images
     CELL_LIST = 1 // use cell list to accelerate the search for neighboring atoms
-} WorkloadDistributionType;
+} workload_distribution_t;
 
 typedef struct {
     real_t s6;
@@ -62,7 +62,7 @@ typedef struct device_data {
     real_t *rcov; // size: num_elements
     real_t *r2r4; // size: num_elements
     real_t cell[3][3]; // cell matrix, specify the three vectors of the cell
-    WorkloadDistributionType workload_distribution_type; // the workload distribution type used for the calculation
+    workload_distribution_t workload_distribution_type; // the workload distribution type used for the calculation
     uint64_t max_cell_bias[3]; // the maximum bias of the cell in each direction, this must be an odd number (because of
                                // symmetry)
     uint64_t num_grid_cells[3]; // number of grid cells in each direction
@@ -70,9 +70,9 @@ typedef struct device_data {
                                   // num_grid_cells[0]*num_grid_cells[1]*num_grid_cells[2]
     real_t coordination_number_cutoff; // the cutof radius for CN computation
     real_t cutoff; // the cutoff radius for the dispersion energy calculation
-    DampingType damping_type; // the damping type used for the calculation
-    FunctionalType functional_type; // the functional type used for the
-                                    // calculation
+    damping_type_t damping_type; // the damping type used for the calculation
+    functional_t functional_type; // the functional type used for the
+                                  // calculation
     functional_params_t functional_params; // parameters for the functional
     // some intermediate variables, not initialized but used during computation
     real_t *coordination_numbers; // array of coordination numbers, length:

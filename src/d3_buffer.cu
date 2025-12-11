@@ -139,7 +139,7 @@ uint16_t Unique_Elements::operator[](uint16_t index) {
 
 // implementation for Device_Buffer class
 __host__ Device_Buffer::Device_Buffer(uint16_t *elements, uint64_t length_elements, uint64_t length, real_t cutoff,
-                                      real_t CN_cutoff, DampingType damping_type, FunctionalType functional_type) {
+                                      real_t CN_cutoff, damping_type_t damping_type, functional_t functional_type) {
     memset(&this->host_data_, 0, sizeof(device_data_t)); // initialize the host data to 0
     this->device_data_ = nullptr; // initialize the device data pointer to null
     Unique_Elements unique_elements(elements,
@@ -427,7 +427,7 @@ __host__ void Device_Buffer::set_cell(real_t cell[3][3]) {
     double inversed_cell_matrix[3][3];
     // we hypothesize that the CN cutoff and dispersion cutoff is close,
     // so only using the larger one to determine the grid size doesn't affect performace too much.
-    WorkloadDistributionType distribution_type = CELL_LIST;
+    workload_distribution_t distribution_type = CELL_LIST;
     double larger_cutoff =
         CN_cutoff > cutoff ? CN_cutoff : cutoff; // the larger cutoff value among CN cutoff and disp cutoff
     matrix_inverse<real_t, double>(this->host_data_.cell, inversed_cell_matrix);

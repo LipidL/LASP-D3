@@ -6,7 +6,7 @@ ffi = cffi.FFI()
 
 # Define the C API
 ffi.cdef("""
-typedef void D3Handle_t;
+typedef void d3_handle_t;
 
 void compute_dispersion_energy(
     float atoms[][3],
@@ -22,7 +22,7 @@ void compute_dispersion_energy(
     float *stress    
 );
 
-D3Handle_t *init_d3_handle( 
+d3_handle_t *init_d3_handle( 
     uint16_t *elements,
     uint64_t length_elements,
     uint64_t max_length, 
@@ -32,12 +32,12 @@ D3Handle_t *init_d3_handle(
     int functional_type
 );
 
-void set_atoms(D3Handle_t *handle, float *coords, uint16_t *elements, uint64_t length);
-void set_cell(D3Handle_t *handle, float cell[3][3]);
-void free_d3_handle(D3Handle_t *handle);
-void clear_d3_handle(D3Handle_t *handle);
+void set_atoms(d3_handle_t *handle, float *coords, uint16_t *elements, uint64_t length);
+void set_cell(d3_handle_t *handle, float cell[3][3]);
+void free_d3_handle(d3_handle_t *handle);
+void clear_d3_handle(d3_handle_t *handle);
 uint16_t compute_dispersion_energy_from_handle_status(
-    D3Handle_t *handle,
+    d3_handle_t *handle,
     float *energy,
     float *force,
     float *stress

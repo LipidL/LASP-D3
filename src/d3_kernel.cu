@@ -244,7 +244,7 @@ __inline__ __device__ void blockReduceSumThreeBodyKernel(real_t force[3], real_t
  * @param param_1 First parameter for damping. when using zero damping, it is SR_6; when using BJ damping, it is a1
  * @param param_2 Second parameter for damping. when using zero damping, it is SR_8; when using BJ damping, it is a2
  */
-template <DampingType damping_type>
+template <damping_type_t damping_type>
 __device__ void damping(real_t distance, real_t cutoff_radius, real_t param_1,
                         real_t param_2, // parameters used for damping calculation.
                                         // when using zero damping, they are SR_6 and SR_8, respectively
@@ -668,14 +668,12 @@ __device__ inline void calculate_c6ab(device_data_t *data, uint64_t atom_1_type,
     c6_ab_result = c6_ab;
 }
 
-__device__ inline void calculate_two_body_interaction(real_t cell_volume, atom_t atom_1, atom_t atom_2, real_t c6_ab,
-                                                      real_t c8_ab, real_t dC6ab_dCN_1, real_t dC8ab_dCN_1,
-                                                      real_t r0_cutoff, real_t cutoff_radius, DampingType damping_type,
-                                                      real_t damping_param_1, real_t damping_param_2, real_t s6,
-                                                      real_t s8, HierarchicalKahanAccumulator<1> &energy_accumulator,
-                                                      HierarchicalKahanAccumulator<1> &dE_dCN_accumulator,
-                                                      HierarchicalKahanAccumulator<3> &force_accumulator,
-                                                      HierarchicalKahanAccumulator<9> &stress_accumulator) {
+__device__ inline void calculate_two_body_interaction(
+    real_t cell_volume, atom_t atom_1, atom_t atom_2, real_t c6_ab, real_t c8_ab, real_t dC6ab_dCN_1,
+    real_t dC8ab_dCN_1, real_t r0_cutoff, real_t cutoff_radius, damping_type_t damping_type, real_t damping_param_1,
+    real_t damping_param_2, real_t s6, real_t s8, HierarchicalKahanAccumulator<1> &energy_accumulator,
+    HierarchicalKahanAccumulator<1> &dE_dCN_accumulator, HierarchicalKahanAccumulator<3> &force_accumulator,
+    HierarchicalKahanAccumulator<9> &stress_accumulator) {
     real_t delta_r[3] = {
         atom_1.x - atom_2.x, // delta x
         atom_1.y - atom_2.y, // delta y

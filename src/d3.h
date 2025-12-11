@@ -6,7 +6,7 @@
 #include "d3_types.h"
 
 /* define type for d3 handle */
-typedef void D3Handle_t;
+typedef void d3_handle_t;
 
 /* status code for compute status */
 
@@ -34,8 +34,8 @@ extern "C" {
  * thread.
  */
 void compute_dispersion_energy(real_t atoms[][3], uint16_t *elements, uint64_t num_atoms, real_t cell[3][3],
-                               real_t cutoff_radius, real_t CN_cutoff_radius, DampingType damping_type,
-                               FunctionalType functional_type, real_t *energy, real_t *force, real_t *stress);
+                               real_t cutoff_radius, real_t CN_cutoff_radius, damping_type_t damping_type,
+                               functional_t functional_type, real_t *energy, real_t *force, real_t *stress);
 
 /**
  * @brief this function is used to init a handle for d3 energy/force/stress calculation.
@@ -56,8 +56,9 @@ void compute_dispersion_energy(real_t atoms[][3], uint16_t *elements, uint64_t n
  * if the element composition might vary during the simulation, you need to
  * specify all the possible elements in the `elements` parameter
  */
-D3Handle_t *init_d3_handle(uint16_t *elements, uint64_t num_elements, uint64_t max_length, real_t cutoff_radius,
-                           real_t coordination_number_cutoff, DampingType damping_type, FunctionalType functional_type);
+d3_handle_t *init_d3_handle(uint16_t *elements, uint64_t num_elements, uint64_t max_length, real_t cutoff_radius,
+                            real_t coordination_number_cutoff, damping_type_t damping_type,
+                            functional_t functional_type);
 /**
  * @brief this function is used to set the coordinates and elements of the atoms
  * in the system.
@@ -72,7 +73,7 @@ D3Handle_t *init_d3_handle(uint16_t *elements, uint64_t num_elements, uint64_t m
  * the number of atoms should not exceed the maximum number of atoms
  * specified in the init_d3_handle function, or the system will crash.
  */
-void set_atoms(D3Handle_t *handle, real_t *coords, uint16_t *elements, uint64_t length);
+void set_atoms(d3_handle_t *handle, real_t *coords, uint16_t *elements, uint64_t length);
 
 /**
  * @brief this function is used to set the cell matrix of the system.
@@ -81,14 +82,14 @@ void set_atoms(D3Handle_t *handle, real_t *coords, uint16_t *elements, uint64_t 
  * @param cell the cell matrix of the system. size: 3 * 3
  */
 
-void set_cell(D3Handle_t *handle, real_t cell[3][3]);
+void set_cell(d3_handle_t *handle, real_t cell[3][3]);
 /**
  * @brief this function is used to free the handle after use.
  *
  * @param handle the handle to be freed.
  */
 
-void free_d3_handle(D3Handle_t *handle);
+void free_d3_handle(d3_handle_t *handle);
 /**
  * @brief this function is used to clear the intermediate data in the handle.
  *
@@ -97,7 +98,7 @@ void free_d3_handle(D3Handle_t *handle);
  * @note you need to call this function before reusing the handle.
  */
 
-void clear_d3_handle(D3Handle_t *handle);
+void clear_d3_handle(d3_handle_t *handle);
 /**
  * @brief this function is used to compute the dispersion energy of the system
  * using the D3 potential without return value.
@@ -106,7 +107,7 @@ void clear_d3_handle(D3Handle_t *handle);
  * @param force pointer to the force values to be computed.
  * @param stress pointer to the stress values to be computed.
  */
-void compute_dispersion_energy_from_handle(D3Handle_t *handle, real_t *energy, real_t *force, real_t *stress);
+void compute_dispersion_energy_from_handle(d3_handle_t *handle, real_t *energy, real_t *force, real_t *stress);
 
 /**
  * @brief this function is used to compute the dispersion energy of the system
@@ -118,7 +119,7 @@ void compute_dispersion_energy_from_handle(D3Handle_t *handle, real_t *energy, r
  *
  * @return uint16_t status code indicating the result of the computation.
  */
-uint16_t compute_dispersion_energy_from_handle_status(D3Handle_t *handle, real_t *energy, real_t *force,
+uint16_t compute_dispersion_energy_from_handle_status(d3_handle_t *handle, real_t *energy, real_t *force,
                                                       real_t *stress);
 
 #ifdef __cplusplus
