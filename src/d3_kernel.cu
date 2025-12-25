@@ -6,7 +6,7 @@
 #define ACCUMULATE_LEVELS 1
 #define ACCUMULATE_STRIDE 8
 template <uint64_t N>
-struct HierarchicalKahanAccumulator {
+struct accumulator_t {
     // Kahan summation state for the base level
     real_t base_sum[N]; // current sum at the base level
     real_t compensation[N]; // compensation for lost low-order bits
@@ -413,8 +413,8 @@ __device__ void distribute_workload(uint64_t num_atoms, uint64_t total_cell_bias
 }
 
 __device__ inline void calculate_CN(atom_t atom_1, atom_t atom_2, real_t covalent_radii_1, real_t covalent_radii_2,
-                                    real_t CN_cutoff, HierarchicalKahanAccumulator<1> &CN_accumulator,
-                                    HierarchicalKahanAccumulator<3> &dCN_dr_accumulator) {
+                                    real_t CN_cutoff, accumulator_t<1> &CN_accumulator,
+                                    accumulator_t<3> &dCN_dr_accumulator) {
     real_t delta_r[3] = {
         atom_1.x - atom_2.x, // delta x
         atom_1.y - atom_2.y, // delta y
@@ -477,8 +477,8 @@ __global__ void coordination_number_kernel(device_data_t *data) {
                                {data->cell[2][0], data->cell[2][1], data->cell[2][2]}}; // cell matrix
     const real_t CN_cutoff = data->coordination_number_cutoff; // cutoff radius of coordination number
     real_t covalent_radii_1 = data->rcov[atom_1_type]; // covalent radii of the central atom
-    HierarchicalKahanAccumulator<1> CN_accumulator;
-    HierarchicalKahanAccumulator<3> dCN_dr_accumulators; // accumulators for dCN/dr in x, y, z directions
+    accumulator_t<1> CN_accumulator;
+    accumulator_t<3> dCN_dr_accumulators; // accumulators for dCN/dr in x, y, z directions
     CN_accumulator.init();
     dCN_dr_accumulators.init();
 
@@ -671,9 +671,9 @@ __device__ inline void calculate_c6ab(device_data_t *data, uint64_t atom_1_type,
 __device__ inline void calculate_two_body_interaction(
     real_t cell_volume, atom_t atom_1, atom_t atom_2, real_t c6_ab, real_t c8_ab, real_t dC6ab_dCN_1,
     real_t dC8ab_dCN_1, real_t r0_cutoff, real_t cutoff_radius, damping_type_t damping_type, real_t damping_param_1,
-    real_t damping_param_2, real_t s6, real_t s8, HierarchicalKahanAccumulator<1> &energy_accumulator,
-    HierarchicalKahanAccumulator<1> &dE_dCN_accumulator, HierarchicalKahanAccumulator<3> &force_accumulator,
-    HierarchicalKahanAccumulator<9> &stress_accumulator) {
+    real_t damping_param_2, real_t s6, real_t s8, accumulator_t<1> &energy_accumulator,
+    accumulator_t<1> &dE_dCN_accumulator, accumulator_t<3> &force_accumulator,
+    accumulator_t<9> &stress_accumulator) {
     real_t delta_r[3] = {
         atom_1.x - atom_2.x, // delta x
         atom_1.y - atom_2.y, // delta y
@@ -776,9 +776,9 @@ __global__ void two_body_kernel(device_data_t *data) {
                                {data->cell[1][0], data->cell[1][1], data->cell[1][2]},
                                {data->cell[2][0], data->cell[2][1], data->cell[2][2]}}; // cell matrix
 
-    HierarchicalKahanAccumulator<1> energy_accumulator, dE_dCN_accumulator;
-    HierarchicalKahanAccumulator<3> force_accumulators;
-    HierarchicalKahanAccumulator<9> stress_accumulators;
+    accumulator_t<1> energy_accumulator, dE_dCN_accumulator;
+    accumulator_t<3> force_accumulators;
+    accumulator_t<9> stress_accumulators;
     energy_accumulator.init();
     dE_dCN_accumulator.init();
     force_accumulators.init();
@@ -957,8 +957,8 @@ __global__ void two_body_kernel(device_data_t *data) {
 
 __device__ inline void calculate_three_body_interaction(atom_t atom_1, atom_t atom_2, real_t covalent_radii_1,
                                                         real_t covalent_radii_2, real_t CN_cutoff, real_t dE_dCN,
-                                                        HierarchicalKahanAccumulator<3> &force_accumulators,
-                                                        HierarchicalKahanAccumulator<9> &stress_accumulators) {
+                                                        accumulator_t<3> &force_accumulators,
+                                                        accumulator_t<9> &stress_accumulators) {
     real_t delta_r[3] = {
         atom_1.x - atom_2.x, // delta x
         atom_1.y - atom_2.y, // delta y
@@ -1029,8 +1029,8 @@ __global__ void three_body_kernel(device_data_t *data) {
     uint64_t atom_1_type = data->atom_types[atom_1_index]; // type of the central atom
     real_t covalent_radii_1 = data->rcov[atom_1_type]; // covalent radius of the central atom
 
-    HierarchicalKahanAccumulator<3> force_accumulators;
-    HierarchicalKahanAccumulator<9> stress_accumulators;
+    accumulator_t<3> force_accumulators;
+    accumulator_t<9> stress_accumulators;
     force_accumulators.init();
     stress_accumulators.init();
 
