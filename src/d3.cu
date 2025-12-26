@@ -15,9 +15,12 @@ double H = 6.62607015e-34;
 double PI = 3.1415926535897932384626433832795029;
 double ME = 9.1093837015e-31;
 double C = 299792458;
+double ELEM_CHARGE = 1.602176634e-19;
 double ALPHA = 7.2973525693e-3;
 double HBAR = H / (2.0 * PI);
 double BOHR = HBAR / (ME * C * ALPHA);
+double HARTREE = ME * C * C * ALPHA * ALPHA;
+double HARTREE_TO_EV = HARTREE / ELEM_CHARGE;
 double ANGSTROM_TO_BOHR = 1/(BOHR * 1e10);
 } // namespace UNITS
 
@@ -189,19 +192,17 @@ uint16_t compute_dispersion_energy_from_handle_status(D3Handle_t *handle, real_t
         CHECK_CUDA(cudaStreamSynchronize(stream)); // synchronize the stream to ensure all operations are finished
 
         // convert bohr to angstron, hartree to eV
-        real_t angstron_to_bohr = 1 / 0.52917726f; // angstron to bohr conversion factor
-        real_t hartree_to_eV = 27.211396641308f; // hartree to eV conversion factor
-        *energy *= -hartree_to_eV; // convert energy to eV and negate it
+        *energy *= -UNITS::HARTREE_TO_EV; // convert energy to eV and negate it
         for (uint64_t i = 0; i < length; ++i) {
             // convert force from hartree/bohr to eV/angstrom
-            force[i * 3 + 0] *= hartree_to_eV * angstron_to_bohr;
-            force[i * 3 + 1] *= hartree_to_eV * angstron_to_bohr;
-            force[i * 3 + 2] *= hartree_to_eV * angstron_to_bohr;
+            force[i * 3 + 0] *= UNITS::HARTREE_TO_EV * UNITS::ANGSTROM_TO_BOHR;
+            force[i * 3 + 1] *= UNITS::HARTREE_TO_EV * UNITS::ANGSTROM_TO_BOHR;
+            force[i * 3 + 2] *= UNITS::HARTREE_TO_EV * UNITS::ANGSTROM_TO_BOHR;
         }
         for (uint64_t i = 0; i < 3; ++i) {
             for (uint64_t j = 0; j < 3; ++j) {
                 stress[i * 3 + j] *=
-                    hartree_to_eV * powf(angstron_to_bohr, 3); // convert stress to from hartree/bohr^3 to eV/angstron^3
+                    UNITS::HARTREE_TO_EV * pow(UNITS::ANGSTROM_TO_BOHR, 3); // convert stress to from hartree/bohr^3 to eV/angstron^3
             }
         }
         CHECK_CUDA(cudaStreamDestroy(stream)); // destroy the stream

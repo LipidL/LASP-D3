@@ -445,8 +445,7 @@ __device__ inline void calculate_CN(atom_t atom_1, atom_t atom_2, real_t covalen
         real_t dCN_datom = 1 / (1.0f + exp_value) / (1.0f + exp_value) * (-K1) * exp_value * (covalent_radii) /
                            (distance * distance * distance); // dCN_ij/dr_ij * 1/r_ij
         // the covalent radii table have already taken K2 coefficient into consideration
-        real_t coordination_number = 1.0 / (1.0 + exp(
-            -K1 * ((covalent_radii - distance) / distance )));
+        real_t coordination_number = 1.0 / (1.0 + exp_value);
 // #endif
         // accumulate coordination number and dCN/dr using Kahan summation with batching
         CN_accumulator += coordination_number;
@@ -634,8 +633,8 @@ __device__ inline void calculate_c6ab(device_data_t *data, uint64_t atom_1_type,
                 const real_t delta_CN_1 = coordination_number_1 - coordination_number_ref_1;
                 const real_t delta_CN_2 = coordination_number_2 - coordination_number_ref_2;
                 const real_t exponent_arg = -K3 * (delta_CN_1 * delta_CN_1 + delta_CN_2 * delta_CN_2);
-                const real_t L_ij = expf(exponent_arg - max_exponent_arg); // normalized the L_ij value
-                real_t dL_ij_1_part = -2.0f * K3 * (coordination_number_1 - coordination_number_ref_1) *
+                const real_t L_ij = exp(exponent_arg - max_exponent_arg); // normalized the L_ij value
+                real_t dL_ij_1_part = -2.0 * K3 * (coordination_number_1 - coordination_number_ref_1) *
                                       L_ij; // part of dL_ij/dCN_1 contributed by the current valid term
                 Z += c6_ref * L_ij;
                 W += L_ij;
@@ -647,23 +646,23 @@ __device__ inline void calculate_c6ab(device_data_t *data, uint64_t atom_1_type,
     }
 
     // avoid division by zero
-    real_t dC6ab_dCN_1 = (W * W > 0.0f) ? (c_ref_dL_ij_1 * W - c_ref_L_ij * dL_ij_1) / (W * W) : 0.0f; // dC6ab/dCN_1
+    real_t dC6ab_dCN_1 = (W * W > 0.0) ? (c_ref_dL_ij_1 * W - c_ref_L_ij * dL_ij_1) / (W * W) : 0.0; // dC6ab/dCN_1
     if (isnan(dC6ab_dCN_1) || isinf(dC6ab_dCN_1)) {
         // NaN or inf encountered, bad result
         printf("Error: dC6ab/dCN_1 is NaN or Inf\n");
         printf("Z: %f, W: %f, c_ref_L_ij: %f, c_ref_dL_ij_1: %f, dL_ij_1: %f\n", Z, W, c_ref_L_ij, c_ref_dL_ij_1,
                dL_ij_1);
-        dC6ab_dCN_1 = 0.0f; // reset to 0.0f if it's NaN or Inf
+        dC6ab_dCN_1 = 0.0; // reset to 0.0 if it's NaN or Inf
     }
     dC6_dCN_1_result = dC6ab_dCN_1;
 
     // avoid division by zero
-    real_t c6_ab = (W > 0.0f) ? Z / W : 0.0f; // C6_ab value between atom 1 and 2
+    real_t c6_ab = (W > 0.0) ? Z / W : 0.0; // C6_ab value between atom 1 and 2
     if (isnan(c6_ab) || isinf(c6_ab)) {
         printf("Error: C6_ab is NaN or Inf\n");
         printf("Z: %f, W: %f, c_ref_L_ij: %f, c_ref_dL_ij_1: %f, dL_ij_1: %f\n", Z, W, c_ref_L_ij, c_ref_dL_ij_1,
                dL_ij_1);
-        c6_ab = 0.0f; // reset to 0.0f if it's NaN or Inf
+        c6_ab = 0.0; // reset to 0.0 if it's NaN or Inf
     }
     c6_ab_result = c6_ab;
 }
@@ -684,7 +683,7 @@ __device__ inline void calculate_two_body_interaction(real_t cell_volume, atom_t
     const real_t distance_2 = delta_r[0] * delta_r[0] + delta_r[1] * delta_r[1] +
                               delta_r[2] * delta_r[2]; // distance^2 between atom 1 and atom 2
     if (distance_2 <= cutoff_radius * cutoff_radius && distance_2 > 0.0f) {
-        const real_t distance = sqrtf(distance_2); // distance between atom 1 and atom 2
+        const real_t distance = sqrt(distance_2); // distance between atom 1 and atom 2
         // calculate distance^6 and distance^8 using fast power
         const real_t distance_3 = distance_2 * distance; // distance^3
         const real_t distance_4 = distance_2 * distance_2; // distance^4
@@ -709,16 +708,16 @@ __device__ inline void calculate_two_body_interaction(real_t cell_volume, atom_t
         const real_t dispersion_energy_8 = s8 * (c8_ab / distance_8) * f_dn_8; // E_8
         const real_t d_E8_dCN = s8 * f_dn_8 * dC8ab_dCN_1 / distance_8; // dE_8/dCN
         const real_t dispersion_energy =
-            (dispersion_energy_6 + dispersion_energy_8) / 2.0f; // divide by 2 because each atom pair is counted twice
+            (dispersion_energy_6 + dispersion_energy_8) / 2.0; // divide by 2 because each atom pair is counted twice
         const real_t dE_dCN = (d_E6_dCN + d_E8_dCN); // dE/dCN
 
         /** the first entry of two-body force:
          * $F_a = S_n C_n^{ab} f_{d,n}(r_{ab}) \frac{\partial}{\partial r_a} r_{ab}^{-n}$
          * $F_a = S_n C_n^{ab} f_{d,n}(r_{ab}) * (-n)r_{ab}^{-n-2} * \uparrow{r_{ab}}$
          */
-        real_t force = 0.0f; // dE/dr * 1/r
-        force += s6 * c6_ab * f_dn_6 * (-6.0f) / distance_8; // dE_6/dr * 1/r
-        force += s8 * c8_ab * f_dn_8 * (-8.0f) / distance_10; // dE_8/dr * 1/r
+        real_t force = 0.0; // dE/dr * 1/r
+        force += s6 * c6_ab * f_dn_6 * (-6.0) / distance_8; // dE_6/dr * 1/r
+        force += s8 * c8_ab * f_dn_8 * (-8.0) / distance_10; // dE_8/dr * 1/r
 
         /** the second entry of two-body force:
          * $F_a = S_n C_n^{ab} r_{ab}^{-n} \frac{\partial}{\partial r_a} f_{d,n}(r_{ab})$
@@ -732,14 +731,14 @@ __device__ inline void calculate_two_body_interaction(real_t cell_volume, atom_t
         // accumulate the energy, force, stress and dE/dCN using hierarchical Kahan summation
         energy_accumulator.add(&dispersion_energy);
         dE_dCN_accumulator.add(&dE_dCN);
-        real_t force_contribution[3] = {0.0f, 0.0f, 0.0f};
+        real_t force_contribution[3] = {0.0, 0.0, 0.0};
         for (uint8_t i = 0; i < 3; ++i) {
             force_contribution[i] = force * delta_r[i];
         }
         real_t stress_contribution[9];
         for (uint8_t i = 0; i < 3; ++i) {
             for (uint8_t j = 0; j < 3; ++j) {
-                stress_contribution[i * 3 + j] = -1.0f * delta_r[i] * force * delta_r[j] / 2.0f / cell_volume;
+                stress_contribution[i * 3 + j] = -1.0 * delta_r[i] * force * delta_r[j] / 2.0 / cell_volume;
             }
         }
         force_accumulator.add(force_contribution);
@@ -816,8 +815,8 @@ __global__ void two_body_kernel(device_data_t *data) {
                 // the values in data->r2r4 is already squared
                 const real_t r2r4_1 = data->r2r4[atom_1_type];
                 const real_t r2r4_2 = data->r2r4[atom_2_type];
-                const real_t c8_ab = 3.0f * c6_ab * r2r4_1 * r2r4_2; // C8ab value
-                const real_t dC8ab_dCN_1 = 3.0f * dC6ab_dCN_1 * r2r4_1 * r2r4_2; // dC8ab/dCN_1
+                const real_t c8_ab = 3.0 * c6_ab * r2r4_1 * r2r4_2; // C8ab value
+                const real_t dC8ab_dCN_1 = 3.0 * dC6ab_dCN_1 * r2r4_1 * r2r4_2; // dC8ab/dCN_1
                 // acquire the R0 cutoff radius between the two atoms
                 const real_t r0_cutoff = data->r0ab[atom_1_type * num_elements + atom_2_type];
 
@@ -876,8 +875,8 @@ __global__ void two_body_kernel(device_data_t *data) {
             // the values in data->r2r4 is already squared
             const real_t r2r4_1 = data->r2r4[atom_1_type];
             const real_t r2r4_2 = data->r2r4[atom_2_type];
-            const real_t c8_ab = 3.0f * c6_ab * r2r4_1 * r2r4_2; // C8ab value
-            const real_t dC8ab_dCN_1 = 3.0f * dC6ab_dCN_1 * r2r4_1 * r2r4_2; // dC8ab/dCN_1
+            const real_t c8_ab = 3.0 * c6_ab * r2r4_1 * r2r4_2; // C8ab value
+            const real_t dC8ab_dCN_1 = 3.0 * dC6ab_dCN_1 * r2r4_1 * r2r4_2; // dC8ab/dCN_1
             // acquire the R0 cutoff radius between the two atoms
             const real_t r0_cutoff = data->r0ab[atom_1_type * data->num_elements + atom_2_type];
             // loop over supercells
@@ -924,8 +923,8 @@ __global__ void two_body_kernel(device_data_t *data) {
 
     real_t dE_dCN_sum = 0; // sum of dE/dCN across the block
     real_t energy_sum = 0; // sum of energy across the block
-    real_t force_central_sum[3] = {0.0f}; // sum of force of central atom across the block
-    real_t stress_sum[9] = {0.0f}; // sum of stress of central atom across the block
+    real_t force_central_sum[3] = {0.0}; // sum of force of central atom across the block
+    real_t stress_sum[9] = {0.0}; // sum of stress of central atom across the block
     // accumulate the results across the block
     blockReduceTwoBodyKernel(local_dE_dCN, local_energ, local_force, local_stress, &dE_dCN_sum, &energy_sum,
                              force_central_sum, stress_sum);
@@ -968,16 +967,16 @@ __device__ inline void calculate_three_body_interaction(atom_t atom_1, atom_t at
     }; // delta_r between atom 1 and atom 2
     // calculate the distance between the two atoms
     const real_t distance_square = delta_r[0] * delta_r[0] + delta_r[1] * delta_r[1] + delta_r[2] * delta_r[2];
-    real_t distance = sqrtf(distance_square);
+    real_t distance = sqrt(distance_square);
     /* if the distance is within cutoff range, update neighbor_flags */
-    if (distance <= CN_cutoff && distance > 0.0f) {
+    if (distance <= CN_cutoff && distance > 0.0) {
         /**
          * eq 15 in Grimme et al. 2010
          * $CN^A = \sum_{B \neq A}^{N}
          * \sqrt{1}{1+exp(-k_1(k_2(R_{A,cov}+R_{B,cov})/r_{AB}-1))}$
          */
-        real_t exp = expf(
-            -K1 * ((covalent_radii_1 + covalent_radii_2) / distance - 1.0f)); // $\exp(-k_1*(\frac{R_A+R_b}{r_{ab}}-1))$
+        real_t exp_value = exp(
+            -K1 * ((covalent_radii_1 + covalent_radii_2) / distance - 1.0)); // $\exp(-k_1*(\frac{R_A+R_b}{r_{ab}}-1))$
 #ifdef SMOOTH_CUTOFF_CN
         real_t tanh_value = tanhf(CN_cutoff - distance); // $\tanh(CN_cutoff - r_{ab})$
         real_t smooth_cutoff =
@@ -990,8 +989,8 @@ __device__ inline void calculate_three_body_interaction(atom_t atom_1, atom_t at
                            d_smooth_cutoff_dr * 1.0f / (1.0f + exp) / distance; // dCN_ij/dr_ij * 1/r_ij
 #else
         // the covalent radii table have already taken K2 coefficient into consideration
-        real_t dCN_datom = powf(1.0f + exp, -2.0f) * (-K1) * exp * (covalent_radii_1 + covalent_radii_2) *
-                           powf(distance, -3.0f); // dCN_ij/dr_ij * 1/r_ij
+        real_t dCN_datom = pow(1.0 + exp_value, -2.0) * (-K1) * exp_value * (covalent_radii_1 + covalent_radii_2) *
+                           pow(distance, -3.0); // dCN_ij/dr_ij * 1/r_ij
 #endif
         // dE/drik = dE/dCN * dCN/drik
         real_t dE_drik = dE_dCN * dCN_datom;
@@ -1003,7 +1002,7 @@ __device__ inline void calculate_three_body_interaction(atom_t atom_1, atom_t at
         for (uint8_t i = 0; i < 3; ++i) {
             force_contribution[i] = (dE_drik * delta_r[i]);
             for (uint8_t j = 0; j < 3; ++j) {
-                stress_contribution[i * 3 + j] = (-1.0f * delta_r[i] * dE_drik * delta_r[j]);
+                stress_contribution[i * 3 + j] = (-1.0 * delta_r[i] * dE_drik * delta_r[j]);
             }
         }
         force_accumulators.add(force_contribution);
@@ -1120,8 +1119,8 @@ __global__ void three_body_kernel(device_data_t *data) {
     force_accumulators.get_sum(local_force_sum);
     stress_accumulators.get_sum(local_stress_sum);
 
-    real_t force_central_sum[3] = {0.0f}; // force sum for the central atom across the block
-    real_t stress_sum[9] = {0.0f}; // stress sum across the block
+    real_t force_central_sum[3] = {0.0}; // force sum for the central atom across the block
+    real_t stress_sum[9] = {0.0}; // stress sum across the block
     blockReduceSumThreeBodyKernel(local_force_sum, local_stress_sum, force_central_sum, stress_sum);
 
     // the first thread accumulates the results back to global memory
