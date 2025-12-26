@@ -10,6 +10,17 @@
 #include "d3_buffer.cuh"
 #include "d3_kernel.cuh"
 
+namespace UNITS {
+double H = 6.62607015e-34;
+double PI = 3.1415926535897932384626433832795029;
+double ME = 9.1093837015e-31;
+double C = 299792458;
+double ALPHA = 7.2973525693e-3;
+double HBAR = H / (2.0 * PI);
+double BOHR = HBAR / (ME * C * ALPHA);
+double ANGSTROM_TO_BOHR = 1/(BOHR * 1e10);
+} // namespace UNITS
+
 D3Handle_t *init_d3_handle(uint16_t *elements, uint64_t length_elements, uint64_t max_length, real_t cutoff_radius,
                            real_t coordination_number_cutoff, DampingType damping_type,
                            FunctionalType functional_type) {
@@ -32,16 +43,15 @@ void set_atoms(D3Handle_t *handle, real_t *coords, uint16_t *elements, uint64_t 
     Device_Buffer *buffer = (Device_Buffer *)handle; // cast the handle to Device_Buffer
 
     // Convert coordinates from Angstrom to Bohr
-    real_t angstrom_to_bohr = 1.0f / 0.52917726f;
     real_t(*bohr_coords)[3] = (real_t(*)[3])malloc(length * 3 * sizeof(real_t));
     if (bohr_coords == NULL) {
         fprintf(stderr, "Error: failed to allocate memory for coordinates in set_atoms\n");
         return;
     }
     for (uint64_t i = 0; i < length; ++i) {
-        bohr_coords[i][0] = coords[i * 3] * angstrom_to_bohr;
-        bohr_coords[i][1] = coords[i * 3 + 1] * angstrom_to_bohr;
-        bohr_coords[i][2] = coords[i * 3 + 2] * angstrom_to_bohr;
+        bohr_coords[i][0] = coords[i * 3] * UNITS::ANGSTROM_TO_BOHR;
+        bohr_coords[i][1] = coords[i * 3 + 1] * UNITS::ANGSTROM_TO_BOHR;
+        bohr_coords[i][2] = coords[i * 3 + 2] * UNITS::ANGSTROM_TO_BOHR;
     }
     try {
         buffer->set_atoms(elements, bohr_coords, length);
@@ -61,11 +71,10 @@ void set_cell(D3Handle_t *handle, real_t cell[3][3]) {
     }
     Device_Buffer *buffer = (Device_Buffer *)handle; // cast the handle to Device_Buffer
     // Convert cell from Angstrom to Bohr
-    real_t angstrom_to_bohr = 1.0f / 0.52917726f;
     real_t bohr_cell[3][3];
     for (int i = 0; i < 3; ++i) {
         for (int j = 0; j < 3; ++j) {
-            bohr_cell[i][j] = cell[i][j] * angstrom_to_bohr;
+            bohr_cell[i][j] = cell[i][j] * UNITS::ANGSTROM_TO_BOHR;
         }
     }
     try {

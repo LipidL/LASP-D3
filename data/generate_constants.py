@@ -134,7 +134,7 @@ def parse_fortran_reference_file(filename):
         covalent_rad_2009_values = [float(n.replace('_wp', '')) for n in numbers]
         
         # Calculate covalent_rad_d3 = 4/3 * covalent_rad_2009 (first 103 elements)
-        rcov_data = [val * 4.0 / 3.0 * ANGSTROM_TO_BOHR for val in covalent_rad_2009_values[:103]]
+        rcov_data = [val for val in covalent_rad_2009_values[:103]]
         print(f"Extracted {len(rcov_data)} rcov values")
     else:
         print("Warning: Could not find covalent_rad_2009 data")

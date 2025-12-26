@@ -415,8 +415,8 @@ __device__ void distribute_workload(uint64_t num_atoms, uint64_t total_cell_bias
 }
 
 __device__ inline void calculate_CN(atom_t atom_1, atom_t atom_2, real_t covalent_radii,
-                                    real_t CN_cutoff, HierarchicalKahanAccumulator<1> &CN_accumulator,
-                                    HierarchicalKahanAccumulator<3> &dCN_dr_accumulator) {
+                                    real_t CN_cutoff, real_t &CN_accumulator,
+                                    real_t (&dCN_dr_accumulator)[3]) {
     real_t delta_r[3] = {
         atom_1.x - atom_2.x, // delta x
         atom_1.y - atom_2.y, // delta y
@@ -449,12 +449,12 @@ __device__ inline void calculate_CN(atom_t atom_1, atom_t atom_2, real_t covalen
             -K1 * ((covalent_radii - distance) / distance )));
 // #endif
         // accumulate coordination number and dCN/dr using Kahan summation with batching
-        CN_accumulator.add(&coordination_number);
-        real_t dCN_dr_contribution[3] = {0.0, 0.0, 0.0};
+        CN_accumulator += coordination_number;
+        printf("dCN: %.20f, %.20f, %.20f, %.20f, %.20f, %llu, %llu\n", distance, coordination_number, delta_r[0],
+               delta_r[1], delta_r[2], atom_1.original_index, atom_2.original_index);
         for (uint16_t i = 0; i < 3; ++i) {
-            dCN_dr_contribution[i] = dCN_datom * delta_r[i];
+            dCN_dr_accumulator[i] += dCN_datom * (delta_r[i]);
         }
-        dCN_dr_accumulator.add(dCN_dr_contribution);
     }
 }
 
@@ -480,10 +480,8 @@ __global__ void coordination_number_kernel(device_data_t *data) {
                                {data->cell[2][0], data->cell[2][1], data->cell[2][2]}}; // cell matrix
     const real_t CN_cutoff = data->coordination_number_cutoff; // cutoff radius of coordination number
     real_t covalent_radii_1 = data->rcov[atom_1_type]; // covalent radii of the central atom
-    HierarchicalKahanAccumulator<1> CN_accumulator;
-    HierarchicalKahanAccumulator<3> dCN_dr_accumulators; // accumulators for dCN/dr in x, y, z directions
-    CN_accumulator.init();
-    dCN_dr_accumulators.init();
+    real_t CN_accumulator = 0.0;
+    real_t dCN_dr_accumulator[3] = {0.0, 0.0, 0.0};
 
     // distribute workload
     switch (data->workload_distribution_type) {
@@ -514,7 +512,7 @@ __global__ void coordination_number_kernel(device_data_t *data) {
                 atom_2.z += x_shift * cell[0][2] + y_shift * cell[1][2] + z_shift * cell[2][2];
 
                 calculate_CN(atom_1, atom_2, covalent_radii_1 + covalent_radii_2, CN_cutoff, CN_accumulator,
-                             dCN_dr_accumulators);
+                             dCN_dr_accumulator);
             }
         }
 
@@ -556,22 +554,17 @@ __global__ void coordination_number_kernel(device_data_t *data) {
                 atom_2.z += x_bias * cell[0][2] + y_bias * cell[1][2] + z_bias * cell[2][2];
 
                 calculate_CN(atom_1, atom_2, covalent_radii_1 + covalent_radii_2, CN_cutoff, CN_accumulator,
-                             dCN_dr_accumulators);
+                             dCN_dr_accumulator);
             }
         }
         break;
     }
 
-    // use blockwise reduction to accumulate coordination number and dCN/dr from all threads
-    real_t CN_sum, dCN_dr_sum[3], local_CN_sum, local_dCN_dr[3];
-    CN_accumulator.get_sum(&local_CN_sum);
-    dCN_dr_accumulators.get_sum(local_dCN_dr);
-    // blockReduceCNKernel(local_CN_sum, local_dCN_dr, &CN_sum, dCN_dr_sum);
     // write back the results to global memory
     if (threadIdx.x == 0) {
-        data->coordination_numbers[atom_1_index] = local_CN_sum;
+        data->coordination_numbers[atom_1_index] = CN_accumulator;
         for (uint16_t i = 0; i < 3; ++i) {
-            data->dCN_dr[atom_1_index * 3 + i] = local_dCN_dr[i];
+            data->dCN_dr[atom_1_index * 3 + i] = dCN_dr_accumulator[i];
         }
     }
     return;
@@ -586,7 +579,7 @@ __global__ void print_coordination_number_kernel(device_data_t *data) {
     if (threadIdx.x == 0) {
         printf("Coordination numbers:\n");
         for (uint64_t i = 0; i < data->num_atoms; ++i) {
-            printf("Atom %llu, CN: %.15f\n", data->atoms[i].original_index, data->coordination_numbers[i]);
+            printf("Atom %llu, aCN: %.15f\n", data->atoms[i].original_index, data->coordination_numbers[i]);
         }
     }
 }

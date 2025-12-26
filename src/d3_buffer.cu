@@ -8,6 +8,15 @@
 #include "d3_internal.h"
 #include "d3_types.h"
 
+double H = 6.62607015e-34;
+double PI = 3.1415926535897932384626433832795029;
+double ME = 9.1093837015e-31;
+double C = 299792458;
+double ALPHA = 7.2973525693e-3;
+double HBAR = H / (2.0 * PI);
+double BOHR = HBAR / (ME * C * ALPHA);
+double ANGSTROM_TO_BOHR = 1/(BOHR * 1e10);
+
 // Calculate inverse of a 3x3 matrix
 template <typename T1, typename T2>
 void matrix_inverse(const T1 mat[3][3], T2 inv[3][3]) {
@@ -233,7 +242,7 @@ __host__ Device_Buffer::Device_Buffer(uint16_t *elements, uint64_t length_elemen
             throw std::runtime_error("Error: failed to allocate host memory for rcov");
         }
         for (uint16_t i = 0; i < num_elements; ++i) {
-            h_rcov[i] = rcov[unique_elements[i] - 1];
+            h_rcov[i] = rcov[unique_elements[i] - 1] * 4.0/3.0 * ANGSTROM_TO_BOHR;
             printf("Element %d rcov: %.20f\n", unique_elements[i], h_rcov[i]);
         }
         real_t *d_rcov;
