@@ -4,7 +4,7 @@
 #include "d3_types.h"
 
 #define ACCUMULATE_LEVELS 1
-#define ACCUMULATE_STRIDE 8
+#define ACCUMULATE_STRIDE 999999
 template <uint64_t N>
 struct HierarchicalKahanAccumulator {
     // Kahan summation state for the base level
@@ -36,12 +36,14 @@ struct HierarchicalKahanAccumulator {
     __device__ inline void add(const real_t value[N]) {
         // Kahan summation for the base level
         for (uint8_t i = 0; i < N; ++i) {
-            real_t y = value[i] - compensation[i];
-            real_t t = base_sum[i] + y;
-            compensation[i] = (t - base_sum[i]) - y;
-            base_sum[i] = t;
+            // real_t y = value[i] - compensation[i];
+            // real_t t = base_sum[i] + y;
+            // compensation[i] = (t - base_sum[i]) - y;
+            // base_sum[i] = t;
+            base_sum[i] += value[i];
         }
         count += 1;
+        return;
 
         // Hierarchical accumulation
         if (count % ACCUMULATE_STRIDE == 0) {
@@ -412,7 +414,7 @@ __device__ void distribute_workload(uint64_t num_atoms, uint64_t total_cell_bias
     }
 }
 
-__device__ inline void calculate_CN(atom_t atom_1, atom_t atom_2, real_t covalent_radii_1, real_t covalent_radii_2,
+__device__ inline void calculate_CN(atom_t atom_1, atom_t atom_2, real_t covalent_radii,
                                     real_t CN_cutoff, HierarchicalKahanAccumulator<1> &CN_accumulator,
                                     HierarchicalKahanAccumulator<3> &dCN_dr_accumulator) {
     real_t delta_r[3] = {
@@ -423,31 +425,32 @@ __device__ inline void calculate_CN(atom_t atom_1, atom_t atom_2, real_t covalen
     // calculate the distance between the two atoms
     real_t distance_square = delta_r[0] * delta_r[0] + delta_r[1] * delta_r[1] + delta_r[2] * delta_r[2];
     // if the distance is within cutoff range, calculate the coordination number
-    if (distance_square <= CN_cutoff * CN_cutoff && distance_square > 0.0f) {
-        real_t distance = sqrtf(distance_square);
-        real_t exp = expf(
-            -K1 * ((covalent_radii_1 + covalent_radii_2) / distance - 1.0f)); // $\exp(-k_1*(\frac{R_A+R_b}{r_{ab}}-1))$
-#ifdef SMOOTH_CUTOFF_CN
-        real_t tanh_value = tanhf(CN_cutoff - distance); // $\tanh(CN_cutoff - r_{ab})$
-        real_t smooth_cutoff =
-            tanh_value * tanh_value *
-            tanh_value; // $\tanh^3(CN_cutoff- r_{ab}))$, this is a smooth cutoff function added in LASP code.
-        real_t d_smooth_cutoff_dr =
-            3.0f * tanh_value * tanh_value * (1.0f - tanh_value * tanh_value) * (-1.0f); // d(smooth_cutoff)/dr
-        real_t dCN_datom = 1 / (1.0f + exp) / (1.0f + exp) * (-K1) * exp * (covalent_radii_1 + covalent_radii_2) /
-                               (distance * distance * distance) * smooth_cutoff +
-                           d_smooth_cutoff_dr * 1.0f / (1.0f + exp) / distance; // dCN_ij/dr_ij * 1/r_ij
-        // the covalent radii table have already taken K2 coefficient into consideration
-        real_t coordination_number = 1.0f / (1.0f + exp) * smooth_cutoff;
-#else
-        real_t dCN_datom = 1 / (1.0f + exp) / (1.0f + exp) * (-K1) * exp * (covalent_radii_1 + covalent_radii_2) /
+    if (distance_square <= CN_cutoff * CN_cutoff && distance_square >= 1e-12) {
+        real_t distance = sqrt(distance_square);
+        real_t exp_value = exp(
+            -K1 * ((covalent_radii - distance) / distance )); // $\exp(-k_1*(\frac{R_A+R_b}{r_{ab}}-1))$
+// #ifdef SMOOTH_CUTOFF_CN
+//         real_t tanh_value = tanhf(CN_cutoff - distance); // $\tanh(CN_cutoff - r_{ab})$
+//         real_t smooth_cutoff =
+//             tanh_value * tanh_value *
+//             tanh_value; // $\tanh^3(CN_cutoff- r_{ab}))$, this is a smooth cutoff function added in LASP code.
+//         real_t d_smooth_cutoff_dr =
+//             3.0f * tanh_value * tanh_value * (1.0f - tanh_value * tanh_value) * (-1.0f); // d(smooth_cutoff)/dr
+//         real_t dCN_datom = 1 / (1.0f + exp) / (1.0f + exp) * (-K1) * exp * (covalent_radii_1 + covalent_radii_2) /
+//                                (distance * distance * distance) * smooth_cutoff +
+//                            d_smooth_cutoff_dr * 1.0f / (1.0f + exp) / distance; // dCN_ij/dr_ij * 1/r_ij
+//         // the covalent radii table have already taken K2 coefficient into consideration
+//         real_t coordination_number = 1.0f / (1.0f + exp) * smooth_cutoff;
+// #else
+        real_t dCN_datom = 1 / (1.0f + exp_value) / (1.0f + exp_value) * (-K1) * exp_value * (covalent_radii) /
                            (distance * distance * distance); // dCN_ij/dr_ij * 1/r_ij
         // the covalent radii table have already taken K2 coefficient into consideration
-        real_t coordination_number = 1.0f / (1.0f + exp);
-#endif
+        real_t coordination_number = 1.0 / (1.0 + exp(
+            -K1 * ((covalent_radii - distance) / distance )));
+// #endif
         // accumulate coordination number and dCN/dr using Kahan summation with batching
         CN_accumulator.add(&coordination_number);
-        real_t dCN_dr_contribution[3] = {0.0f, 0.0f, 0.0f};
+        real_t dCN_dr_contribution[3] = {0.0, 0.0, 0.0};
         for (uint16_t i = 0; i < 3; ++i) {
             dCN_dr_contribution[i] = dCN_datom * delta_r[i];
         }
@@ -510,7 +513,7 @@ __global__ void coordination_number_kernel(device_data_t *data) {
                 atom_2.y += x_shift * cell[0][1] + y_shift * cell[1][1] + z_shift * cell[2][1];
                 atom_2.z += x_shift * cell[0][2] + y_shift * cell[1][2] + z_shift * cell[2][2];
 
-                calculate_CN(atom_1, atom_2, covalent_radii_1, covalent_radii_2, CN_cutoff, CN_accumulator,
+                calculate_CN(atom_1, atom_2, covalent_radii_1 + covalent_radii_2, CN_cutoff, CN_accumulator,
                              dCN_dr_accumulators);
             }
         }
@@ -520,6 +523,10 @@ __global__ void coordination_number_kernel(device_data_t *data) {
         // no special preparation needed
         const uint64_t total_cell_bias =
             data->max_cell_bias[0] * data->max_cell_bias[1] * data->max_cell_bias[2]; // total number of cell bias
+        if (threadIdx.x == 0) {
+            // for debug use
+            printf("Total cell bias: %llu (%llu, %llu, %llu)\n", total_cell_bias, data->max_cell_bias[0], data->max_cell_bias[1], data->max_cell_bias[2]);
+        }
         const uint64_t mcb0 = data->max_cell_bias[0]; // maximum cell bias in x direction
         const uint64_t mcb1 = data->max_cell_bias[1]; // maximum cell bias in y direction
         const uint64_t mcb2 = data->max_cell_bias[2]; // maximum cell bias in z direction
@@ -548,7 +555,7 @@ __global__ void coordination_number_kernel(device_data_t *data) {
                 atom_2.y += x_bias * cell[0][1] + y_bias * cell[1][1] + z_bias * cell[2][1];
                 atom_2.z += x_bias * cell[0][2] + y_bias * cell[1][2] + z_bias * cell[2][2];
 
-                calculate_CN(atom_1, atom_2, covalent_radii_1, covalent_radii_2, CN_cutoff, CN_accumulator,
+                calculate_CN(atom_1, atom_2, covalent_radii_1 + covalent_radii_2, CN_cutoff, CN_accumulator,
                              dCN_dr_accumulators);
             }
         }
@@ -559,12 +566,12 @@ __global__ void coordination_number_kernel(device_data_t *data) {
     real_t CN_sum, dCN_dr_sum[3], local_CN_sum, local_dCN_dr[3];
     CN_accumulator.get_sum(&local_CN_sum);
     dCN_dr_accumulators.get_sum(local_dCN_dr);
-    blockReduceCNKernel(local_CN_sum, local_dCN_dr, &CN_sum, dCN_dr_sum);
+    // blockReduceCNKernel(local_CN_sum, local_dCN_dr, &CN_sum, dCN_dr_sum);
     // write back the results to global memory
     if (threadIdx.x == 0) {
-        data->coordination_numbers[atom_1_index] = CN_sum;
+        data->coordination_numbers[atom_1_index] = local_CN_sum;
         for (uint16_t i = 0; i < 3; ++i) {
-            data->dCN_dr[atom_1_index * 3 + i] = dCN_dr_sum[i];
+            data->dCN_dr[atom_1_index * 3 + i] = local_dCN_dr[i];
         }
     }
     return;
@@ -579,7 +586,7 @@ __global__ void print_coordination_number_kernel(device_data_t *data) {
     if (threadIdx.x == 0) {
         printf("Coordination numbers:\n");
         for (uint64_t i = 0; i < data->num_atoms; ++i) {
-            printf("Atom %llu, element: %d: %f\n", i, data->atoms[i].element, data->coordination_numbers[i]);
+            printf("Atom %llu, CN: %.15f\n", data->atoms[i].original_index, data->coordination_numbers[i]);
         }
     }
 }
@@ -951,7 +958,7 @@ __global__ void two_body_kernel(device_data_t *data) {
             // write back the force without atomic operation, safe because no other thread writes to this memory
             data->forces[original_atom_1_index * 3 + i] = force_central_sum[i];
             for (uint8_t j = 0; j < 3; ++j) {
-                atomicAdd(&data->stress[i * 3 + j], stress_sum[i * 3 + j]); // atomic operation here to avoid data races
+                // atomicAdd(&data->stress[i * 3 + j], stress_sum[i * 3 + j]); // atomic operation here to avoid data races
             }
         }
     }
@@ -1137,7 +1144,7 @@ __global__ void three_body_kernel(device_data_t *data) {
             data->forces[original_atom_1_index * 3 + i] += force_central_sum[i];
             for (uint8_t j = 0; j < 3; ++j) {
                 // accumulate stress
-                atomicAdd(&data->stress[i * 3 + j], stress_sum[i * 3 + j] / cell_volume);
+                // atomicAdd(&data->stress[i * 3 + j], stress_sum[i * 3 + j] / cell_volume);
             }
         }
     }

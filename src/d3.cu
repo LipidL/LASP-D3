@@ -137,13 +137,9 @@ uint16_t compute_dispersion_energy_from_handle_status(D3Handle_t *handle, real_t
         uint64_t length = buffer->get_host_data().num_atoms; // get the number of atoms in the system
         debug("launching coordination_number_kernel, size: %zu, %d\n", length, MAX_BLOCK_SIZE);
         // calculate coordination number
-        coordination_number_kernel<<<length, MAX_BLOCK_SIZE, 0, stream>>>(buffer->get_device_data());
+        coordination_number_kernel<<<length, 1, 0, stream>>>(buffer->get_device_data());
         CHECK_CUDA(cudaGetLastError()); // Check for kernel launch errors
         // print some debug information
-#ifdef DEBUG
-        print_coordination_number_kernel<<<1, 1, 0, stream>>>(buffer->get_device_data());
-        CHECK_CUDA(cudaGetLastError()); // Check for kernel launch errors
-#endif
         debug("launching two_body_kernel, size: %zu, %d\n", length, MAX_BLOCK_SIZE);
         // calculate energy and two-body part of force
         two_body_kernel<<<length, MAX_BLOCK_SIZE, 0, stream>>>(buffer->get_device_data());
@@ -157,6 +153,10 @@ uint16_t compute_dispersion_energy_from_handle_status(D3Handle_t *handle, real_t
         debug("launching three_body_kernel, size: %zu, %d\n", length, MAX_BLOCK_SIZE);
         three_body_kernel<<<length, MAX_BLOCK_SIZE, 0, stream>>>(buffer->get_device_data());
         CHECK_CUDA(cudaGetLastError()); // Check for kernel launch errors
+// #ifdef DEBUG
+        print_coordination_number_kernel<<<1, 1, 0, stream>>>(buffer->get_device_data());
+        CHECK_CUDA(cudaGetLastError()); // Check for kernel launch errors
+// #endif
         // perform energy accumulation
         double energy_sum = 0.0; // use high precision at CPU side
         /* perform reduction to get the total energy */

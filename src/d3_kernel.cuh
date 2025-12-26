@@ -4,7 +4,7 @@
 
 /* global parameters */
 /* cuda kernel launch parameters */
-#define MAX_BLOCK_SIZE 256 // number of threads per block
+#define MAX_BLOCK_SIZE 32 // number of threads per block
 #define MAX_LOCAL_NEIGHBORS                                                                                            \
     256 // the maximum neighbor of one thread, equal to max_supercell_size *
         // (num_atoms / num_threads)
@@ -15,10 +15,10 @@ constants used in the simulation
 these constants are from Grimme, S., Antony, J., Ehrlich, S. & Krieg, H. The
 Journal of Chemical Physics 132, 154104 (2010).
 */
-#define K1 16.0f
-#define K2 1.33333f
-#define K3 4.0f
-#define ALPHA_N(N) (N + 8.0f)
+#define K1 16.0
+#define K2 1.33333
+#define K3 4.0
+#define ALPHA_N(N) (N + 8.0)
 
 __global__ void coordination_number_kernel(device_data_t *data);
 __global__ void print_coordination_number_kernel(device_data_t *data);

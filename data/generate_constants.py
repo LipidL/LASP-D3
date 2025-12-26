@@ -15,7 +15,14 @@ Each element c6ab_ref[i][j][iref][jref] contains:
 import re
 import sys
 
-ANGSTROM_TO_BOHR = 1.8897261249935897
+H = 6.62607015e-34
+PI = 3.1415926535897932384626433832795029
+ME = 9.1093837015e-31
+C = 299792458
+ALPHA = 7.2973525693e-3
+HBAR = H / (2.0 * PI)
+BOHR = HBAR / (ME * C * ALPHA)
+ANGSTROM_TO_BOHR = 1/(BOHR * 1e10)
 
 def parse_fortran_reference_file(filename):
     """Parse the Fortran reference file to extract data"""
@@ -272,7 +279,7 @@ static const double rcov[NUM_ELEMENTS] = {
 """)
         for i in range(0, len(rcov_data), 4):
             line_vals = rcov_data[i:i+4]
-            line_str = "    " + ", ".join(f"{val:10.8f}" for val in line_vals)
+            line_str = "    " + ", ".join(f"{val.hex()}" for val in line_vals)
             if i + 4 < len(rcov_data):
                 line_str += ","
             f.write(line_str + "\n")
