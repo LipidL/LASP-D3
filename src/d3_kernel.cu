@@ -958,7 +958,7 @@ __global__ void two_body_kernel(device_data_t *data) {
             // write back the force without atomic operation, safe because no other thread writes to this memory
             data->forces[original_atom_1_index * 3 + i] = force_central_sum[i];
             for (uint8_t j = 0; j < 3; ++j) {
-                // atomicAdd(&data->stress[i * 3 + j], stress_sum[i * 3 + j]); // atomic operation here to avoid data races
+                atomicAdd(&data->stress[i * 3 + j], stress_sum[i * 3 + j]); // atomic operation here to avoid data races
             }
         }
     }
@@ -1144,7 +1144,7 @@ __global__ void three_body_kernel(device_data_t *data) {
             data->forces[original_atom_1_index * 3 + i] += force_central_sum[i];
             for (uint8_t j = 0; j < 3; ++j) {
                 // accumulate stress
-                // atomicAdd(&data->stress[i * 3 + j], stress_sum[i * 3 + j] / cell_volume);
+                atomicAdd(&data->stress[i * 3 + j], stress_sum[i * 3 + j] / cell_volume);
             }
         }
     }
