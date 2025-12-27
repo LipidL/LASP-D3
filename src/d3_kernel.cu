@@ -268,10 +268,10 @@ __device__ void damping(real_t distance, real_t cutoff_radius, real_t param_1,
         const real_t base_8_17 = base_8_16 * base_8;
 
         // calculate damping
-        const real_t f_dn_6 = 1 / (1 + 6.0f * base_6_14); // alpha_n = 14
-        const real_t f_dn_8 = 1 / (1 + 6.0f * base_8_16); // alpha_n = 16
-        const real_t d_f_dn_6 = 6.0f * 14.0f * f_dn_6 * f_dn_6 * base_6_15 / param_1 / cutoff_radius;
-        const real_t d_f_dn_8 = 6.0f * 16.0f * f_dn_8 * f_dn_8 * base_8_17 / param_2 / cutoff_radius;
+        const real_t f_dn_6 = 1 / (1.0 + 6.0 * base_6_14); // alpha_n = 14
+        const real_t f_dn_8 = 1 / (1.0 + 6.0 * base_8_16); // alpha_n = 16
+        const real_t d_f_dn_6 = 6.0 * 14.0 * f_dn_6 * f_dn_6 * base_6_15 / param_1 / cutoff_radius;
+        const real_t d_f_dn_8 = 6.0 * 16.0 * f_dn_8 * f_dn_8 * base_8_17 / param_2 / cutoff_radius;
         // write the result back
         *damping_6 = f_dn_6;
         *damping_8 = f_dn_8;
@@ -578,7 +578,7 @@ __global__ void print_coordination_number_kernel(device_data_t *data) {
     if (threadIdx.x == 0) {
         printf("Coordination numbers:\n");
         for (uint64_t i = 0; i < data->num_atoms; ++i) {
-            printf("Atom %llu, aCN: %.15f\n", data->atoms[i].original_index, data->coordination_numbers[i]);
+            printf("Atom %llu, dCN_dr: %.15f, %.15f, %.15f\n", data->atoms[i].original_index, data->dCN_dr[i * 3 + 0], data->dCN_dr[i * 3 + 1], data->dCN_dr[i * 3 + 2]);
         }
     }
 }
@@ -921,13 +921,13 @@ __global__ void two_body_kernel(device_data_t *data) {
     force_accumulators.get_sum(local_force);
     stress_accumulators.get_sum(local_stress);
 
-    real_t dE_dCN_sum = 0; // sum of dE/dCN across the block
-    real_t energy_sum = 0; // sum of energy across the block
+    // real_t dE_dCN_sum = 0; // sum of dE/dCN across the block
+    // real_t energy_sum = 0; // sum of energy across the block
     real_t force_central_sum[3] = {0.0}; // sum of force of central atom across the block
-    real_t stress_sum[9] = {0.0}; // sum of stress of central atom across the block
-    // accumulate the results across the block
-    blockReduceTwoBodyKernel(local_dE_dCN, local_energ, local_force, local_stress, &dE_dCN_sum, &energy_sum,
-                             force_central_sum, stress_sum);
+    // real_t stress_sum[9] = {0.0}; // sum of stress of central atom across the block
+    // // accumulate the results across the block
+    // blockReduceTwoBodyKernel(local_dE_dCN, local_energ, local_force, local_stress, &dE_dCN_sum, &energy_sum,
+    //                          force_central_sum, stress_sum);
 
     if (threadIdx.x == 0) {
         /** Only the first thread in the block is responsible for writing back the accumulated result.
@@ -940,13 +940,13 @@ __global__ void two_body_kernel(device_data_t *data) {
          */
         uint64_t original_atom_1_index = atom_1.original_index;
         // dE/dCN
-        data->dE_dCN[atom_1_index] = dE_dCN_sum;
+        data->dE_dCN[atom_1_index] = local_dE_dCN;
         // energy
-        data->energy[original_atom_1_index] = energy_sum;
+        data->energy[original_atom_1_index] = local_energ;
         // force and stress
         for (uint8_t i = 0; i < 3; ++i) {
             force_central_sum[i] +=
-                dE_dCN_sum * data->dCN_dr[atom_1_index * 3 + i]; // another force entry: $F_i = dE/dCN_i * dCN_i/dr_i$
+                local_force[i] + local_dE_dCN * data->dCN_dr[atom_1_index * 3 + i]; // another force entry: $F_i = dE/dCN_i * dCN_i/dr_i$
             // write back the force without atomic operation, safe because no other thread writes to this memory
             data->forces[original_atom_1_index * 3 + i] = force_central_sum[i];
             for (uint8_t j = 0; j < 3; ++j) {

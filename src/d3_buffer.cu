@@ -226,7 +226,7 @@ __host__ Device_Buffer::Device_Buffer(uint16_t *elements, uint64_t length_elemen
             for (uint16_t j = 0; j < num_elements; ++j) {
                 uint16_t element_i = unique_elements[i];
                 uint16_t element_j = unique_elements[j];
-                h_r0ab[i * num_elements + j] = r0ab[element_i - 1][element_j - 1];
+                h_r0ab[i * num_elements + j] = r0ab[element_i - 1][element_j - 1] * ANGSTROM_TO_BOHR;
             }
         }
         real_t *d_r0ab;
@@ -258,7 +258,7 @@ __host__ Device_Buffer::Device_Buffer(uint16_t *elements, uint64_t length_elemen
             throw std::runtime_error("Error: failed to allocate host memory for r2r4");
         }
         for (uint16_t i = 0; i < num_elements; ++i) {
-            h_r2r4[i] = r2r4[unique_elements[i] - 1];
+            h_r2r4[i] = sqrtf64(r2r4[unique_elements[i] - 1] * sqrtf64(static_cast<float>(unique_elements[i])) * 0.5);
         }
         real_t *d_r2r4;
         CHECK_CUDA(cudaMalloc((void **)&d_r2r4, num_elements * sizeof(real_t)));

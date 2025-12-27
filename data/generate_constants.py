@@ -106,7 +106,7 @@ def parse_fortran_reference_file(filename):
             if i < 118:  # max_elem for this array
                 z = i + 1  # atomic number (1-based)
                 sqrt_z = math.sqrt(z)
-                r2r4_val = math.sqrt(0.5 * r4r2_val * sqrt_z)
+                r2r4_val = r4r2_val
                 r2r4_data.append(r2r4_val)
         print(f"Extracted {len(r2r4_data)} r2r4 values")
     else:
@@ -119,7 +119,7 @@ def parse_fortran_reference_file(filename):
     if vdw_match:
         vdw_data_str = vdw_match.group(1)
         numbers = re.findall(r'([+-]?\d+\.?\d*_wp)', vdw_data_str)
-        r0ab_data = [float(n.replace('_wp', '')) * ANGSTROM_TO_BOHR for n in numbers]
+        r0ab_data = [float(n.replace('_wp', '')) for n in numbers]
         print(f"Extracted {len(r0ab_data)} vdwrad values")
     else:
         print("Warning: Could not find vdwrad data")
@@ -306,7 +306,7 @@ static const double r0ab[NUM_ELEMENTS][NUM_ELEMENTS] = {
                 else:
                     row_vals.append(0.0)
 
-            vals_str = ", ".join(f"{val:10.8f}" for val in row_vals)
+            vals_str = ", ".join(f"{val:10.4f}" for val in row_vals)
             f.write(vals_str)
             f.write("}")
             if i < 102:
