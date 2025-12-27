@@ -243,7 +243,6 @@ __host__ Device_Buffer::Device_Buffer(uint16_t *elements, uint64_t length_elemen
         }
         for (uint16_t i = 0; i < num_elements; ++i) {
             h_rcov[i] = rcov[unique_elements[i] - 1] * 4.0/3.0 * ANGSTROM_TO_BOHR;
-            printf("Element %d rcov: %.20f\n", unique_elements[i], h_rcov[i]);
         }
         real_t *d_rcov;
         CHECK_CUDA(cudaMalloc((void **)&d_rcov, num_elements * sizeof(real_t)));

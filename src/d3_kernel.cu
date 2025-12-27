@@ -4,7 +4,7 @@
 #include "d3_types.h"
 
 #define ACCUMULATE_LEVELS 1
-#define ACCUMULATE_STRIDE 999999
+#define ACCUMULATE_STRIDE 8
 template <uint64_t N>
 struct HierarchicalKahanAccumulator {
     // Kahan summation state for the base level
@@ -36,11 +36,10 @@ struct HierarchicalKahanAccumulator {
     __device__ inline void add(const real_t value[N]) {
         // Kahan summation for the base level
         for (uint8_t i = 0; i < N; ++i) {
-            // real_t y = value[i] - compensation[i];
-            // real_t t = base_sum[i] + y;
-            // compensation[i] = (t - base_sum[i]) - y;
-            // base_sum[i] = t;
-            base_sum[i] += value[i];
+            real_t y = value[i] - compensation[i];
+            real_t t = base_sum[i] + y;
+            compensation[i] = (t - base_sum[i]) - y;
+            base_sum[i] = t;
         }
         count += 1;
         return;
@@ -49,8 +48,8 @@ struct HierarchicalKahanAccumulator {
         if (count % ACCUMULATE_STRIDE == 0) {
             for (uint8_t i = 0; i < N; ++i) {
                 levels[0][i] += base_sum[i];
-                base_sum[i] = 0.0f;
-                compensation[i] = 0.0f;
+                base_sum[i] = 0.0;
+                compensation[i] = 0.0;
             }
             // propagate to higher levels if needed
             uint32_t current_level = 0;
@@ -59,7 +58,7 @@ struct HierarchicalKahanAccumulator {
                    current_level + 1 < ACCUMULATE_LEVELS) {
                 for (uint8_t i = 0; i < N; ++i) {
                     levels[current_level + 1][i] += levels[current_level][i];
-                    levels[current_level][i] = 0.0f;
+                    levels[current_level][i] = 0.0;
                 }
                 current_level += 1;
                 count_at_level /= ACCUMULATE_STRIDE;
@@ -415,8 +414,8 @@ __device__ void distribute_workload(uint64_t num_atoms, uint64_t total_cell_bias
 }
 
 __device__ inline void calculate_CN(atom_t atom_1, atom_t atom_2, real_t covalent_radii,
-                                    real_t CN_cutoff, real_t &CN_accumulator,
-                                    real_t (&dCN_dr_accumulator)[3]) {
+                                    real_t CN_cutoff, HierarchicalKahanAccumulator<1> &CN_accumulator,
+                                    HierarchicalKahanAccumulator<3> &dCN_dr_accumulator) {
     real_t delta_r[3] = {
         atom_1.x - atom_2.x, // delta x
         atom_1.y - atom_2.y, // delta y
@@ -448,12 +447,13 @@ __device__ inline void calculate_CN(atom_t atom_1, atom_t atom_2, real_t covalen
         real_t coordination_number = 1.0 / (1.0 + exp_value);
 // #endif
         // accumulate coordination number and dCN/dr using Kahan summation with batching
-        CN_accumulator += coordination_number;
-        printf("dCN: %.20f, %.20f, %.20f, %.20f, %.20f, %llu, %llu\n", distance, coordination_number, delta_r[0],
-               delta_r[1], delta_r[2], atom_1.original_index, atom_2.original_index);
-        for (uint16_t i = 0; i < 3; ++i) {
-            dCN_dr_accumulator[i] += dCN_datom * (delta_r[i]);
-        }
+        CN_accumulator.add(&coordination_number);
+        real_t dCN_dr[3] = {
+            dCN_datom * (delta_r[0]),
+            dCN_datom * (delta_r[1]),
+            dCN_datom * (delta_r[2])
+        };
+        dCN_dr_accumulator.add(dCN_dr);
     }
 }
 
@@ -479,8 +479,10 @@ __global__ void coordination_number_kernel(device_data_t *data) {
                                {data->cell[2][0], data->cell[2][1], data->cell[2][2]}}; // cell matrix
     const real_t CN_cutoff = data->coordination_number_cutoff; // cutoff radius of coordination number
     real_t covalent_radii_1 = data->rcov[atom_1_type]; // covalent radii of the central atom
-    real_t CN_accumulator = 0.0;
-    real_t dCN_dr_accumulator[3] = {0.0, 0.0, 0.0};
+    HierarchicalKahanAccumulator<1> CN_accumulator;
+    HierarchicalKahanAccumulator<3> dCN_dr_accumulator;
+    CN_accumulator.init();
+    dCN_dr_accumulator.init();
 
     // distribute workload
     switch (data->workload_distribution_type) {
@@ -520,10 +522,6 @@ __global__ void coordination_number_kernel(device_data_t *data) {
         // no special preparation needed
         const uint64_t total_cell_bias =
             data->max_cell_bias[0] * data->max_cell_bias[1] * data->max_cell_bias[2]; // total number of cell bias
-        if (threadIdx.x == 0) {
-            // for debug use
-            printf("Total cell bias: %llu (%llu, %llu, %llu)\n", total_cell_bias, data->max_cell_bias[0], data->max_cell_bias[1], data->max_cell_bias[2]);
-        }
         const uint64_t mcb0 = data->max_cell_bias[0]; // maximum cell bias in x direction
         const uint64_t mcb1 = data->max_cell_bias[1]; // maximum cell bias in y direction
         const uint64_t mcb2 = data->max_cell_bias[2]; // maximum cell bias in z direction
@@ -559,11 +557,21 @@ __global__ void coordination_number_kernel(device_data_t *data) {
         break;
     }
 
+    // get the local results from accumulators
+    real_t local_CN;
+    real_t local_dCN_dr[3] = {0.0};
+    CN_accumulator.get_sum(&local_CN);
+    dCN_dr_accumulator.get_sum(local_dCN_dr);
+    // perform block-wise reduction to get the final results
+    real_t final_CN;
+    real_t final_dCN_dr[3] = {0.0};
+    blockReduceCNKernel(local_CN, local_dCN_dr, &final_CN, final_dCN_dr);
+
     // write back the results to global memory
     if (threadIdx.x == 0) {
-        data->coordination_numbers[atom_1_index] = CN_accumulator;
+        data->coordination_numbers[atom_1_index] = final_CN;
         for (uint16_t i = 0; i < 3; ++i) {
-            data->dCN_dr[atom_1_index * 3 + i] = dCN_dr_accumulator[i];
+            data->dCN_dr[atom_1_index * 3 + i] = final_dCN_dr[i];
         }
     }
     return;
@@ -614,11 +622,11 @@ __device__ inline void calculate_c6ab(device_data_t *data, uint64_t atom_1_type,
         }
     }
     // calculate C6 value
-    real_t Z = 0.0f;
-    real_t W = 0.0f;
-    real_t c_ref_L_ij = 0.0f; // C6ab_ref * L_ij
-    real_t c_ref_dL_ij_1 = 0.0f; // C6ab_ref * dL_ij/dCN_1
-    real_t dL_ij_1 = 0.0f; // dL_ij/dCN_1
+    real_t Z = 0.0;
+    real_t W = 0.0;
+    real_t c_ref_L_ij = 0.0; // C6ab_ref * L_ij
+    real_t c_ref_dL_ij_1 = 0.0; // C6ab_ref * dL_ij/dCN_1
+    real_t dL_ij_1 = 0.0; // dL_ij/dCN_1
     for (uint8_t i = 0; i < NUM_REF_C6; ++i) {
         for (uint8_t j = 0; j < NUM_REF_C6; ++j) {
             // find the C6ref
@@ -628,7 +636,7 @@ __device__ inline void calculate_c6ab(device_data_t *data, uint64_t atom_1_type,
             // these entries could be -1.0f if they are not valid, but at least one should be valid
             real_t coordination_number_ref_1 = data->c6_ab_ref[index + 1];
             real_t coordination_number_ref_2 = data->c6_ab_ref[index + 2];
-            if (coordination_number_ref_1 > -1.0f && coordination_number_ref_2 > -1.0f) {
+            if (coordination_number_ref_1 > -1.0 && coordination_number_ref_2 > -1.0) {
                 // if both coordination numbers are valid, we can use them
                 const real_t delta_CN_1 = coordination_number_1 - coordination_number_ref_1;
                 const real_t delta_CN_2 = coordination_number_2 - coordination_number_ref_2;
@@ -921,13 +929,13 @@ __global__ void two_body_kernel(device_data_t *data) {
     force_accumulators.get_sum(local_force);
     stress_accumulators.get_sum(local_stress);
 
-    // real_t dE_dCN_sum = 0; // sum of dE/dCN across the block
-    // real_t energy_sum = 0; // sum of energy across the block
+    real_t dE_dCN_sum = 0; // sum of dE/dCN across the block
+    real_t energy_sum = 0; // sum of energy across the block
     real_t force_central_sum[3] = {0.0}; // sum of force of central atom across the block
-    // real_t stress_sum[9] = {0.0}; // sum of stress of central atom across the block
-    // // accumulate the results across the block
-    // blockReduceTwoBodyKernel(local_dE_dCN, local_energ, local_force, local_stress, &dE_dCN_sum, &energy_sum,
-    //                          force_central_sum, stress_sum);
+    real_t stress_sum[9] = {0.0}; // sum of stress of central atom across the block
+    // accumulate the results across the block
+    blockReduceTwoBodyKernel(local_dE_dCN, local_energ, local_force, local_stress, &dE_dCN_sum, &energy_sum,
+                             force_central_sum, stress_sum);
 
     if (threadIdx.x == 0) {
         /** Only the first thread in the block is responsible for writing back the accumulated result.
@@ -940,13 +948,13 @@ __global__ void two_body_kernel(device_data_t *data) {
          */
         uint64_t original_atom_1_index = atom_1.original_index;
         // dE/dCN
-        data->dE_dCN[atom_1_index] = local_dE_dCN;
+        data->dE_dCN[atom_1_index] = dE_dCN_sum;
         // energy
-        data->energy[original_atom_1_index] = local_energ;
+        data->energy[original_atom_1_index] = energy_sum;
         // force and stress
         for (uint8_t i = 0; i < 3; ++i) {
             force_central_sum[i] +=
-                local_force[i] + local_dE_dCN * data->dCN_dr[atom_1_index * 3 + i]; // another force entry: $F_i = dE/dCN_i * dCN_i/dr_i$
+                dE_dCN_sum * data->dCN_dr[atom_1_index * 3 + i]; // another force entry: $F_i = dE/dCN_i * dCN_i/dr_i$
             // write back the force without atomic operation, safe because no other thread writes to this memory
             data->forces[original_atom_1_index * 3 + i] = force_central_sum[i];
             for (uint8_t j = 0; j < 3; ++j) {

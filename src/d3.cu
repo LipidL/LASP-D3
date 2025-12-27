@@ -149,12 +149,12 @@ uint16_t compute_dispersion_energy_from_handle_status(D3Handle_t *handle, real_t
         uint64_t length = buffer->get_host_data().num_atoms; // get the number of atoms in the system
         debug("launching coordination_number_kernel, size: %zu, %d\n", length, MAX_BLOCK_SIZE);
         // calculate coordination number
-        coordination_number_kernel<<<length, 1, 0, stream>>>(buffer->get_device_data());
+        coordination_number_kernel<<<length, MAX_BLOCK_SIZE, 0, stream>>>(buffer->get_device_data());
         CHECK_CUDA(cudaGetLastError()); // Check for kernel launch errors
         // print some debug information
         debug("launching two_body_kernel, size: %zu, %d\n", length, MAX_BLOCK_SIZE);
         // calculate energy and two-body part of force
-        two_body_kernel<<<length, 1, 0, stream>>>(buffer->get_device_data());
+        two_body_kernel<<<length, MAX_BLOCK_SIZE, 0, stream>>>(buffer->get_device_data());
         CHECK_CUDA(cudaGetLastError()); // Check for kernel launch errors
         real_t *atomic_energy = (real_t *)malloc(length * sizeof(real_t)); // allocate memory for atomic energy
         CHECK_CUDA(cudaMemcpyAsync(atomic_energy, buffer->get_host_data().energy, length * sizeof(real_t),
