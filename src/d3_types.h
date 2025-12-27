@@ -3,7 +3,7 @@
 
 #include <stdint.h>
 
-typedef double real_t;
+typedef float real_t;
 
 typedef struct atom {
     uint16_t element; // element type of the atom
