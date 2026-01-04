@@ -249,7 +249,7 @@ __device__ void damping(real_t distance, real_t cutoff_radius, real_t param_1,
                         real_t param_2, // parameters used for damping calculation.
                                         // when using zero damping, they are SR_6 and SR_8, respectively
                                         // when using BJ damping, they are a1 and a2, respectively
-                        real_t *damping_6, real_t *damping_8, real_t *d_damping_6, real_t *d_damping_8) {
+                        real_t &damping_6, real_t &damping_8, real_t &d_damping_6, real_t &d_damping_8) {
     if constexpr (damping_type == ZERO_DAMPING) {
         // calculate powers of distance/cutoff_radius
         const real_t base_6 = param_1 * cutoff_radius / distance;
@@ -271,10 +271,10 @@ __device__ void damping(real_t distance, real_t cutoff_radius, real_t param_1,
         const real_t d_f_dn_6 = 6.0f * 14.0f * f_dn_6 * f_dn_6 * base_6_15 / param_1 / cutoff_radius;
         const real_t d_f_dn_8 = 6.0f * 16.0f * f_dn_8 * f_dn_8 * base_8_17 / param_2 / cutoff_radius;
         // write the result back
-        *damping_6 = f_dn_6;
-        *damping_8 = f_dn_8;
-        *d_damping_6 = d_f_dn_6;
-        *d_damping_8 = d_f_dn_8;
+        damping_6 = f_dn_6;
+        damping_8 = f_dn_8;
+        d_damping_6 = d_f_dn_6;
+        d_damping_8 = d_f_dn_8;
     } else if constexpr (damping_type == BJ_DAMPING) {
         real_t add_entry = param_1 * cutoff_radius + param_2; // $a_1 R_0^{AB} + a_2$
         // fast powering
@@ -294,10 +294,23 @@ __device__ void damping(real_t distance, real_t cutoff_radius, real_t param_1,
         real_t d_f_dn_6 = 6 * add_entry_6 * distance_5 / ((distance_6 + add_entry_6) * (distance_6 + add_entry_6));
         real_t d_f_dn_8 = 8 * add_entry_8 * distance_7 / ((distance_8 + add_entry_8) * (distance_8 + add_entry_8));
         // write the result back
-        *damping_6 = f_dn_6;
-        *damping_8 = f_dn_8;
-        *d_damping_6 = d_f_dn_6;
-        *d_damping_8 = d_f_dn_8;
+        damping_6 = f_dn_6;
+        damping_8 = f_dn_8;
+        d_damping_6 = d_f_dn_6;
+        d_damping_8 = d_f_dn_8;
+    }
+    // detect bad results
+    if (isnan(damping_6) || isinf(damping_6)) {
+        damping_6 = 0.0f;
+    }
+    if (isnan(d_damping_6) || isinf(d_damping_6)) {
+        d_damping_6 = 0.0f;
+    }
+    if (isnan(damping_8) || isinf(damping_8)) {
+        damping_8 = 0.0f;
+    }
+    if (isnan(d_damping_8) || isinf(d_damping_8)) {
+        d_damping_8 = 0.0f;
     }
 }
 
@@ -684,21 +697,40 @@ __device__ inline void calculate_two_body_interaction(
     if (distance_2 <= cutoff_radius * cutoff_radius && distance_2 > 0.0f) {
         const real_t distance = sqrtf(distance_2); // distance between atom 1 and atom 2
         // calculate distance^6 and distance^8 using fast power
-        const real_t distance_3 = distance_2 * distance; // distance^3
-        const real_t distance_4 = distance_2 * distance_2; // distance^4
-        const real_t distance_6 = distance_3 * distance_3; // distance^6
-        const real_t distance_8 = distance_4 * distance_4; // distance^8
-        const real_t distance_10 = distance_6 * distance_4; // distance^10
+        real_t distance_3 = distance_2 * distance; // distance^3
+        real_t distance_4 = distance_2 * distance_2; // distance^4
+        real_t distance_6 = distance_3 * distance_3; // distance^6
+        real_t distance_7 = distance_6 * distance; // distance^7
+        real_t distance_8 = distance_4 * distance_4; // distance^8
+        real_t distance_9 = distance_8 * distance; // distance^9
+        real_t distance_10 = distance_6 * distance_4; // distance^10
+        
+        // prevent division by zero
+        if (distance_6 == 0.0f) {
+            distance_6 = FLT_MIN;
+        }
+        if (distance_7 == 0.0f) {
+            distance_7 = FLT_MIN;
+        }
+        if (distance_8 == 0.0f) {
+            distance_8 = FLT_MIN;
+        }
+        if (distance_9 == 0.0f) {
+            distance_9 = FLT_MIN;
+        }
+        if (distance_10 == 0.0f) {
+            distance_10 = FLT_MIN;
+        }
         // calculate the damping function
         real_t f_dn_6, f_dn_8, d_f_dn_6, d_f_dn_8;
         switch (damping_type) {
         case ZERO_DAMPING:
-            damping<ZERO_DAMPING>(distance, r0_cutoff, damping_param_1, damping_param_2, &f_dn_6, &f_dn_8, &d_f_dn_6,
-                                  &d_f_dn_8);
+            damping<ZERO_DAMPING>(distance, r0_cutoff, damping_param_1, damping_param_2, f_dn_6, f_dn_8, d_f_dn_6,
+                                  d_f_dn_8);
             break;
         case BJ_DAMPING:
-            damping<BJ_DAMPING>(distance, r0_cutoff, damping_param_1, damping_param_2, &f_dn_6, &f_dn_8, &d_f_dn_6,
-                                &d_f_dn_8);
+            damping<BJ_DAMPING>(distance, r0_cutoff, damping_param_1, damping_param_2, f_dn_6, f_dn_8, d_f_dn_6,
+                                d_f_dn_8);
             break;
         }
         // calculate the dispersion energy according to Grimme et al. 2010, eq3
@@ -724,8 +756,8 @@ __device__ inline void calculate_two_body_interaction(
          * (6*(-\alpha_n)*(r_{ab}/{S_{r,n}R_0^{AB}})^{-\alpha_n - 1} *
          * 1/(S_{r,n}R_0^{AB})) / r_ab \vec{r_{ab}}$
          */
-        force += s6 * c6_ab / distance_6 * d_f_dn_6 / distance; // dE_6/dr * 1/r
-        force += s8 * c8_ab / distance_8 * d_f_dn_8 / distance; // dE_8/dr * 1/r
+        force += s6 * c6_ab * d_f_dn_6 / distance_7; // dE_6/dr * 1/r
+        force += s8 * c8_ab * d_f_dn_8 / distance_9; // dE_8/dr * 1/r
 
         // accumulate the energy, force, stress and dE/dCN using hierarchical Kahan summation
         energy_accumulator.add(&dispersion_energy);
@@ -993,6 +1025,11 @@ __device__ inline void calculate_three_body_interaction(atom_t atom_1, atom_t at
 #endif
         // dE/drik = dE/dCN * dCN/drik
         real_t dE_drik = dE_dCN * dCN_datom;
+        if (isnan(dE_drik) || isinf(dE_drik)) {
+            // NaN or inf encountered, bad result
+            printf("Error: (%llu,%llu) dE_dCN: %f, dCN_datom: %f\n", atom_1.original_index, atom_2.original_index, dE_dCN, dCN_datom);
+            dE_drik = 0.0f; // reset to 0.0f if it's NaN or Inf
+        }
         // accumulate force for the central atom and neighboring atom
         // force_central += dE/drik * delta_r
         // use Kahan summation to improve numerical stability
