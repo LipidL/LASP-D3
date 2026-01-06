@@ -8,6 +8,16 @@
 #include "d3_internal.h"
 #include "d3_types.h"
 
+#ifdef USE_EXTENDED_PARAMETERS
+
+#define IDX_ELEM(x) (x-1) // element index starts from 0
+
+#else
+
+#define IDX_ELEM(x) (x) // element index starts from 1
+
+#endif
+
 // Calculate inverse of a 3x3 matrix
 template <typename T1, typename T2>
 void matrix_inverse(const T1 mat[3][3], T2 inv[3][3]) {
@@ -186,8 +196,8 @@ __host__ Device_Buffer::Device_Buffer(uint16_t *elements, uint64_t length_elemen
         }
         for (uint16_t i = 0; i < num_elements; ++i) {
             for (uint16_t j = 0; j < num_elements; ++j) {
-                uint16_t element_i = unique_elements[i];
-                uint16_t element_j = unique_elements[j];
+                uint16_t element_i = IDX_ELEM(unique_elements[i]);
+                uint16_t element_j = IDX_ELEM(unique_elements[j]);
                 for (uint16_t k = 0; k < NUM_REF_C6; ++k) {
                     for (uint16_t l = 0; l < NUM_REF_C6; ++l) {
                         uint64_t index = this->host_data_.c6_stride_1 * i + this->host_data_.c6_stride_2 * j +
@@ -216,8 +226,8 @@ __host__ Device_Buffer::Device_Buffer(uint16_t *elements, uint64_t length_elemen
         }
         for (uint16_t i = 0; i < num_elements; ++i) {
             for (uint16_t j = 0; j < num_elements; ++j) {
-                uint16_t element_i = unique_elements[i];
-                uint16_t element_j = unique_elements[j];
+                uint16_t element_i = IDX_ELEM(unique_elements[i]);
+                uint16_t element_j = IDX_ELEM(unique_elements[j]);
                 h_r0ab[i * num_elements + j] = r0ab[element_i][element_j];
             }
         }
@@ -234,7 +244,7 @@ __host__ Device_Buffer::Device_Buffer(uint16_t *elements, uint64_t length_elemen
             throw std::runtime_error("Error: failed to allocate host memory for rcov");
         }
         for (uint16_t i = 0; i < num_elements; ++i) {
-            h_rcov[i] = rcov[unique_elements[i]];
+            h_rcov[i] = rcov[IDX_ELEM(unique_elements[i])];
         }
         real_t *d_rcov;
         CHECK_CUDA(cudaMalloc((void **)&d_rcov, num_elements * sizeof(real_t)));
@@ -249,7 +259,7 @@ __host__ Device_Buffer::Device_Buffer(uint16_t *elements, uint64_t length_elemen
             throw std::runtime_error("Error: failed to allocate host memory for r2r4");
         }
         for (uint16_t i = 0; i < num_elements; ++i) {
-            h_r2r4[i] = r2r4[unique_elements[i]];
+            h_r2r4[i] = r2r4[IDX_ELEM(unique_elements[i])];
         }
         real_t *d_r2r4;
         CHECK_CUDA(cudaMalloc((void **)&d_r2r4, num_elements * sizeof(real_t)));

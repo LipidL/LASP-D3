@@ -2,11 +2,18 @@ cmake_minimum_required(VERSION 3.25.2 FATAL_ERROR)
 
 project(d3_project LANGUAGES CXX CUDA Fortran)
 
+# Option to use extended parameter space
+option(USE_EXTENDED_PARAMETERS "Use extended parameter space (103 elements) instead of original (95 elements)" OFF)
+
 # Set C++ standard
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CUDA_STANDARD 17)  # Compatible with CUDA 11.8
 set(CMAKE_CUDA_STANDARD_REQUIRED ON)
+
+# Find CUDA runtime location
+find_library(CUDA_RUNTIME_LIBRARY cudart
+    HINTS ${CMAKE_CUDA_IMPLICIT_LINK_DIRECTORIES})
 
 # Source files
 set(SOURCES 
@@ -24,136 +31,69 @@ set(HEADERS
     src/d3.h
 )
 
-# Add custom command to generate constants header at build time
-add_custom_command(
-    OUTPUT ${CMAKE_CURRENT_SOURCE_DIR}/src/gen_constants.h
-    COMMAND python3 ${CMAKE_CURRENT_SOURCE_DIR}/data/generate_constants.py
-    DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/data/generate_constants.py ${CMAKE_CURRENT_SOURCE_DIR}/data/dftd3_params.npz
-    COMMENT "Generating constants header file"
-)
+# Create static library
+add_library(d3_static STATIC ${SOURCES} ${HEADERS})
 
-# Add the generated header to the build dependencies
-add_custom_target(generate_constants ALL DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/src/gen_constants.h)
-
-# Generate object file
-add_library(d3_obj OBJECT ${SOURCES} ${HEADERS})
-
-# Apply CUDA options to object file
-target_compile_options(d3_obj PRIVATE $<$<COMPILE_LANGUAGE:CUDA>:
+# Apply CUDA options
+target_compile_options(d3_static PRIVATE $<$<COMPILE_LANGUAGE:CUDA>:
     -O2
     -lineinfo
     --maxrregcount=64
 >)
 
-add_dependencies(d3_obj generate_constants)
+# Add compile definition for extended parameters if enabled
+if(USE_EXTENDED_PARAMETERS)
+    target_compile_definitions(d3_static PRIVATE USE_EXTENDED_PARAMETERS)
+endif()
 
-# Set CUDA properties for object file
-set_target_properties(d3_obj PROPERTIES
+# Set CUDA properties for static library
+set_target_properties(d3_static PROPERTIES
+    OUTPUT_NAME "d3"
     CUDA_SEPARABLE_COMPILATION ON
+    CUDA_RESOLVE_DEVICE_SYMBOLS ON
     POSITION_INDEPENDENT_CODE ON
 )
 
-# Link math library for object file
-target_link_libraries(d3_obj PRIVATE m)
+target_link_libraries(d3_static PUBLIC ${CUDA_RUNTIME_LIBRARY} m)
 
-# Custom command to create standalone .o file
-# Generate output object filenames based on source files
-set(OUTPUT_OBJECTS "")
-set(COMPILE_COMMANDS "")
-foreach(SOURCE_FILE ${SOURCES})
-    get_filename_component(FILE_NAME ${SOURCE_FILE} NAME_WE)
-    list(APPEND OUTPUT_OBJECTS ${CMAKE_CURRENT_BINARY_DIR}/${FILE_NAME}.o)
-    list(APPEND COMPILE_COMMANDS 
-        COMMAND ${CMAKE_CUDA_COMPILER} -c ${CMAKE_CURRENT_SOURCE_DIR}/${SOURCE_FILE} -o ${CMAKE_CURRENT_BINARY_DIR}/${FILE_NAME}.o
-        -O2 -lineinfo --maxrregcount=64 -DBUILD_LIBRARY)
-endforeach()
+# Create shared library
+add_library(d3_shared SHARED ${SOURCES} ${HEADERS})
 
-add_custom_command(
-    OUTPUT ${OUTPUT_OBJECTS}
-    ${COMPILE_COMMANDS}
-    DEPENDS ${SOURCES} ${HEADERS}
-            ${CMAKE_CURRENT_SOURCE_DIR}/src/gen_constants.h
-    COMMENT "Generating standalone object files"
-)
+# Apply CUDA options
+target_compile_options(d3_shared PRIVATE $<$<COMPILE_LANGUAGE:CUDA>:
+    -O2
+    -lineinfo
+    --maxrregcount=64
+>)
 
-# Custom target to ensure .o file is built
-add_custom_target(d3_o ALL DEPENDS ${OUTPUT_OBJECTS})
-add_dependencies(d3_o generate_constants)
+# Add compile definition for extended parameters if enabled
+if(USE_EXTENDED_PARAMETERS)
+    target_compile_definitions(d3_shared PRIVATE USE_EXTENDED_PARAMETERS)
+endif()
 
-# Create static library from object files
-add_custom_command(
-    OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/libd3.a
-    COMMAND ${CMAKE_AR} rcs ${CMAKE_CURRENT_BINARY_DIR}/libd3.a ${OUTPUT_OBJECTS}
-    DEPENDS ${OUTPUT_OBJECTS}
-    COMMENT "Creating static library archive libd3.a"
-)
-
-# Custom target to ensure static library is built
-add_custom_target(d3_static ALL DEPENDS ${CMAKE_CURRENT_BINARY_DIR}/libd3.a)
-add_dependencies(d3_static d3_o)
-
-# Install the static library
-install(FILES ${CMAKE_CURRENT_BINARY_DIR}/libd3.a
-        DESTINATION lib
-        PERMISSIONS OWNER_READ OWNER_WRITE GROUP_READ WORLD_READ)
-
-# Create dynamic shared library
-add_library(d3_shared SHARED $<TARGET_OBJECTS:d3_obj>)
-
-# Add dependency on generated constants if static constants are enabled
-add_dependencies(d3_shared generate_constants)
-
-# Set library properties
+# Set CUDA properties for shared library
 set_target_properties(d3_shared PROPERTIES
     OUTPUT_NAME "d3"
     VERSION 1.0.0
     SOVERSION 1
-    POSITION_INDEPENDENT_CODE ON
     CUDA_SEPARABLE_COMPILATION ON
+    POSITION_INDEPENDENT_CODE ON
 )
 
-# Link with required libraries
-target_link_libraries(d3_shared PRIVATE 
-    ${CUDA_RUNTIME_LIBRARY}
-    m
-)
+target_link_libraries(d3_shared PUBLIC ${CUDA_RUNTIME_LIBRARY} m)
 
-# Find CUDA runtime location
-find_library(CUDA_RUNTIME_LIBRARY cudart
-    HINTS ${CMAKE_CUDA_IMPLICIT_LINK_DIRECTORIES})
+# Install libraries
+install(TARGETS d3_static d3_shared
+        ARCHIVE DESTINATION lib
+        LIBRARY DESTINATION lib)
 
 # Create Fortran executable
 add_executable(d3_fortran src/fortran_d3.f90)
-
-# Link with static library and required libraries
-target_link_libraries(d3_fortran PRIVATE
-    ${CMAKE_CURRENT_BINARY_DIR}/libd3.a
-    ${CUDA_RUNTIME_LIBRARY}
-    m
-    stdc++
-)
-
-# Add dependency on static library
-add_dependencies(d3_fortran d3_static)
+target_link_libraries(d3_fortran PRIVATE d3_static stdc++)
 
 # Create benchmark executable
 add_executable(d3_cpp src/main.cpp)
-
-# Add static library as dependency
-add_dependencies(d3_cpp d3_static)
-
-# Add static constants dependency if enabled
-if(USE_STATIC_CONSTANTS)
-    add_dependencies(d3_cpp generate_constants)
-endif()
-
-# Link with the static library and required libraries
-target_link_libraries(d3_cpp PRIVATE
-    ${CMAKE_CURRENT_BINARY_DIR}/libd3.a
-    ${CUDA_RUNTIME_LIBRARY}
-    m 
-    stdc++
-)
+target_link_libraries(d3_cpp PRIVATE d3_static stdc++)
 
 # Include FetchContent for downloading GoogleTest
 include(FetchContent)
@@ -173,14 +113,7 @@ enable_testing()
 
 # Add the test executable
 add_executable(d3_test test/d3_test.cpp)
-
-# Link against GoogleTest
-target_link_libraries(d3_test PRIVATE
-    ${CMAKE_CURRENT_BINARY_DIR}/libd3.a
-    GTest::gtest_main
-    ${CUDA_RUNTIME_LIBRARY}
-    m
-)
+target_link_libraries(d3_test PRIVATE d3_static GTest::gtest_main)
 
 # Register the test
 include(GoogleTest)

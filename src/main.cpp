@@ -43,8 +43,8 @@ int main(int argc, char *argv[]) {
                     }
                 }
                 std::cout << "Computing dispersion energy for " << num_atoms << " atoms..." << std::endl;
-                float cutoff_radius = 46.4758f; // cutoff radius in bohr
-                float CN_cutoff_radius = 46.4758f; // cutoff radius in bohr
+                float cutoff_radius = 60.0f; // cutoff radius in bohr
+                float CN_cutoff_radius = 40.0f; // cutoff radius in bohr
                 float energy;
                 float *force = (float *)malloc(sizeof(float) * num_atoms * 3); // allocate memory for force
                 float *stress = (float *)malloc(sizeof(float) * 9); // allocate memory for stress
@@ -55,7 +55,7 @@ int main(int argc, char *argv[]) {
                 auto end_time = std::chrono::high_resolution_clock::now();
                 std::chrono::duration<double> elapsed_time = end_time - start_time;
                 std::cout << "Elapsed time: " << elapsed_time.count() << " seconds" << std::endl;
-                std::cout << std::fixed << std::setprecision(9) << "Energy: " << energy << " eV"
+                std::cout << std::fixed << std::setprecision(20) << "Energy: " << energy << " eV"
                           << std::endl; // convert to eV
                 float force_sum[3] = {0.0f, 0.0f, 0.0f};
                 for (size_t i = 0; i < num_atoms; ++i) {
@@ -65,7 +65,7 @@ int main(int argc, char *argv[]) {
                     force_sum[0] += force_x;
                     force_sum[1] += force_y;
                     force_sum[2] += force_z;
-                    std::cout << "Force[" << i << "]: " << force_x << " " << force_y << " " << force_z << std::endl;
+                    std::cout << std::fixed << std::setprecision(20) << "Force[" << i << "]: " << force_x << " " << force_y << " " << force_z << std::endl;
                 }
                 std::cout << "Force sum: " << force_sum[0] << " " << force_sum[1] << " " << force_sum[2] << std::endl;
                 for (int i = 0; i < 3; ++i) {
