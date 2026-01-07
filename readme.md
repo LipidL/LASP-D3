@@ -15,29 +15,17 @@ This implementation supports:
 
 This tool can be used as a standalone calculator or integrated with other computational chemistry software.
 
-## Parameters Management
-
-The project offers two methods for handling the large parameter arrays required for DFT-D3 calculations:
-
-1. **Runtime Loading**: Parameters are loaded at runtime from a binary file (`params.bin`).
-   - Advantage: Keeps source code clean and language server responsive.
-   - Disadvantage: Performance overhead from loading parameters at runtime and requires distributing the params.bin file.
-
-2. **Compile-time Constants**: Parameters are embedded directly into the compiled binary.
-   - Advantage: Faster runtime performance, no need to distribute params.bin separately.
-   - Disadvantage: Large constants in source code (but generated automatically, so language server issues are avoided).
-
 ## Quick start
 
 ### Prerequirements
 
 - cmake
     Starting from version 0.5.0, this project uses `cmake` for compilation and deployment.
-    Due to the use of C++ 20 features in CUDA code, we require `cmake` newer than 3.25.2.
+    Due to the use of C++ 17 features in CUDA code, we require `cmake` newer than 3.25.2.
 - cuda compiler
     Since this is a CUDA program, it requires a CUDA compiler, most commonly, `nvcc`, to compile the project
 - C++ compiler
-    The C++ code in this project uses C++ 20 features, so your C++ compiler should support C++ 20 standard.
+    The C++ code in this project uses C++ 17 features, so your C++ compiler should support C++ 17 standard.
 
 ### Build
 
@@ -50,7 +38,15 @@ cd path/to/dft_d3 # navigate to project's root path
 mkdir -p build; cd build # create build directory and navigate to it
 cmake .. # configure the project
 cmake --build . # build both executable and library
+ctest # run unit tests for validation
 ```
+
+#### Build Targets
+
+This project provides multiple targets, including a static library(`d3_static`), a dynamic library(`d3_dynamic`), a C++ executable(`d3_cpp`) and a Fortran executable(`d3_fortran`).
+The static and dynamic library follows C-style API and can be used by most programming languages.
+The C++ executable reads structures from `.arc` file specified by command line arguement and calculates the dispersion energy, force and stress.
+The Fortran executable is an example executable that computes the dispersion energy, force and stress of a small molecule.
 
 If you prefer building specific targets, you can run `cmake --build . --target d3` or `cmake --build . --target d3_lib` for building executable or library separately.
 
@@ -67,9 +63,9 @@ User can use extended 7-reference system by specifying `-DUSE_EXTENDED_PARAMETER
 
 ### Use
 
-The executable can be executed directly as long as you have CUDA runtime and a supported GPU.
-running it, it will give the D3 energy, force and stress of an acetone molecule.
+This project provides both static library (`libd3.a`) and dynamic library (`libd3.so`).
+The apis are defined in `src/d3.h` with C-style APIs for maximum compatibility.
+Example code for Fortran is provided at `src/fortran_d3.f90` 
+and for Python is provided at `src/d3_cffi.py` for an object-oriented encapsulation and `src/test_d3_cffi.py` for usage.
 
-To use this project as a library, include the header file `src/d3.h`, and add `libd3.a` to your compilation list.
-`libd3.a` only includes project-specific code and doesn't include the CUDA runtime.
-Therefore, you need your own CUDA runtime when building your project using libd3.
+This project also provides a C++ erxecutable (`d3_cpp`) to calculate dispersion energy, force and stress from a given `.arc` file.
