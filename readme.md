@@ -53,7 +53,7 @@ If you prefer building specific targets, you can run `cmake --build . --target d
 #### Build using extended constants
 
 The DFT-D3 implementation has multiple version of constants.
-For example, torch-dftd(https://github.com/pfnet-research/torch-dftd) and simple-dftd3(https://github.com/dftd3/simple-dftd3) use different parameters.
+For example, [torch-dftd](https://github.com/pfnet-research/torch-dftd) and [simple-dftd3](https://github.com/dftd3/simple-dftd3) use different parameters.
 `torch-dftd` uses 5-reference system for C6 evaluation, in consistent with the algorithm of Grimme et al.
 `simple-dftd3`, on the other hand, uses an extended 7-references system for C6 evaluation.
 
