@@ -4,57 +4,57 @@ program test_d3
     
     ! External function interface declarations
     interface
-        subroutine compute_dispersion_energy(atoms, elements, num_atoms, cell, &
-                cutoff_radius, CN_cutoff_radius, damping_type, functional_type, &
-                energy, force, &
-                stress) bind(c, name='compute_dispersion_energy')
+        subroutine compute_dispersion_energy(atoms_in, elements_in, num_atoms_in, cell_in, &
+                cutoff_radius_in, CN_cutoff_radius_in, damping_type, functional_type, &
+                energy_out, force_out, &
+                stress_out) bind(c, name='compute_dispersion_energy')
             use, intrinsic :: iso_c_binding
             implicit none
             
-            real(c_float), intent(in) :: atoms(3,*)
-            integer(c_int16_t), intent(in) :: elements(*)
-            integer(c_int64_t), value :: num_atoms
-            real(c_float), intent(in) :: cell(3,3)
-            real(c_float), value :: cutoff_radius
-            real(c_float), value :: CN_cutoff_radius
+            real(c_float), intent(in) :: atoms_in(3,*)
+            integer(c_int16_t), intent(in) :: elements_in(*)
+            integer(c_int64_t), value :: num_atoms_in
+            real(c_float), intent(in) :: cell_in(3,3)
+            real(c_float), value :: cutoff_radius_in
+            real(c_float), value :: CN_cutoff_radius_in
             integer(c_int64_t), value :: damping_type
             integer(c_int64_t), value :: functional_type
-            real(c_float), intent(out) :: energy
-            real(c_float), intent(out) :: force(*)
-            real(c_float), intent(out) :: stress(9)
+            real(c_float), intent(out) :: energy_out
+            real(c_float), intent(out) :: force_out(*)
+            real(c_float), intent(out) :: stress_out(9)
         end subroutine compute_dispersion_energy
 
-        function init_d3_handle(elements, num_elements, max_length, cutoff_radius, &
+        function init_d3_handle(elements_in, num_elements, max_length, cutoff_radius_in, &
             coordination_number_cutoff, damping_type, functional_type) bind(c, name='init_d3_handle')
             use, intrinsic :: iso_c_binding
             implicit none
             
-            integer(c_int16_t), intent(in) :: elements(*)
+            integer(c_int16_t), intent(in) :: elements_in(*)
             integer(c_int64_t), value :: num_elements
             integer(c_int64_t), value :: max_length
-            real(c_float), value :: cutoff_radius
+            real(c_float), value :: cutoff_radius_in
             real(c_float), value :: coordination_number_cutoff
             integer(c_int64_t), value :: damping_type
             integer(c_int64_t), value :: functional_type
             type(c_ptr) :: init_d3_handle
         end function init_d3_handle
 
-        subroutine set_atoms(handle, coords, elements, length) bind(c, name='set_atoms')
+        subroutine set_atoms(handle, coords, elements_in, length) bind(c, name='set_atoms')
             use, intrinsic :: iso_c_binding
             implicit none
             
             type(c_ptr), value :: handle
             real(c_float), intent(in) :: coords(*)
-            integer(c_int16_t), intent(in) :: elements(*)
+            integer(c_int16_t), intent(in) :: elements_in(*)
             integer(c_int64_t), value :: length
         end subroutine set_atoms
 
-        subroutine set_cell(handle, cell) bind(c, name='set_cell')
+        subroutine set_cell(handle, cell_in) bind(c, name='set_cell')
             use, intrinsic :: iso_c_binding
             implicit none
             
             type(c_ptr), value :: handle
-            real(c_float), intent(in) :: cell(3,3)
+            real(c_float), intent(in) :: cell_in(3,3)
         end subroutine set_cell
 
         subroutine free_d3_handle(handle) bind(c, name='free_d3_handle')
@@ -71,15 +71,15 @@ program test_d3
             type(c_ptr), value :: handle
         end subroutine clear_d3_handle
 
-        subroutine compute_dispersion_energy_from_handle(handle, energy, force, stress) &
+        subroutine compute_dispersion_energy_from_handle(handle, energy_out, force_out, stress_out) &
             bind(c, name='compute_dispersion_energy_from_handle')
             use, intrinsic :: iso_c_binding
             implicit none
             
             type(c_ptr), value :: handle
-            real(c_float), intent(out) :: energy
-            real(c_float), intent(out) :: force(*)
-            real(c_float), intent(out) :: stress(9)
+            real(c_float), intent(out) :: energy_out
+            real(c_float), intent(out) :: force_out(*)
+            real(c_float), intent(out) :: stress_out(9)
         end subroutine compute_dispersion_energy_from_handle
     end interface
 
@@ -117,7 +117,9 @@ program test_d3
     end do
     
     ! Define atomic numbers
-    elements = [6, 6, 6, 8, 1, 1, 1, 1, 1, 1]
+    elements = [int(6, c_int16_t), int(6, c_int16_t), int(6, c_int16_t), int(8, c_int16_t), &
+                int(1, c_int16_t), int(1, c_int16_t), int(1, c_int16_t), int(1, c_int16_t), &
+                int(1, c_int16_t), int(1, c_int16_t)]
     
     ! Set up cell
     cell = 0.0_c_float
