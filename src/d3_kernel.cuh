@@ -22,4 +22,5 @@ Journal of Chemical Physics 132, 154104 (2010).
 __global__ void coordination_number_kernel(device_data_t *data);
 __global__ void print_coordination_number_kernel(device_data_t *data);
 __global__ void two_body_kernel(device_data_t *data);
+__global__ void atm_kernel(device_data_t *data);
 __global__ void three_body_kernel(device_data_t *data);

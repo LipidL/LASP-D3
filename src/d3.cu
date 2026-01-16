@@ -148,6 +148,14 @@ uint16_t compute_dispersion_energy_from_handle_status(d3_handle_t *handle, real_
         // calculate energy and two-body part of force
         two_body_kernel<<<length, MAX_BLOCK_SIZE, 0, stream>>>(buffer->get_device_data());
         CHECK_CUDA(cudaGetLastError()); // Check for kernel launch errors
+
+        // calculate ATM interaction
+        debug("launching atm_kernel, size: %zu, %d\n", length, MAX_BLOCK_SIZE);
+            // calculate three-body ATM interaction with 2D thread block
+        dim3 blockDim(16, 16);
+        atm_kernel<<<length, blockDim, 0, stream>>>(buffer->get_device_data());
+        CHECK_CUDA(cudaGetLastError()); // Check for kernel launch errors
+
         real_t *atomic_energy = (real_t *)malloc(length * sizeof(real_t)); // allocate memory for atomic energy
         CHECK_CUDA(cudaMemcpyAsync(atomic_energy, buffer->get_host_data().energy, length * sizeof(real_t),
                                    cudaMemcpyDeviceToHost, stream)); // copy the energy from device to host memory

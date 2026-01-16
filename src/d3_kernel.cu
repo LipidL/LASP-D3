@@ -4,7 +4,7 @@
 #include "d3_types.h"
 
 #define ACCUMULATE_LEVELS 1
-#define ACCUMULATE_STRIDE 8
+#define ACCUMULATE_STRIDE 9999
 template <uint64_t N>
 struct accumulator_t {
     // Kahan summation state for the base level
@@ -36,10 +36,11 @@ struct accumulator_t {
     __device__ inline void add(const real_t value[N]) {
         // Kahan summation for the base level
         for (uint8_t i = 0; i < N; ++i) {
-            real_t y = value[i] - compensation[i];
-            real_t t = base_sum[i] + y;
-            compensation[i] = (t - base_sum[i]) - y;
-            base_sum[i] = t;
+            // real_t y = value[i] - compensation[i];
+            // real_t t = base_sum[i] + y;
+            // compensation[i] = (t - base_sum[i]) - y;
+            // base_sum[i] = t;
+            base_sum[i] += value[i];
         }
         count += 1;
 
@@ -193,6 +194,68 @@ __inline__ __device__ void blockReduceTwoBodyKernel(real_t dE_dCN, real_t energy
 }
 
 /**
+ * @brief blockReduceSum for two_body_kernel. the entries that need to be added
+ * are: dE_dCN, energy, force, stress.
+ * This function is called in a 2D kernel where blockDim.y > 1.
+ */
+__inline__ __device__ void blockReduceATMKernel(real_t dE_dCN, real_t energy, real_t force[3], real_t stress[9],
+                                                real_t *dE_dCN_sum, real_t *energy_sum, real_t force_central_sum[3],
+                                                real_t stress_central_sum[9]) {
+    // Max warps in a block is 32 (1024 threads / 32)
+    // We only need enough shared memory to hold one partial sum per warp.
+
+    static __shared__ real_t shared_dE_dCN[32];
+    static __shared__ real_t shared_energy[32];
+    static __shared__ real_t shared_force[32 * 3];
+    static __shared__ real_t shared_stress[32 * 9];
+
+    // Calculate linear thread ID to handle any 2D block shape safely
+    int linear_tid = threadIdx.y * blockDim.x + threadIdx.x;
+    int warp_id = linear_tid / warpSize;
+    int lane = linear_tid % warpSize;
+
+    // reduce the values within warp
+    dE_dCN = warpReduceSum(dE_dCN);
+    energy = warpReduceSum(energy);
+    for (int i = 0; i < 3; ++i) {
+        force[i] = warpReduceSum(force[i]);
+    }
+    for (int i = 0; i < 9; ++i) {
+        stress[i] = warpReduceSum(stress[i]);
+    }
+
+    if (lane == 0) {
+        shared_dE_dCN[warp_id] = dE_dCN;
+        shared_energy[warp_id] = energy;
+        for (int i = 0; i < 3; ++i) {
+            shared_force[warp_id * 3 + i] = force[i];
+        }
+        for (int i = 0; i < 9; ++i) {
+            shared_stress[warp_id * 9 + i] = stress[i];
+        }
+    }
+    __syncthreads();
+    if (warp_id == 0) {
+        dE_dCN = (linear_tid < (blockDim.x * blockDim.y) / warpSize) ? shared_dE_dCN[lane] : 0.0f;
+        energy = (linear_tid < (blockDim.x * blockDim.y) / warpSize) ? shared_energy[lane] : 0.0f;
+        for (int i = 0; i < 3; ++i) {
+            force[i] = (linear_tid < (blockDim.x * blockDim.y) / warpSize) ? shared_force[lane * 3 + i] : 0.0f;
+        }
+        for (int i = 0; i < 9; ++i) {
+            stress[i] = (linear_tid < (blockDim.x * blockDim.y) / warpSize) ? shared_stress[lane * 9 + i] : 0.0f;
+        }
+        *dE_dCN_sum = warpReduceSum(dE_dCN);
+        *energy_sum = warpReduceSum(energy);
+        for (int i = 0; i < 3; ++i) {
+            force_central_sum[i] = warpReduceSum(force[i]);
+        }
+        for (int i = 0; i < 9; ++i) {
+            stress_central_sum[i] = warpReduceSum(stress[i]);
+        }
+    }
+}
+
+/**
  * @brief blockReduceSum for three_body_kernel. the entries that need to be
  * added are: force, stress
  */
@@ -314,6 +377,67 @@ __device__ void damping(real_t distance, real_t cutoff_radius, real_t param_1,
     }
 }
 
+__device__ inline void calculate_neighboring_grids_y(uint64_t home_cell_index, uint64_t num_grids[3],
+                                                     uint64_t *grid_start_indices, uint64_t num_atoms,
+                                                     uint64_t start_indices[27], uint64_t end_indices[27],
+                                                     int64_t shifts[27][3]) {
+    // Only first 27 threads populate the neighboring cell data
+    if (threadIdx.y < 27) {
+        uint64_t neighbor_cell_index; // the index of neighboring cell this thread calculates
+        uint64_t total_num_grids = num_grids[0] * num_grids[1] * num_grids[2];
+        // Calculate 3D offset for this neighboring cell (-1, 0, or +1 in each dimension)
+        int offset_x = (threadIdx.y % 3) - 1;
+        int offset_y = ((threadIdx.y / 3) % 3) - 1;
+        int offset_z = (threadIdx.y / 9) - 1;
+
+        // Get home cell's 3D indices
+        uint64_t home_x = home_cell_index % num_grids[0];
+        uint64_t home_y = (home_cell_index / num_grids[0]) % num_grids[1];
+        uint64_t home_z = home_cell_index / (num_grids[0] * num_grids[1]);
+
+        // Calculate neighbor cell indices with periodic boundaries
+        int64_t neighbor_x = (int64_t)home_x + offset_x;
+        int64_t neighbor_y = (int64_t)home_y + offset_y;
+        int64_t neighbor_z = (int64_t)home_z + offset_z;
+
+        // Apply periodic boundary conditions and track shifts
+        shifts[threadIdx.y][0] = 0;
+        shifts[threadIdx.y][1] = 0;
+        shifts[threadIdx.y][2] = 0;
+
+        if (neighbor_x < 0) {
+            neighbor_x += num_grids[0];
+            shifts[threadIdx.y][0] = -1;
+        } else if (neighbor_x >= (int64_t)num_grids[0]) {
+            neighbor_x -= num_grids[0];
+            shifts[threadIdx.y][0] = 1;
+        }
+
+        if (neighbor_y < 0) {
+            neighbor_y += num_grids[1];
+            shifts[threadIdx.y][1] = -1;
+        } else if (neighbor_y >= (int64_t)num_grids[1]) {
+            neighbor_y -= num_grids[1];
+            shifts[threadIdx.y][1] = 1;
+        }
+        if (neighbor_z < 0) {
+            neighbor_z += num_grids[2];
+            shifts[threadIdx.y][2] = -1;
+        } else if (neighbor_z >= (int64_t)num_grids[2]) {
+            neighbor_z -= num_grids[2];
+            shifts[threadIdx.y][2] = 1;
+        }
+
+        // Convert 3D indices back to 1D index
+        neighbor_cell_index = neighbor_x + neighbor_y * num_grids[0] + neighbor_z * num_grids[0] * num_grids[1];
+        start_indices[threadIdx.y] = grid_start_indices[neighbor_cell_index];
+        end_indices[threadIdx.y] = (neighbor_cell_index + 1 < total_num_grids)
+                                       ? grid_start_indices[neighbor_cell_index + 1]
+                                       : num_atoms; // handle last cell case
+    }
+    __syncthreads();
+}
+
 __device__ inline void calculate_neighboring_grids(uint64_t home_cell_index, uint64_t num_grids[3],
                                                    uint64_t *grid_start_indices, uint64_t num_atoms,
                                                    uint64_t start_indices[27], uint64_t end_indices[27],
@@ -373,6 +497,56 @@ __device__ inline void calculate_neighboring_grids(uint64_t home_cell_index, uin
                                        : num_atoms; // handle last cell case
     }
     __syncthreads();
+}
+
+__device__ void distribute_workload_y(uint64_t num_atoms, uint64_t total_cell_bias, uint64_t *start_index,
+                                      uint64_t *end_index, uint64_t *start_bias_index, uint64_t *end_bias_index) {
+    // distribute workload to threads
+    if (num_atoms >= blockDim.y) {
+        /* if the number of atoms exceed number of threads, each thread process
+         * a few atoms, going through all possible bias indicies */
+        uint64_t workload_per_thread = (num_atoms + blockDim.y - 1) / blockDim.y; // number of atoms per thread
+        *start_index = threadIdx.y * workload_per_thread;
+        *end_index = min(*start_index + workload_per_thread, num_atoms); // the last thread might process fewer atoms
+        *start_bias_index = 0;
+        *end_bias_index = total_cell_bias; // each thread is responsible for all cell biases
+    } else {
+        /* If the number of atoms is smaller than number of threads, multiple
+         * threads process one atom.
+         * Divide the threads into groups, each group processes one atom.
+         * The first few groups will have one extra thread to guarantee that
+         * every thread is assigned to partially equal workload.
+         */
+        uint64_t threads_per_atom_base = blockDim.y / num_atoms; // base number of threads per atom
+        uint64_t threads_per_atom_remainder = blockDim.y % num_atoms; // remainder threads
+        uint64_t num_atoms_getting_extra_thread = threads_per_atom_remainder; // number of atoms getting an extra thread
+        uint64_t threads_in_larger_groups_total =
+            num_atoms_getting_extra_thread * (threads_per_atom_base + 1); // total number of threads in larger groups
+        uint64_t current_assigned_atom_id; // which atom this thread is assigned to
+        uint64_t threads_working_on_my_atom; // number of threads working on my atom
+        uint64_t rank_in_element_thread_group; // the rank of this thread within the atom's threads
+        if (threadIdx.y < threads_in_larger_groups_total) {
+            // this thread is in a larger group
+            threads_working_on_my_atom = threads_per_atom_base + 1;
+            current_assigned_atom_id = threadIdx.y / threads_working_on_my_atom;
+            rank_in_element_thread_group = threadIdx.y % threads_working_on_my_atom;
+        } else {
+            // this thread falls in later groups that have 'base' threads
+            threads_working_on_my_atom = threads_per_atom_base;
+            uint64_t threads_already_assigned_to_larger_groups =
+                threads_in_larger_groups_total; // number of threads already assigned to larger groups
+            uint64_t threadIdx_relative_to_smaller_groups =
+                threadIdx.y - threads_already_assigned_to_larger_groups; // relative thread index in smaller groups
+            current_assigned_atom_id =
+                threadIdx_relative_to_smaller_groups / threads_working_on_my_atom + num_atoms_getting_extra_thread;
+            rank_in_element_thread_group = threadIdx_relative_to_smaller_groups % threads_working_on_my_atom;
+        }
+        *start_index = current_assigned_atom_id;
+        *end_index = min(current_assigned_atom_id + 1, num_atoms);
+        uint64_t bias_per_thread = total_cell_bias / threads_working_on_my_atom; // number of biases per thread
+        *start_bias_index = rank_in_element_thread_group * bias_per_thread;
+        *end_bias_index = min(*start_bias_index + bias_per_thread, total_cell_bias);
+    }
 }
 
 __device__ void distribute_workload(uint64_t num_atoms, uint64_t total_cell_bias, uint64_t *start_index,
@@ -681,12 +855,12 @@ __device__ inline void calculate_c6ab(device_data_t *data, uint64_t atom_1_type,
     c6_ab_result = c6_ab;
 }
 
-__device__ inline void calculate_two_body_interaction(
-    real_t cell_volume, atom_t atom_1, atom_t atom_2, real_t c6_ab, real_t c8_ab, real_t dC6ab_dCN_1,
-    real_t dC8ab_dCN_1, real_t r0_cutoff, real_t cutoff_radius, damping_type_t damping_type, real_t damping_param_1,
-    real_t damping_param_2, real_t s6, real_t s8, accumulator_t<1> &energy_accumulator,
-    accumulator_t<1> &dE_dCN_accumulator, accumulator_t<3> &force_accumulator,
-    accumulator_t<9> &stress_accumulator) {
+__device__ inline void
+calculate_two_body_interaction(real_t cell_volume, atom_t atom_1, atom_t atom_2, real_t c6_ab, real_t c8_ab,
+                               real_t dC6ab_dCN_1, real_t dC8ab_dCN_1, real_t r0_cutoff, real_t cutoff_radius,
+                               damping_type_t damping_type, real_t damping_param_1, real_t damping_param_2, real_t s6,
+                               real_t s8, accumulator_t<1> &energy_accumulator, accumulator_t<1> &dE_dCN_accumulator,
+                               accumulator_t<3> &force_accumulator, accumulator_t<9> &stress_accumulator) {
     real_t delta_r[3] = {
         atom_1.x - atom_2.x, // delta x
         atom_1.y - atom_2.y, // delta y
@@ -704,7 +878,7 @@ __device__ inline void calculate_two_body_interaction(
         real_t distance_8 = distance_4 * distance_4; // distance^8
         real_t distance_9 = distance_8 * distance; // distance^9
         real_t distance_10 = distance_6 * distance_4; // distance^10
-        
+
         // prevent division by zero
         if (distance_6 == 0.0f) {
             distance_6 = FLT_MIN;
@@ -987,6 +1161,420 @@ __global__ void two_body_kernel(device_data_t *data) {
     }
 }
 
+__device__ inline void calculate_atm_interaction(const real_t rab[3], const real_t rac[3], const real_t rbc[3],
+                                                 real_t C6_ab, real_t dC6ab_dCNa, real_t C6_ac, real_t dC6ac_dCNa,
+                                                 real_t C6_bc, real_t dC6bc_dCNb, real_t r0_cutoff, real_t cell_volume,
+                                                 accumulator_t<1> &energy_accumulator,
+                                                 accumulator_t<1> &dE_dCN_accumulator,
+                                                 accumulator_t<3> &force_accumulator,
+                                                 accumulator_t<9> &stress_accumulator) {
+    real_t distance_ab_2 = rab[0] * rab[0] + rab[1] * rab[1] + rab[2] * rab[2];
+    real_t distance_ab = sqrtf(distance_ab_2);
+    real_t distance_ab_3 = distance_ab_2 * distance_ab;
+    real_t distance_ab_4 = distance_ab_2 * distance_ab_2;
+    real_t distance_ac_2 = rac[0] * rac[0] + rac[1] * rac[1] + rac[2] * rac[2];
+    real_t distance_ac = sqrtf(distance_ac_2);
+    real_t distance_ac_3 = distance_ac_2 * distance_ac;
+    real_t distance_ac_4 = distance_ac_2 * distance_ac_2;
+    real_t distance_bc_2 = rbc[0] * rbc[0] + rbc[1] * rbc[1] + rbc[2] * rbc[2];
+    real_t r_square = distance_ab_2 * distance_ac_2 * distance_bc_2;
+    real_t r = sqrtf(r_square);
+    // calculate $\cos\theta_{abc}\cos\theta_{acb}\cos\theta_{bca}$
+    real_t tmp_bac = (distance_ab_2 + distance_ac_2 - distance_bc_2); // part of cosine for angle BAC
+    real_t tmp_cab = (distance_ab_2 - distance_ac_2 + distance_bc_2); // part of cosine for angle CAB
+    real_t tmp_abc = (-distance_ab_2 + distance_ac_2 + distance_bc_2); // part of cosine for angle ABC
+    real_t cosine = tmp_bac * tmp_cab * tmp_abc / (8.0 * r_square);
+    real_t angle_term = (1.0 + 3.0 * cosine) / (r_square * r);
+    real_t dangle_drab =
+        3.0 / 8.0 *
+        (distance_ab_3 * distance_ab_3 + distance_ab_4 * (distance_ac_2 + distance_bc_2) +
+         distance_ab_2 * (3.0 * distance_bc_2 * distance_bc_2 + 2.0 * distance_bc_2 * distance_ac_2 +
+                          3.0 * distance_ac_2 * distance_ac_2) -
+         5.0 * (distance_bc_2 - distance_ac_2) * (distance_bc_2 - distance_ac_2) * (distance_bc_2 + distance_ac_2)) /
+        (r_square * r_square * r * distance_ab); // d(angle_term)/d(distance_ab)
+    real_t dangle_drac =
+        3.0 / 8.0 *
+        (distance_ac_3 * distance_ac_3 + distance_ac_4 * (distance_ab_2 + distance_bc_2) +
+         distance_ac_2 * (3.0 * distance_bc_2 * distance_bc_2 + 2.0 * distance_bc_2 * distance_ab_2 +
+                          3.0 * distance_ab_2 * distance_ab_2) -
+         5.0 * (distance_bc_2 - distance_ab_2) * (distance_bc_2 - distance_ab_2) * (distance_bc_2 + distance_ab_2)) /
+        (r_square * r_square * r * distance_ac); // d(angle_term)/d(distance_ac)
+    real_t C9 = -sqrtf(C6_ab * C6_ac * C6_bc); // C9 value
+    real_t dC9_dCNa = -0.5 * 1 / C9 * (C6_ac * C6_bc * dC6ab_dCNa + C6_ab * C6_bc * dC6ac_dCNa); // dC9/dCNa
+    // calculate geometric average of distances
+    real_t distance_avg = powf(distance_ab_2 * distance_ac_2 * distance_bc_2, 1.0f / 6.0f);
+    real_t ddistance_avg_drab =
+        (1.0 / 3.0) * distance_avg / distance_ab; // chain rule to get derivative w.r.t. distance_ab
+    real_t ddistance_avg_drac =
+        (1.0 / 3.0) * distance_avg / distance_ac; // chain rule to get derivative w.r.t. distance_ac
+    real_t damping_6, d_damping_6; // not used in ATM, but for compatibility
+    real_t damping_8, d_damping_8;
+    damping<ZERO_DAMPING>(distance_avg, r0_cutoff, 1.0, 4.0 / 3.0, damping_6, damping_8, d_damping_6, d_damping_8);
+    // now d_damping_8 is derivative of damping w.r.t. distance_avg
+    real_t d_damping_8_drab = d_damping_8 * ddistance_avg_drab; // d(damping_6)/d(distance_ab)
+    real_t d_damping_8_drac = d_damping_8 * ddistance_avg_drac; // d(damping_6)/d(distance_ac)
+    // calculate three-body energy
+    real_t energy = C9 * angle_term * damping_8 / 6.0;
+    real_t dE_dCNa = dC9_dCNa * angle_term * damping_8 / 2.0; // dE/dCNa
+    real_t force_a[3] = {0.0f, 0.0f, 0.0f}; // force on atom a
+    for (uint8_t i = 0; i < 3; ++i) {
+        force_a[i] = (C9 * dangle_drab * damping_8 * (rab[i] / distance_ab) +
+                      C9 * dangle_drac * damping_8 * (rac[i] / distance_ac) +
+                      C9 * angle_term * d_damping_8_drab * (rab[i] / distance_ab) +
+                      C9 * angle_term * d_damping_8_drac * (rac[i] / distance_ac)) /
+                     2.0f;
+    }
+    real_t stress_contribution[9];
+    for (uint8_t i = 0; i < 3; ++i) {
+        for (uint8_t j = 0; j < 3; ++j) {
+            stress_contribution[i * 3 + j] =
+                (-1.0f * C9 * dangle_drab * damping_8 / distance_ab * rab[i] * rab[j] +
+                 -1.0f * C9 * dangle_drac * damping_8 / distance_ac * rac[i] * rac[j] +
+                 -1.0f * C9 * angle_term * d_damping_8_drab / distance_ab * rab[i] * rab[j] +
+                 -1.0f * C9 * angle_term * d_damping_8_drac / distance_ac * rac[i] * rac[j]) /
+                3.0f / cell_volume / 6.0;
+        }
+    }
+
+    // accumulate
+    energy_accumulator.add(&energy);
+    dE_dCN_accumulator.add(&dE_dCNa);
+    force_accumulator.add(force_a);
+    stress_accumulator.add(stress_contribution);
+    return;
+}
+
+/**
+ * @brief this kernel is used to compute the ATM interactions between atoms
+ * in the system, i.e. the three-body energy and part of three-body force
+ * @note this kernel should be launched with a 1D grid of blocks, each block
+ * containing a 2D array of threads.
+ * the number of blocks should be equal to the number of atoms in the
+ * system.
+ * the number of threads in each block can be any value
+ */
+__global__ void atm_kernel(device_data_t *data) {
+    // load the central atom data
+    const uint64_t atom_1_index = blockIdx.x; // index of the central atom
+    const uint64_t atom_1_type = data->atom_types[atom_1_index]; // type of the central atom
+    const atom_t atom_1 = data->atoms[atom_1_index]; // central atom
+    const real_t coordination_number_1 =
+        data->coordination_numbers[atom_1_index]; // coordination number of the central atom
+    const real_t cell_volume = calculate_cell_volume(data->cell); // volume of the cell
+    const real_t cell[3][3] = {{data->cell[0][0], data->cell[0][1], data->cell[0][2]},
+                               {data->cell[1][0], data->cell[1][1], data->cell[1][2]},
+                               {data->cell[2][0], data->cell[2][1], data->cell[2][2]}}; // cell matrix
+
+    accumulator_t<1> energy_accumulator, dE_dCN_accumulator;
+    accumulator_t<3> force_accumulators;
+    accumulator_t<9> stress_accumulators;
+    energy_accumulator.init();
+    dE_dCN_accumulator.init();
+    force_accumulators.init();
+    stress_accumulators.init();
+
+    switch (data->workload_distribution_type) {
+        // case CELL_LIST:
+        //     // each thread process a few atoms in neighboring cells and all bias indices
+        //     __shared__ uint64_t start_indices[27]; // start indices of atoms in neighboring cells
+        //     __shared__ uint64_t end_indices[27]; // end indices of atoms in neighboring cells
+        //     __shared__ int64_t neighbor_cells_shifts[27][3]; // shifts corresponding to the neighboring cells
+        //     calculate_neighboring_grids(atom_1.home_grid_cell, data->num_grid_cells, data->grid_start_indices,
+        //                                 data->num_atoms, start_indices, end_indices, neighbor_cells_shifts);
+        //     for (uint8_t i = 0; i < 27; ++i) {
+        //         uint64_t start_index = start_indices[i];
+        //         uint64_t end_index = end_indices[i];
+        //         int64_t x_shift = neighbor_cells_shifts[i][0];
+        //         int64_t y_shift = neighbor_cells_shifts[i][1];
+        //         int64_t z_shift = neighbor_cells_shifts[i][2];
+        //         for (uint64_t atom_2_index = start_index + threadIdx.x; atom_2_index < end_index;
+        //              atom_2_index += blockDim.y) {
+        //             const atom_t atom_2_original = data->atoms[atom_2_index]; // surrounding atom
+        //             const uint64_t atom_2_type = data->atom_types[atom_2_index]; // type of the surrounding atom
+        //             const real_t coordination_number_2 =
+        //                 data->coordination_numbers[atom_2_index]; // coordination number of the surrounding atom
+        //             real_t c6_ab, dC6ab_dCN_1;
+        //             calculate_c6ab(data, atom_1_type, atom_2_type, coordination_number_1, coordination_number_2,
+        //             c6_ab,
+        //                            dC6ab_dCN_1);
+        //             atom_t atom_2 = atom_2_original; // the actual atom2 participated in the calculation
+        //             // translate atom_2 due to periodic boundaries
+        //             atom_2.x +=
+        //                 x_shift * cell[0][0] + y_shift * cell[1][0] + z_shift * cell[2][0]; // translate in x
+        //                 direction
+        //             atom_2.y +=
+        //                 x_shift * cell[0][1] + y_shift * cell[1][1] + z_shift * cell[2][1]; // translate in y
+        //                 direction
+        //             atom_2.z +=
+        //                 x_shift * cell[0][2] + y_shift * cell[1][2] + z_shift * cell[2][2]; // translate in z
+        //                 direction
+        //             real_t delta_rab[3] = {
+        //                 atom_1.x - atom_2.x, // delta x
+        //                 atom_1.y - atom_2.y, // delta y
+        //                 atom_1.z - atom_2.z // delta z
+        //             }; // delta_r between atom 1 and atom 2
+        //             const real_t distance_ab_square = delta_rab[0] * delta_rab[0] + delta_rab[1] * delta_rab[1] +
+        //                                               delta_rab[2] * delta_rab[2]; // distance^2 between atom 1 and
+        //                                               atom 2
+        //             if (distance_ab_square > data->cutoff * data->cutoff || distance_ab_square == 0.0f) {
+        //                 continue; // skip if the distance is beyond cutoff or zero
+        //             }
+        //             real_t r0ab =
+        //                 data->r0ab[atom_1_type * data->num_elements + atom_2_type]; // R0 cutoff between atom 1 and 2
+
+        //             // distribute workload of atom 3 to threads in y direction
+        //             __shared__ uint64_t start_indices_3[27]; // start indices of atoms in neighboring cells
+        //             __shared__ uint64_t end_indices_3[27]; // end indices of atoms in neighboring cells
+        //             __shared__ int64_t neighbor_cells_shifts_3[27][3]; // shifts corresponding to the neighboring
+        //             cells calculate_neighboring_grids_y(atom_2.home_grid_cell, data->num_grid_cells,
+        //             data->grid_start_indices,
+        //                                           data->num_atoms, start_indices_3, end_indices_3,
+        //                                           neighbor_cells_shifts_3);
+
+        //             for (uint8_t j = 0; j < 27; ++j) {
+        //                 uint64_t start_index_3 = start_indices_3[j];
+        //                 uint64_t end_index_3 = end_indices_3[j];
+        //                 int64_t x_shift_3 = neighbor_cells_shifts_3[j][0];
+        //                 int64_t y_shift_3 = neighbor_cells_shifts_3[j][1];
+        //                 int64_t z_shift_3 = neighbor_cells_shifts_3[j][2];
+        //                 for (uint64_t atom_3_index = start_index_3 + threadIdx.x; atom_3_index < end_index_3;
+        //                      atom_3_index += blockDim.x) {
+        //                     const atom_t atom_3_original = data->atoms[atom_3_index]; // second surrounding atom
+        //                     const uint64_t atom_3_type =
+        //                         data->atom_types[atom_3_index]; // type of the second surrounding atom
+        //                     const real_t coordination_number_3 =
+        //                         data->coordination_numbers[atom_3_index]; // coordination number of the second
+        //                         surrounding
+        //                                                                   // atom
+        //                     atom_t atom_3 = atom_3_original; // the actual atom3 participated in the calculation
+        //                     // translate atom_3 due to periodic boundaries
+        //                     atom_3.x += x_shift_3 * cell[0][0] + y_shift_3 * cell[1][0] +
+        //                                 z_shift_3 * cell[2][0]; // translate in x direction
+        //                     atom_3.y += x_shift_3 * cell[0][1] + y_shift_3 * cell[1][1] +
+        //                                 z_shift_3 * cell[2][1]; // translate in y direction
+        //                     atom_3.z += x_shift_3 * cell[0][2] + y_shift_3 * cell[1][2] +
+        //                                 z_shift_3 * cell[2][2]; // translate in z direction
+        //                     real_t delta_rac[3] = {
+        //                         atom_1.x - atom_3.x, // delta x
+        //                         atom_1.y - atom_3.y, // delta y
+        //                         atom_1.z - atom_3.z // delta z
+        //                     }; // delta_r between atom 1 and atom 3
+        //                     real_t delta_rbc[3] = {
+        //                         atom_2.x - atom_3.x, // delta x
+        //                         atom_2.y - atom_3.y, // delta y
+        //                         atom_2.z - atom_3.z // delta z
+        //                     }; // delta_r between atom 2 and atom 3
+        //                     const real_t distance_ac_square =
+        //                         delta_rac[0] * delta_rac[0] + delta_rac[1] * delta_rac[1] +
+        //                         delta_rac[2] * delta_rac[2]; // distance^2 between atom 1 and atom 3
+        //                     const real_t distance_bc_square =
+        //                         delta_rbc[0] * delta_rbc[0] + delta_rbc[1] * delta_rbc[1] +
+        //                         delta_rbc[2] * delta_rbc[2]; // distance^2 between atom 2 and atom 3
+        //                     if (distance_ac_square > data->cutoff * data->cutoff || distance_ac_square == 0.0f ||
+        //                         distance_bc_square > data->cutoff * data->cutoff || distance_bc_square == 0.0f) {
+        //                         continue; // skip if the distance is beyond cutoff or zero
+        //                     }
+        //                     real_t r0ac = data->r0ab[atom_1_type * data->num_elements +
+        //                                              atom_3_type]; // R0 cutoff between atom 1 and 3
+        //                     real_t r0bc = data->r0ab[atom_2_type * data->num_elements +
+        //                                              atom_3_type]; // R0 cutoff between atom 2 and 3
+        //                     // calculate c6_bc and its derivative
+        //                     real_t c6_bc, dC6bc_dCN_2;
+        //                     calculate_c6ab(data, atom_2_type, atom_3_type, coordination_number_2,
+        //                     coordination_number_3,
+        //                                    c6_bc, dC6bc_dCN_2);
+        //                     real_t c6_ac, dC6ac_dCN_1;
+        //                     calculate_c6ab(data, atom_1_type, atom_3_type, coordination_number_1,
+        //                     coordination_number_3,
+        //                                    c6_ac, dC6ac_dCN_1);
+        //                     // calculate geometric average of r0
+        //                     real_t r0_cutoff = powf(r0ab * r0ac * r0bc, 1.0 / 3.0);
+        //                     calculate_atm_interaction(delta_rab, delta_rac, delta_rbc, c6_ab, dC6ab_dCN_1, c6_ac,
+        //                                               dC6ac_dCN_1, c6_bc, dC6bc_dCN_2, r0_cutoff, cell_volume,
+        //                                               energy_accumulator, dE_dCN_accumulator, force_accumulators,
+        //                                               stress_accumulators);
+        //                 }
+        //             }
+        //         }
+        //     }
+        //     break;
+
+    default:
+        // prefetch and calculate necessary variables during calculation
+        const uint64_t mcb0 = data->max_cell_bias[0]; // maximum cell bias in x direction
+        const uint64_t mcb1 = data->max_cell_bias[1]; // maximum cell bias in y direction
+        const uint64_t mcb2 = data->max_cell_bias[2]; // maximum cell bias in z direction
+        const uint64_t total_cell_bias = mcb0 * mcb1 * mcb2; // total number of cell bias
+
+        // distribute workload to threads
+        uint64_t start_index; // start index for this thread
+        uint64_t end_index; // end index for this thread
+        uint64_t start_bias_index; // start bias index for this thread
+        uint64_t end_bias_index; // end bias index for this thread
+        distribute_workload(data->num_atoms, total_cell_bias, &start_index, &end_index, &start_bias_index,
+                            &end_bias_index);
+        // iterate over surrounding atoms
+        for (uint64_t atom_2_index = start_index; atom_2_index < end_index; ++atom_2_index) {
+            const atom_t atom_2_original = data->atoms[atom_2_index]; // surrounding atom
+            const uint64_t atom_2_type = data->atom_types[atom_2_index]; // type of the surrounding atom
+            const real_t coordination_number_2 =
+                data->coordination_numbers[atom_2_index]; // coordination number of the surrounding atom
+
+            real_t c6_ab, dC6ab_dCN_1;
+            calculate_c6ab(data, atom_1_type, atom_2_type, coordination_number_1, coordination_number_2, c6_ab,
+                           dC6ab_dCN_1);
+            const real_t r0ab =
+                data->r0ab[atom_1_type * data->num_elements + atom_2_type]; // R0 cutoff between atom 1 and 2
+            // loop over supercells
+            for (uint64_t bias_index_1 = start_bias_index; bias_index_1 < end_bias_index; ++bias_index_1) {
+                const int64_t x_bias = (bias_index_1 % data->max_cell_bias[0]) - (data->max_cell_bias[0] / 2); // x bias
+                const int64_t y_bias = ((bias_index_1 / data->max_cell_bias[0]) % data->max_cell_bias[1]) -
+                                       (data->max_cell_bias[1] / 2); // y bias
+                const int64_t z_bias =
+                    (bias_index_1 / (data->max_cell_bias[0] * data->max_cell_bias[1]) % data->max_cell_bias[2]) -
+                    (data->max_cell_bias[2] / 2); // z bias
+
+                atom_t atom_2 = atom_2_original; // the actual atom2 participated in the calculation
+                // translate atom_2 due to periodic boundaries
+                atom_2.x += x_bias * cell[0][0] + y_bias * cell[1][0] + z_bias * cell[2][0]; // translate in x direction
+                atom_2.y += x_bias * cell[0][1] + y_bias * cell[1][1] + z_bias * cell[2][1]; // translate in y direction
+                atom_2.z += x_bias * cell[0][2] + y_bias * cell[1][2] + z_bias * cell[2][2]; // translate in z direction
+                real_t delta_rab[3] = {
+                    atom_1.x - atom_2.x, // delta x
+                    atom_1.y - atom_2.y, // delta y
+                    atom_1.z - atom_2.z // delta z
+                }; // delta_r between atom 1 and atom 2
+                const real_t distance_ab_square = delta_rab[0] * delta_rab[0] + delta_rab[1] * delta_rab[1] +
+                                                  delta_rab[2] * delta_rab[2]; // distance^2 between atom 1 and atom 2
+                if (distance_ab_square > data->coordination_number_cutoff * data->coordination_number_cutoff ||
+                    distance_ab_square == 0.0f) {
+                    continue; // skip if the distance is beyond cutoff or zero
+                }
+                // distribute workload of atom 3 to threads in y direction
+                uint64_t start_index_3; // start index for this thread
+                uint64_t end_index_3; // end index for this thread
+                uint64_t start_bias_index_3; // start bias index for this thread
+                uint64_t end_bias_index_3; // end bias index for this thread
+                distribute_workload_y(data->num_atoms, total_cell_bias, &start_index_3, &end_index_3,
+                                      &start_bias_index_3, &end_bias_index_3);
+
+                // iterate over third atoms
+                for (uint64_t atom_3_index = start_index_3; atom_3_index < end_index_3; ++atom_3_index) {
+                    const atom_t atom_3_original = data->atoms[atom_3_index]; // second surrounding atom
+                    const uint64_t atom_3_type = data->atom_types[atom_3_index]; // type of the second surrounding atom
+                    const real_t coordination_number_3 =
+                        data->coordination_numbers[atom_3_index]; // coordination number of the second surrounding
+                                                                  // atom
+                    const real_t r0ac =
+                        data->r0ab[atom_1_type * data->num_elements + atom_3_type]; // R0 cutoff between atom 1 and 3
+                    const real_t r0bc =
+                        data->r0ab[atom_2_type * data->num_elements + atom_3_type]; // R0 cutoff between atom 2 and 3
+                    // calculate c6_bc and its derivative
+                    real_t c6_bc, dC6bc_dCN_2;
+                    calculate_c6ab(data, atom_2_type, atom_3_type, coordination_number_2, coordination_number_3, c6_bc,
+                                   dC6bc_dCN_2);
+                    real_t c6_ac, dC6ac_dCN_1;
+                    calculate_c6ab(data, atom_1_type, atom_3_type, coordination_number_1, coordination_number_3, c6_ac,
+                                   dC6ac_dCN_1);
+                    for (uint64_t bias_index_2 = start_bias_index_3; bias_index_2 < end_bias_index_3; ++bias_index_2) {
+                        const int64_t x_bias_2 =
+                            (bias_index_2 % data->max_cell_bias[0]) - (data->max_cell_bias[0] / 2); // x bias
+                        const int64_t y_bias_2 = ((bias_index_2 / data->max_cell_bias[0]) % data->max_cell_bias[1]) -
+                                                 (data->max_cell_bias[1] / 2); // y bias
+                        const int64_t z_bias_2 = (bias_index_2 / (data->max_cell_bias[0] * data->max_cell_bias[1]) %
+                                                  data->max_cell_bias[2]) -
+                                                 (data->max_cell_bias[2] / 2); // z bias
+
+                        atom_t atom_3 = atom_3_original; // the actual atom3 participated in the calculation
+                        // translate atom_3 due to periodic boundaries
+                        atom_3.x += x_bias_2 * cell[0][0] + y_bias_2 * cell[1][0] +
+                                    z_bias_2 * cell[2][0]; // translate in x direction
+                        atom_3.y += x_bias_2 * cell[0][1] + y_bias_2 * cell[1][1] +
+                                    z_bias_2 * cell[2][1]; // translate in y direction
+                        atom_3.z += x_bias_2 * cell[0][2] + y_bias_2 * cell[1][2] +
+                                    z_bias_2 * cell[2][2]; // translate in z direction
+                        real_t delta_rac[3] = {
+                            atom_1.x - atom_3.x, // delta x
+                            atom_1.y - atom_3.y, // delta y
+                            atom_1.z - atom_3.z // delta z
+                        }; // delta_r between atom 1 and atom 3
+                        real_t delta_rbc[3] = {
+                            atom_2.x - atom_3.x, // delta x
+                            atom_2.y - atom_3.y, // delta y
+                            atom_2.z - atom_3.z // delta z
+                        }; // delta_r between atom 2 and atom 3
+                        const real_t distance_ac_square =
+                            delta_rac[0] * delta_rac[0] + delta_rac[1] * delta_rac[1] +
+                            delta_rac[2] * delta_rac[2]; // distance^2 between atom 1 and atom 3
+                        const real_t distance_bc_square =
+                            delta_rbc[0] * delta_rbc[0] + delta_rbc[1] * delta_rbc[1] +
+                            delta_rbc[2] * delta_rbc[2]; // distance^2 between atom 2 and atom 3
+                        if (distance_ac_square > data->coordination_number_cutoff * data->coordination_number_cutoff ||
+                            distance_ac_square == 0.0f ||
+                            distance_bc_square > data->coordination_number_cutoff * data->coordination_number_cutoff ||
+                            distance_bc_square == 0.0f) {
+                            continue; // skip if the distance is beyond cutoff or zero
+                        }
+
+                        // calculate geometric average of r0
+                        real_t r0_cutoff = powf(r0ab * r0ac * r0bc, 1.0 / 3.0);
+                        calculate_atm_interaction(delta_rab, delta_rac, delta_rbc, c6_ab, dC6ab_dCN_1, c6_ac,
+                                                  dC6ac_dCN_1, c6_bc, dC6bc_dCN_2, r0_cutoff, cell_volume,
+                                                  energy_accumulator, dE_dCN_accumulator, force_accumulators,
+                                                  stress_accumulators);
+                    }
+                }
+            }
+        }
+        break;
+    }
+
+    real_t local_dE_dCN;
+    real_t local_energy;
+    real_t local_stress[9];
+    real_t local_force[3];
+    dE_dCN_accumulator.get_sum(&local_dE_dCN);
+    energy_accumulator.get_sum(&local_energy);
+    force_accumulators.get_sum(local_force);
+    stress_accumulators.get_sum(local_stress);
+
+    real_t dE_dCN_sum = 0;
+    real_t energy_sum = 0;
+    real_t force_central_sum[3] = {0.0f, 0.0f, 0.0f};
+    real_t stress_sum[9] = {0.0f};
+    // reduce within block
+    blockReduceATMKernel(local_dE_dCN, local_energy, local_force, local_stress, &dE_dCN_sum, &energy_sum,
+                         force_central_sum, stress_sum);
+    if (threadIdx.x == 0 && threadIdx.y == 0) {
+        /** Only the first thread in the block is responsible for writing back the accumulated result.
+         * We directly write to global memory for dE/dCN, energy, and force without atomic operations.
+         * This is safe because each block processes a single atom, therefore no data race :).
+         * However, stress accumulation requires atomic operations to avoid data races.
+         * Note that the atoms are rearranged, so when writing to result arrays(energy and force),
+         * we use orginal index instead of atom_1_index, which is the rearranged index.
+         * However, for intermediates like dE/dCN, we still use atom_1_index for convenience
+         */
+        uint64_t original_atom_1_index = atom_1.original_index;
+        // dE/dCN
+        data->dE_dCN[atom_1_index] += dE_dCN_sum;
+        // energy
+        printf("Energy Atom %4llu: %.8f\n", original_atom_1_index, data->energy[original_atom_1_index]);
+        printf("Energy Atom %4llu(ATM): %.8f\n", original_atom_1_index, energy_sum);
+        data->energy[original_atom_1_index] += energy_sum;
+        // force and stress
+        for (uint8_t i = 0; i < 3; ++i) {
+            force_central_sum[i] +=
+                dE_dCN_sum * data->dCN_dr[atom_1_index * 3 + i]; // another force entry: $F_i = dE/dCN_i * dCN_i/dr_i$
+            // write back the force without atomic operation, safe because no other thread writes to this memory
+            data->forces[original_atom_1_index * 3 + i] = force_central_sum[i];
+            for (uint8_t j = 0; j < 3; ++j) {
+                atomicAdd(&data->stress[i * 3 + j], stress_sum[i * 3 + j]); // atomic operation here to avoid data races
+            }
+        }
+    }
+    return;
+}
+
 __device__ inline void calculate_three_body_interaction(atom_t atom_1, atom_t atom_2, real_t covalent_radii_1,
                                                         real_t covalent_radii_2, real_t CN_cutoff, real_t dE_dCN,
                                                         accumulator_t<3> &force_accumulators,
@@ -1027,7 +1615,8 @@ __device__ inline void calculate_three_body_interaction(atom_t atom_1, atom_t at
         real_t dE_drik = dE_dCN * dCN_datom;
         if (isnan(dE_drik) || isinf(dE_drik)) {
             // NaN or inf encountered, bad result
-            printf("Error: (%llu,%llu) dE_dCN: %f, dCN_datom: %f\n", atom_1.original_index, atom_2.original_index, dE_dCN, dCN_datom);
+            printf("Error: (%llu,%llu) dE_dCN: %f, dCN_datom: %f\n", atom_1.original_index, atom_2.original_index,
+                   dE_dCN, dCN_datom);
             dE_drik = 0.0f; // reset to 0.0f if it's NaN or Inf
         }
         // accumulate force for the central atom and neighboring atom
