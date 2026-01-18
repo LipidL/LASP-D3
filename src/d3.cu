@@ -152,8 +152,9 @@ uint16_t compute_dispersion_energy_from_handle_status(d3_handle_t *handle, real_
         // calculate ATM interaction
         debug("launching atm_kernel, size: %zu, %d\n", length, MAX_BLOCK_SIZE);
             // calculate three-body ATM interaction with 2D thread block
-        dim3 blockDim(16, 16);
-        atm_kernel<<<length, blockDim, 0, stream>>>(buffer->get_device_data());
+        // dim3 blockDim(16, 16);
+        // atm_kernel<<<length, MAX_BLOCK_SIZE, 0, stream>>>(buffer->get_device_data());
+        atm_kernel_single<<<length, 1, 0, stream>>>(buffer->get_device_data());
         CHECK_CUDA(cudaGetLastError()); // Check for kernel launch errors
 
         real_t *atomic_energy = (real_t *)malloc(length * sizeof(real_t)); // allocate memory for atomic energy
@@ -163,7 +164,7 @@ uint16_t compute_dispersion_energy_from_handle_status(d3_handle_t *handle, real_
             cudaStreamSynchronize(stream)); // synchronize the stream to ensure the first two kernels are finished
         // calculate the three-body part of force
         debug("launching three_body_kernel, size: %zu, %d\n", length, MAX_BLOCK_SIZE);
-        three_body_kernel<<<length, MAX_BLOCK_SIZE, 0, stream>>>(buffer->get_device_data());
+        // three_body_kernel<<<length, MAX_BLOCK_SIZE, 0, stream>>>(buffer->get_device_data());
         CHECK_CUDA(cudaGetLastError()); // Check for kernel launch errors
         // perform energy accumulation
         double energy_sum = 0.0; // use high precision at CPU side
@@ -192,6 +193,8 @@ uint16_t compute_dispersion_energy_from_handle_status(d3_handle_t *handle, real_
         real_t hartree_to_eV = 27.211396641308f; // hartree to eV conversion factor
         *energy *= -hartree_to_eV; // convert energy to eV and negate it
         for (uint64_t i = 0; i < length; ++i) {
+            printf("debug: Force on atom %llu: (%.8e, %.8e, %.8e)\n", i, force[i * 3 + 0], force[i * 3 + 1],
+                  force[i * 3 + 2]);
             // convert force from hartree/bohr to eV/angstrom
             force[i * 3 + 0] *= hartree_to_eV * angstron_to_bohr;
             force[i * 3 + 1] *= hartree_to_eV * angstron_to_bohr;
