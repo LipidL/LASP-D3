@@ -40,7 +40,6 @@ struct accumulator_t {
             real_t t = base_sum[i] + y;
             compensation[i] = (t - base_sum[i]) - y;
             base_sum[i] = t;
-            // base_sum[i] += value[i];
         }
         count += 1;
 
@@ -771,6 +770,106 @@ __global__ void print_coordination_number_kernel(device_data_t *data) {
     }
 }
 
+__device__ inline void calculate_c6ab_dual(device_data_t *data, uint64_t atom_1_type, uint64_t atom_2_type,
+                                      real_t coordination_number_1, real_t coordination_number_2, real_t &c6_ab_result,
+                                      real_t &dC6_dCN_1_result, real_t &dC6_dCN_2_result) {
+    /** calculate the coordination number based on
+     * the equation comes from Grimme et al. 2010, eq 16.
+     * formula: $C_6^{ij} = Z/W$
+     * where $Z = \sum_{a,b}C_{6,ref}^{i,j}L_{a,b}$
+     * $W = \sum_{a,b}L_{a,b}$
+     * $L_{a,b} = \exp(-k3((CN^A-CN^A_{ref,a})^2 + (CN^B-CN^B_{ref,b})^2))$
+     */
+    real_t max_exponent_arg = -FLT_MAX; // maximum exponent argument for L_ij
+    for (uint8_t i = 0; i < NUM_REF_C6; ++i) {
+        for (uint8_t j = 0; j < NUM_REF_C6; ++j) {
+            // find the C6ref
+            uint32_t index = atom_1_type * data->c6_stride_1 + atom_2_type * data->c6_stride_2 + i * data->c6_stride_3 +
+                             j * data->c6_stride_4;
+            // these entries could be -1.0f if they are not valid, but at least one should be valid
+            real_t coordination_number_ref_1 = data->c6_ab_ref[index + 1];
+            real_t coordination_number_ref_2 = data->c6_ab_ref[index + 2];
+            if (coordination_number_ref_1 > -1.0f && coordination_number_ref_2 > -1.0f) {
+                // if both coordination numbers are valid, we can use them
+                const real_t delta_CN_1 = coordination_number_1 - coordination_number_ref_1;
+                const real_t delta_CN_2 = coordination_number_2 - coordination_number_ref_2;
+                const real_t exponent_arg = -K3 * (delta_CN_1 * delta_CN_1 + delta_CN_2 * delta_CN_2);
+                max_exponent_arg = (max_exponent_arg > exponent_arg)
+                                       ? max_exponent_arg
+                                       : exponent_arg; // update the maximum exponent argument
+            }
+        }
+    }
+    // calculate C6 value
+    real_t Z = 0.0f;
+    real_t W = 0.0f;
+    real_t c_ref_L_ij = 0.0f; // C6ab_ref * L_ij
+    real_t c_ref_dL_ij_1 = 0.0f; // C6ab_ref * dL_ij/dCN_1
+    real_t c_ref_dL_ij_2 = 0.0f; // C6ab_ref * dL_ij/dCN_2
+    real_t dL_ij_1 = 0.0f; // dL_ij/dCN_1
+    real_t dL_ij_2 = 0.0f; // dL_ij/dCN_2
+    for (uint8_t i = 0; i < NUM_REF_C6; ++i) {
+        for (uint8_t j = 0; j < NUM_REF_C6; ++j) {
+            // find the C6ref
+            uint32_t index = atom_1_type * data->c6_stride_1 + atom_2_type * data->c6_stride_2 + i * data->c6_stride_3 +
+                             j * data->c6_stride_4;
+            real_t c6_ref = data->c6_ab_ref[index + 0];
+            // these entries could be -1.0f if they are not valid, but at least one should be valid
+            real_t coordination_number_ref_1 = data->c6_ab_ref[index + 1];
+            real_t coordination_number_ref_2 = data->c6_ab_ref[index + 2];
+            if (coordination_number_ref_1 > -1.0f && coordination_number_ref_2 > -1.0f) {
+                // if both coordination numbers are valid, we can use them
+                const real_t delta_CN_1 = coordination_number_1 - coordination_number_ref_1;
+                const real_t delta_CN_2 = coordination_number_2 - coordination_number_ref_2;
+                const real_t exponent_arg = -K3 * (delta_CN_1 * delta_CN_1 + delta_CN_2 * delta_CN_2);
+                const real_t L_ij = expf(exponent_arg - max_exponent_arg); // normalized the L_ij value
+                real_t dL_ij_1_part = -2.0f * K3 * (coordination_number_1 - coordination_number_ref_1) *
+                                      L_ij; // part of dL_ij/dCN_1 contributed by the current valid term
+                real_t dL_ij_2_part = -2.0f * K3 * (coordination_number_2 - coordination_number_ref_2) *
+                                      L_ij; // part of dL_ij/dCN_2 contributed by the current valid term
+
+                Z += c6_ref * L_ij;
+                W += L_ij;
+                c_ref_L_ij += c6_ref * L_ij;
+                c_ref_dL_ij_1 += c6_ref * dL_ij_1_part;
+                c_ref_dL_ij_2 += c6_ref * dL_ij_2_part;
+                dL_ij_1 += dL_ij_1_part;
+                dL_ij_2 += dL_ij_2_part;
+            }
+        }
+    }
+
+    // avoid division by zero
+    real_t dC6ab_dCN_1 = (W * W > 0.0f) ? (c_ref_dL_ij_1 * W - c_ref_L_ij * dL_ij_1) / (W * W) : 0.0f; // dC6ab/dCN_1
+    real_t dC6ab_dCN_2 = (W * W > 0.0f) ? (c_ref_dL_ij_2 * W - c_ref_L_ij * dL_ij_2) / (W * W) : 0.0f; // dC6ab/dCN_2
+    if (isnan(dC6ab_dCN_1) || isinf(dC6ab_dCN_1)) {
+        // NaN or inf encountered, bad result
+        printf("Error: dC6ab/dCN_1 is NaN or Inf\n");
+        printf("Z: %f, W: %f, c_ref_L_ij: %f, c_ref_dL_ij_1: %f, dL_ij_1: %f\n", Z, W, c_ref_L_ij, c_ref_dL_ij_1,
+               dL_ij_1);
+        dC6ab_dCN_1 = 0.0f; // reset to 0.0f if it's NaN or Inf
+    }
+    if (isnan(dC6ab_dCN_2) || isinf(dC6ab_dCN_2)) {
+        // NaN or inf encountered, bad result
+        printf("Error: dC6ab/dCN_2 is NaN or Inf\n");
+        printf("Z: %f, W: %f, c_ref_L_ij: %f, c_ref_dL_ij_2: %f, dL_ij_2: %f\n", Z, W, c_ref_L_ij, c_ref_dL_ij_2,
+               dL_ij_2);
+        dC6ab_dCN_2 = 0.0f; // reset to 0.0f if it's NaN or Inf
+    }
+    dC6_dCN_2_result = dC6ab_dCN_2;
+    dC6_dCN_1_result = dC6ab_dCN_1;
+
+    // avoid division by zero
+    real_t c6_ab = (W > 0.0f) ? Z / W : 0.0f; // C6_ab value between atom 1 and 2
+    if (isnan(c6_ab) || isinf(c6_ab)) {
+        printf("Error: C6_ab is NaN or Inf\n");
+        printf("Z: %f, W: %f, c_ref_L_ij: %f, c_ref_dL_ij_1: %f, dL_ij_1: %f\n", Z, W, c_ref_L_ij, c_ref_dL_ij_1,
+               dL_ij_1);
+        c6_ab = 0.0f; // reset to 0.0f if it's NaN or Inf
+    }
+    c6_ab_result = c6_ab;
+}
+
 __device__ inline void calculate_c6ab(device_data_t *data, uint64_t atom_1_type, uint64_t atom_2_type,
                                       real_t coordination_number_1, real_t coordination_number_2, real_t &c6_ab_result,
                                       real_t &dC6_dCN_1_result) {
@@ -1145,13 +1244,13 @@ __global__ void two_body_kernel(device_data_t *data) {
          */
         uint64_t original_atom_1_index = atom_1.original_index;
         // dE/dCN
-        data->dE_dCN[atom_1_index] = dE_dCN_sum;
+        data->dE_dCN[atom_1_index] += dE_dCN_sum;
         // energy
-        data->energy[original_atom_1_index] = energy_sum;
+        data->energy[original_atom_1_index] += energy_sum;
         // force and stress
         for (uint8_t i = 0; i < 3; ++i) {
             // write back the force without atomic operation, safe because no other thread writes to this memory
-            data->forces[original_atom_1_index * 3 + i] = force_central_sum[i];
+            data->forces[original_atom_1_index * 3 + i] += force_central_sum[i];
             for (uint8_t j = 0; j < 3; ++j) {
                 atomicAdd(&data->stress[i * 3 + j], stress_sum[i * 3 + j]); // atomic operation here to avoid data races
             }
@@ -1325,8 +1424,8 @@ __global__ void atm_kernel_new(device_data_t *data) {
         force_accumulator_neighbor1.init();
 
         // calculate c6_ab and derivative
-        real_t c6_ab, dc6ab_dCNa;
-        calculate_c6ab(data, atom_1_type, atom_2_type, CN_1, CN_2, c6_ab, dc6ab_dCNa);
+        real_t c6_ab, dc6ab_dCNa, dc6ab_dCNb;
+        calculate_c6ab_dual(data, atom_1_type, atom_2_type, CN_1, CN_2, c6_ab, dc6ab_dCNa, dc6ab_dCNb);
         // loop over periodic imagers of atom 2
         for (uint64_t bias_index_2 = 0; bias_index_2 < total_cell_bias; ++bias_index_2) {
             const int64_t x_bias_2 = (bias_index_2 % mcb0) - (mcb0 / 2); // x bias
@@ -1356,6 +1455,15 @@ __global__ void atm_kernel_new(device_data_t *data) {
                 real_t r0ac = data->r0ab[atom_1_type * data->num_elements + atom_3_type]; // R0 cutoff between atom 1 and 3
                 real_t r0bc = data->r0ab[atom_2_type * data->num_elements + atom_3_type]; // R0 cutoff between atom 2 and 3
 
+                real_t scaling_factor = 1.0;
+                if (atom_3_index == atom_2_index && atom_2_index == atom_1_index) {
+                    scaling_factor = 1.0/6.0;
+                } else if (atom_3_index == atom_2_index || atom_3_index == atom_1_index || atom_2_index == atom_1_index) {
+                    scaling_factor = 1.0/2.0;
+                } else {
+                    scaling_factor = 1.0;
+                }
+
                 accumulator_t<1> energy_accumulator_neighbor2; // energy accumulator for neighbor atom 2
                 accumulator_t<1> dE_dCN_accumulator_neighbor2; // dE/dCN accumulator for neighbor atom 2
                 accumulator_t<3> force_accumulator_neighbor2; // force accumulator for neighbor atom 2
@@ -1364,10 +1472,10 @@ __global__ void atm_kernel_new(device_data_t *data) {
                 force_accumulator_neighbor2.init();
 
                 // calculate c6_ac and c6_bc and derivatives
-                real_t c6_ac, dC6ac_dCNa;
-                calculate_c6ab(data, atom_1_type, atom_3_type, CN_1, CN_3, c6_ac, dC6ac_dCNa);
-                real_t c6_bc, dC6bc_dCNb;
-                calculate_c6ab(data, atom_2_type, atom_3_type, CN_2, CN_3, c6_bc, dC6bc_dCNb);
+                real_t c6_ac, dC6ac_dCNa, dC6ac_dCNc;
+                calculate_c6ab_dual(data, atom_1_type, atom_3_type, CN_1, CN_3, c6_ac, dC6ac_dCNa, dC6ac_dCNc);
+                real_t c6_bc, dC6bc_dCNb, dC6bc_dCNc;
+                calculate_c6ab_dual(data, atom_2_type, atom_3_type, CN_2, CN_3, c6_bc, dC6bc_dCNb, dC6bc_dCNc);
                 // loop over supercells for atom 3
                 for (uint64_t bias_index_3 = 0; bias_index_3 < total_cell_bias; ++bias_index_3) {
                     const int64_t x_bias_3 = (bias_index_3 % mcb0) - (mcb0 / 2); // x bias
@@ -1444,8 +1552,8 @@ __global__ void atm_kernel_new(device_data_t *data) {
                     real_t dC9_dc6ac = -0.5 * C9 / c6_ac; // dC9/dC6ac
                     real_t dC9_dc6bc = -0.5 * C9 / c6_bc; // dC9/dC6bc
                     real_t dC9_dCNa = dC9_dc6ab * dc6ab_dCNa + dC9_dc6ac * dC6ac_dCNa; // dC9/dCNa
-                    real_t dC9_dCNb = dC9_dc6ab * (-dc6ab_dCNa) + dC9_dc6bc * dC6bc_dCNb; // dC9/dCNb
-                    real_t dC9_dCNc = dC9_dc6ac * (-dC6ac_dCNa) + dC9_dc6bc * (-dC6bc_dCNb); // dC9/dCNc
+                    real_t dC9_dCNb = dC9_dc6ab * dc6ab_dCNb + dC9_dc6bc * dC6bc_dCNb; // dC9/dCNb
+                    real_t dC9_dCNc = dC9_dc6ac * dC6ac_dCNc + dC9_dc6bc * dC6bc_dCNc; // dC9/dCNc
 
                     real_t distance_avg = powf(distance_ab_2 * distance_ac_2 * distance_bc_2, 1.0f / 6.0f);
                     real_t r0_cutoff = powf(r0ab * r0ac * r0bc, 1.0f / 3.0f);
@@ -1454,16 +1562,16 @@ __global__ void atm_kernel_new(device_data_t *data) {
                     real_t d_damping_8 = 2.0 * 16.0 * powf(4.0 / 3.0 * r0_cutoff / distance_avg, 16.0) * damping_8 * damping_8;
 
                     // calculate energy
-                    real_t energy = C9 * angle_term * damping_8 / 3.0; // contribution to energy for each atom in the triplet
+                    real_t energy = C9 * angle_term * damping_8 * scaling_factor / 3.0; // contribution to energy for each atom in the triplet
                     // accumulate energy
                     energy_accumulator.add(&energy);
                     energy_accumulator_neighbor1.add(&energy);
                     energy_accumulator_neighbor2.add(&energy);
 
                     // calculate dE_dCN
-                    real_t dE_dCNa = dC9_dCNa * angle_term * damping_8;
-                    real_t dE_dCNb = dC9_dCNb * angle_term * damping_8;
-                    real_t dE_dCNc = dC9_dCNc * angle_term * damping_8;
+                    real_t dE_dCNa = -dC9_dCNa * angle_term * damping_8 * scaling_factor;
+                    real_t dE_dCNb = -dC9_dCNb * angle_term * damping_8 * scaling_factor;
+                    real_t dE_dCNc = -dC9_dCNc * angle_term * damping_8 * scaling_factor;
                     dE_dCN_accumulator_central.add(&dE_dCNa);
                     dE_dCN_accumulator_neighbor1.add(&dE_dCNb);
                     dE_dCN_accumulator_neighbor2.add(&dE_dCNc);
@@ -1472,16 +1580,25 @@ __global__ void atm_kernel_new(device_data_t *data) {
                     real_t force_b[3] = {0.0f, 0.0f, 0.0f}; // force on atom b
                     real_t force_c[3] = {0.0f, 0.0f, 0.0f}; // force on atom c
                     real_t stress[9] = {0.0}; // stress contribution
+                    /**
+                     * Fortran calculation code for stress:
+                     * dS(:, :) = spread(dGij, 1, 3) * spread(vij, 2, 3)& 
+                     * & + spread(dGik, 1, 3) * spread(vik, 2, 3)& 
+                     * & + spread(dGjk, 1, 3) * spread(vjk, 2, 3)
+                     * here, dS is stress[9] in this code,
+                     * dGij is force_ab, dGik is force_ac, dGjk is force_bc
+                     * vij is rab, vik is rac, vjk is rbc
+                     */
                     for (uint8_t i = 0; i < 3; ++i) {
-                        real_t force_ab_scalar = C9 * (dangle_ab * damping_8 - angle_term * d_damping_8) / distance_ab_2;
-                        real_t force_ac_scalar = C9 * (dangle_ac * damping_8 - angle_term * d_damping_8) / distance_ac_2;
-                        real_t force_bc_scalar = C9 * (dangle_bc * damping_8 - angle_term * d_damping_8) / distance_bc_2;
+                        real_t force_ab_scalar = -C9 * (dangle_ab * damping_8 - angle_term * d_damping_8) / distance_ab_2;
+                        real_t force_ac_scalar = -C9 * (dangle_ac * damping_8 - angle_term * d_damping_8) / distance_ac_2;
+                        real_t force_bc_scalar = -C9 * (dangle_bc * damping_8 - angle_term * d_damping_8) / distance_bc_2;
                         for (uint8_t j = 0; j < 3; ++j) {
                             stress[i * 3 + j] +=
                                 (-1.0f * force_ab_scalar * rab[i] * rab[j] +
                                  -1.0f * force_ac_scalar * rac[i] * rac[j] +
                                  -1.0f * force_bc_scalar * rbc[i] * rbc[j]) /
-                                cell_volume / 3.0;
+                                cell_volume * scaling_factor;
                         }
                         real_t force_ab = force_ab_scalar * rab[i];
                         real_t force_ac = force_ac_scalar * rac[i];
@@ -1544,7 +1661,7 @@ __global__ void atm_kernel_new(device_data_t *data) {
     blockReduceTwoBodyKernel(dE_dCN_central_local, energy_central_local, force_central_local, stress_local, &dE_dCN_central_sum, &energy_central_sum, force_central_sum, stress_sum);
     // atomic additions to global memory
     if (threadIdx.x == 0) {    
-    uint64_t atom_1_original_index = atom_1.original_index;
+        uint64_t atom_1_original_index = atom_1.original_index;
         atomicAdd(&data->energy[atom_1_original_index], energy_central_sum);
         atomicAdd(&data->dE_dCN[atom_1_index], dE_dCN_central_sum);
         for (uint8_t i = 0; i < 3; ++i) {
