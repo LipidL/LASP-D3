@@ -44,26 +44,26 @@ struct accumulator_t {
         }
         count += 1;
 
-        // // Hierarchical accumulation
-        // if (count % ACCUMULATE_STRIDE == 0) {
-        //     for (uint8_t i = 0; i < N; ++i) {
-        //         levels[0][i] += base_sum[i];
-        //         base_sum[i] = 0.0f;
-        //         compensation[i] = 0.0f;
-        //     }
-        //     // propagate to higher levels if needed
-        //     uint32_t current_level = 0;
-        //     uint32_t count_at_level = count / ACCUMULATE_STRIDE;
-        //     while (count_at_level % ACCUMULATE_STRIDE == 0 && count_at_level != 0 &&
-        //            current_level + 1 < ACCUMULATE_LEVELS) {
-        //         for (uint8_t i = 0; i < N; ++i) {
-        //             levels[current_level + 1][i] += levels[current_level][i];
-        //             levels[current_level][i] = 0.0f;
-        //         }
-        //         current_level += 1;
-        //         count_at_level /= ACCUMULATE_STRIDE;
-        //     }
-        // }
+        // Hierarchical accumulation
+        if (count % ACCUMULATE_STRIDE == 0) {
+            for (uint8_t i = 0; i < N; ++i) {
+                levels[0][i] += base_sum[i];
+                base_sum[i] = 0.0f;
+                compensation[i] = 0.0f;
+            }
+            // propagate to higher levels if needed
+            uint32_t current_level = 0;
+            uint32_t count_at_level = count / ACCUMULATE_STRIDE;
+            while (count_at_level % ACCUMULATE_STRIDE == 0 && count_at_level != 0 &&
+                   current_level + 1 < ACCUMULATE_LEVELS) {
+                for (uint8_t i = 0; i < N; ++i) {
+                    levels[current_level + 1][i] += levels[current_level][i];
+                    levels[current_level][i] = 0.0f;
+                }
+                current_level += 1;
+                count_at_level /= ACCUMULATE_STRIDE;
+            }
+        }
     }
 
     /**
@@ -1150,10 +1150,8 @@ __global__ void two_body_kernel(device_data_t *data) {
         data->energy[original_atom_1_index] = energy_sum;
         // force and stress
         for (uint8_t i = 0; i < 3; ++i) {
-            force_central_sum[i] +=
-                dE_dCN_sum * data->dCN_dr[atom_1_index * 3 + i]; // another force entry: $F_i = dE/dCN_i * dCN_i/dr_i$
             // write back the force without atomic operation, safe because no other thread writes to this memory
-            // data->forces[original_atom_1_index * 3 + i] = force_central_sum[i];
+            data->forces[original_atom_1_index * 3 + i] = force_central_sum[i];
             for (uint8_t j = 0; j < 3; ++j) {
                 atomicAdd(&data->stress[i * 3 + j], stress_sum[i * 3 + j]); // atomic operation here to avoid data races
             }
@@ -2004,7 +2002,7 @@ __global__ void atm_kernel(device_data_t *data) {
 }
 
 __device__ inline void calculate_three_body_interaction(atom_t atom_1, atom_t atom_2, real_t covalent_radii_1,
-                                                        real_t covalent_radii_2, real_t CN_cutoff, real_t dE_dCN,
+                                                        real_t covalent_radii_2, real_t CN_cutoff, real_t dE_dCN_1, real_t dE_dCN_2,
                                                         accumulator_t<3> &force_accumulators,
                                                         accumulator_t<9> &stress_accumulators) {
     real_t delta_r[3] = {
@@ -2040,11 +2038,11 @@ __device__ inline void calculate_three_body_interaction(atom_t atom_1, atom_t at
                            powf(distance, -3.0f); // dCN_ij/dr_ij * 1/r_ij
 #endif
         // dE/drik = dE/dCN * dCN/drik
-        real_t dE_drik = dE_dCN * dCN_datom;
+        real_t dE_drik = (dE_dCN_1 + dE_dCN_2) * dCN_datom;
         if (isnan(dE_drik) || isinf(dE_drik)) {
             // NaN or inf encountered, bad result
             printf("Error: (%llu,%llu) dE_dCN: %f, dCN_datom: %f\n", atom_1.original_index, atom_2.original_index,
-                   dE_dCN, dCN_datom);
+                   dE_dCN_1 + dE_dCN_2, dCN_datom);
             dE_drik = 0.0f; // reset to 0.0f if it's NaN or Inf
         }
         // accumulate force for the central atom and neighboring atom
@@ -2055,7 +2053,7 @@ __device__ inline void calculate_three_body_interaction(atom_t atom_1, atom_t at
         for (uint8_t i = 0; i < 3; ++i) {
             force_contribution[i] = (dE_drik * delta_r[i]);
             for (uint8_t j = 0; j < 3; ++j) {
-                stress_contribution[i * 3 + j] = (-1.0f * delta_r[i] * dE_drik * delta_r[j]);
+                stress_contribution[i * 3 + j] = (-1.0f * delta_r[i] * dE_drik * delta_r[j]) / 2.0;
             }
         }
         force_accumulators.add(force_contribution);
@@ -2082,6 +2080,7 @@ __global__ void three_body_kernel(device_data_t *data) {
     atom_t atom_1 = data->atoms[atom_1_index]; // central atom
     uint64_t atom_1_type = data->atom_types[atom_1_index]; // type of the central atom
     real_t covalent_radii_1 = data->rcov[atom_1_type]; // covalent radius of the central atom
+    real_t dE_dCN_1 = data->dE_dCN[atom_1_index]; // dE/dCN of the central atom
 
     accumulator_t<3> force_accumulators;
     accumulator_t<9> stress_accumulators;
@@ -2115,7 +2114,7 @@ __global__ void three_body_kernel(device_data_t *data) {
             int64_t z_shift = neighbor_cells_shifts[i][2];
             for (uint64_t atom_2_index = start_index + threadIdx.x; atom_2_index < end_index;
                  atom_2_index += blockDim.x) {
-                real_t dE_dCN = data->dE_dCN[atom_2_index]; // dE/dCN of the surrounding atom
+                real_t dE_dCN_2 = data->dE_dCN[atom_2_index]; // dE/dCN of the surrounding atom
                 atom_t atom_2_original = data->atoms[atom_2_index]; // surrounding atom without supercell translation
                 real_t covalent_radii_2 =
                     data->rcov[data->atom_types[atom_2_index]]; // covalent radii of the surrounding atom
@@ -2126,7 +2125,7 @@ __global__ void three_body_kernel(device_data_t *data) {
                 atom_2.y += x_shift * cell[0][1] + y_shift * cell[1][1] + z_shift * cell[2][1];
                 atom_2.z += x_shift * cell[0][2] + y_shift * cell[1][2] + z_shift * cell[2][2];
 
-                calculate_three_body_interaction(atom_1, atom_2, covalent_radii_1, covalent_radii_2, CN_cutoff, dE_dCN,
+                calculate_three_body_interaction(atom_1, atom_2, covalent_radii_1, covalent_radii_2, CN_cutoff, dE_dCN_1, dE_dCN_2,
                                                  force_accumulators, stress_accumulators);
             }
         }
@@ -2141,7 +2140,7 @@ __global__ void three_body_kernel(device_data_t *data) {
 
         // iterate over surrounding atoms
         for (uint64_t atom_2_index = start_index; atom_2_index < end_index; ++atom_2_index) {
-            real_t dE_dCN = data->dE_dCN[atom_2_index]; // dE/dCN of the surrounding atom
+            real_t dE_dCN_2 = data->dE_dCN[atom_2_index]; // dE/dCN of the surrounding atom
             atom_t atom_2_original = data->atoms[atom_2_index]; // original surrounding atom before translation
             real_t covalent_radii_2 =
                 data->rcov[data->atom_types[atom_2_index]]; // covalent radii of the surrounding atom
@@ -2159,7 +2158,7 @@ __global__ void three_body_kernel(device_data_t *data) {
                 atom_2.y += x_bias * cell[0][1] + y_bias * cell[1][1] + z_bias * cell[2][1]; // translate in y direction
                 atom_2.z += x_bias * cell[0][2] + y_bias * cell[1][2] + z_bias * cell[2][2]; // translate in z direction
 
-                calculate_three_body_interaction(atom_1, atom_2, covalent_radii_1, covalent_radii_2, CN_cutoff, dE_dCN,
+                calculate_three_body_interaction(atom_1, atom_2, covalent_radii_1, covalent_radii_2, CN_cutoff, dE_dCN_1, dE_dCN_2,
                                                  force_accumulators, stress_accumulators);
             }
         }
