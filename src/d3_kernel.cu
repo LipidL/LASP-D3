@@ -3,8 +3,8 @@
 #include "d3_kernel.cuh"
 #include "d3_types.h"
 
-#define ACCUMULATE_LEVELS 1
-#define ACCUMULATE_STRIDE 999999999
+#define ACCUMULATE_LEVELS 8
+#define ACCUMULATE_STRIDE 8
 template <uint64_t N>
 struct accumulator_t {
     // Kahan summation state for the base level
@@ -36,11 +36,11 @@ struct accumulator_t {
     __device__ inline void add(const real_t value[N]) {
         // Kahan summation for the base level
         for (uint8_t i = 0; i < N; ++i) {
-            // real_t y = value[i] - compensation[i];
-            // real_t t = base_sum[i] + y;
-            // compensation[i] = (t - base_sum[i]) - y;
-            // base_sum[i] = t;
-            base_sum[i] += value[i];
+            real_t y = value[i] - compensation[i];
+            real_t t = base_sum[i] + y;
+            compensation[i] = (t - base_sum[i]) - y;
+            base_sum[i] = t;
+            // base_sum[i] += value[i];
         }
         count += 1;
 
@@ -1277,201 +1277,480 @@ __device__ inline void calculate_atm_interaction(
     return;
 }
 
-__global__ void atm_kernel_single(device_data_t *data) {
-    const uint64_t mcb0 = data->max_cell_bias[0]; // maximum cell bias in x direction
-    const uint64_t mcb1 = data->max_cell_bias[1]; // maximum cell bias in y direction
-    const uint64_t mcb2 = data->max_cell_bias[2]; // maximum cell bias in z direction
-    const uint64_t total_cell_bias = mcb0 * mcb1 * mcb2; // total number of cell bias
+__global__ void atm_kernel_new(device_data_t *data) {
+    // load central atom data
+    const uint64_t atom_1_index = blockIdx.x; // index of the central atom
+    const uint16_t atom_1_type = data->atom_types[atom_1_index]; // type of the central atom
+    const atom_t atom_1 = data->atoms[atom_1_index]; // central atom
+    const real_t CN_1 = data->coordination_numbers[atom_1_index]; // coordination number of the central atom
+
     const real_t cell[3][3] = {{data->cell[0][0], data->cell[0][1], data->cell[0][2]},
                                {data->cell[1][0], data->cell[1][1], data->cell[1][2]},
                                {data->cell[2][0], data->cell[2][1], data->cell[2][2]}}; // cell matrix
     const real_t cell_volume = calculate_cell_volume(cell); // volume of the cell
     const real_t cutoff = data->coordination_number_cutoff;
 
-    for (uint64_t atom_1_index = blockIdx.x; atom_1_index < data->num_atoms; atom_1_index += gridDim.x) {
-        const atom_t atom_1 = data->atoms[atom_1_index]; // central atom
-        const uint64_t atom_1_type = data->atom_types[atom_1_index]; // type of the central atom
-        const real_t coordination_number_1 =
-            data->coordination_numbers[atom_1_index]; // coordination number of the central atom
-        accumulator_t<3> force_accumulator_central;
-        force_accumulator_central.init();
-        for (uint64_t atom_2_index = 0; atom_2_index <= atom_1_index; ++atom_2_index) {
-            const atom_t atom_2_original = data->atoms[atom_2_index]; // surrounding atom
-            const uint64_t atom_2_type = data->atom_types[atom_2_index]; // type of the surrounding atom
-            const real_t coordination_number_2 =
-                data->coordination_numbers[atom_2_index]; // coordination number of the surrounding atom
-            real_t r0ab = data->r0ab[atom_1_type * data->num_elements + atom_2_type]; // R0 cutoff between atom 1 and 2
+    accumulator_t<1> energy_accumulator; // energy accumulator for central atom
+    accumulator_t<1> dE_dCN_accumulator_central; // dE/dCN accumulator for central atom
+    accumulator_t<3> force_accumulator_central; // force accumulator for central atom
+    accumulator_t<9> stress_accumulator; // stress accumulator for central atom
+    energy_accumulator.init();
+    dE_dCN_accumulator_central.init();
+    force_accumulator_central.init();
+    stress_accumulator.init();
 
-            accumulator_t<3> force_neighbor1;
-            force_neighbor1.init();
+    const uint64_t mcb0 = data->max_cell_bias[0]; // maximum cell bias in x direction
+    const uint64_t mcb1 = data->max_cell_bias[1]; // maximum cell bias in y direction
+    const uint64_t mcb2 = data->max_cell_bias[2]; // maximum cell bias in z direction
+    const uint64_t total_cell_bias = mcb0 * mcb1 * mcb2; // total number of cell bias
 
-            // loop over supercells for atom 2
-            for (uint64_t bias_index_atm2 = 0; bias_index_atm2 < total_cell_bias; ++bias_index_atm2) {
-                const int64_t x_bias_2 = (bias_index_atm2 % mcb0) - (mcb0 / 2); // x bias
-                const int64_t y_bias_2 = ((bias_index_atm2 / mcb0) % mcb1) - (mcb1 / 2); // y bias
-                const int64_t z_bias_2 = (bias_index_atm2 / (mcb0 * mcb1) % mcb2) - (mcb2 / 2); // z bias
+    // // distribute workload to threads
+    // uint64_t start_index; // start index for this thread
+    // uint64_t end_index; // end index for this thread
+    // uint64_t start_bias_index; // start bias index for this thread
+    // uint64_t end_bias_index; // end bias index for this thread
+    // distribute_workload(atom_1_index + 1, total_cell_bias, &start_index, &end_index, &start_bias_index,
+    //                     &end_bias_index);
 
-                atom_t atom_2 = atom_2_original; // the actual atom2 participated in the calculation
-                // translate atom_2 due to periodic boundaries
-                atom_2.x +=
-                    x_bias_2 * cell[0][0] + y_bias_2 * cell[1][0] + z_bias_2 * cell[2][0]; // translate in x direction
-                atom_2.y +=
-                    x_bias_2 * cell[0][1] + y_bias_2 * cell[1][1] + z_bias_2 * cell[2][1]; // translate in y direction
-                atom_2.z +=
-                    x_bias_2 * cell[0][2] + y_bias_2 * cell[1][2] + z_bias_2 * cell[2][2]; // translate in z direction
+    // iterate over neighbor atom 1
+    for (uint64_t atom_2_index = threadIdx.x; atom_2_index <= atom_1_index; atom_2_index += blockDim.x) {
+        const atom_t atom_2_original = data->atoms[atom_2_index]; // neighbor atom 1
+        const uint16_t atom_2_type = data->atom_types[atom_2_index]; // type of neighbor atom 1
+        const real_t CN_2 = data->coordination_numbers[atom_2_index]; // coordination number of neighbor atom 1
+        real_t r0ab = data->r0ab[atom_1_type * data->num_elements + atom_2_type]; // R0 cutoff between atom 1 and 2
 
-                real_t rab[3] = {atom_2.x - atom_1.x, atom_2.y - atom_1.y, atom_2.z - atom_1.z};
-                real_t dist_ab_2 = rab[0] * rab[0] + rab[1] * rab[1] + rab[2] * rab[2];
-                if (dist_ab_2 > cutoff * cutoff || dist_ab_2 < 1e-12) {
-                    continue; // skip if beyond cutoff
-                }
-                real_t c6_ab, dC6ab_dCNa;
-                calculate_c6ab(data, atom_1_type, atom_2_type, coordination_number_1, coordination_number_2, c6_ab,
-                               dC6ab_dCNa);
+        accumulator_t<1> energy_accumulator_neighbor1; // energy accumulator for neighbor atom 1
+        accumulator_t<1> dE_dCN_accumulator_neighbor1; // dE/dCN accumulator for neighbor atom 1
+        accumulator_t<3> force_accumulator_neighbor1; // force accumulator for neighbor atom 1
+        energy_accumulator_neighbor1.init();
+        dE_dCN_accumulator_neighbor1.init();
+        force_accumulator_neighbor1.init();
 
-                // loop over atom 3
-                for (uint64_t atom_3_index = 0; atom_3_index <= atom_2_index; ++atom_3_index) {
-                    const atom_t atom_3_original = data->atoms[atom_3_index]; // third atom
-                    const uint64_t atom_3_type = data->atom_types[atom_3_index]; // type of the third atom
-                    const real_t coordination_number_3 =
-                        data->coordination_numbers[atom_3_index]; // coordination number of the third atom
-                    real_t r0ac =
-                        data->r0ab[atom_1_type * data->num_elements + atom_3_type]; // R0 cutoff between atom 1 and 3
-                    real_t r0bc =
-                        data->r0ab[atom_2_type * data->num_elements + atom_3_type]; // R0 cutoff between atom 2 and 3
+        // calculate c6_ab and derivative
+        real_t c6_ab, dc6ab_dCNa;
+        calculate_c6ab(data, atom_1_type, atom_2_type, CN_1, CN_2, c6_ab, dc6ab_dCNa);
+        // loop over periodic imagers of atom 2
+        for (uint64_t bias_index_2 = 0; bias_index_2 < total_cell_bias; ++bias_index_2) {
+            const int64_t x_bias_2 = (bias_index_2 % mcb0) - (mcb0 / 2); // x bias
+            const int64_t y_bias_2 = ((bias_index_2 / mcb0) % mcb1) - (mcb1 / 2); // y bias
+            const int64_t z_bias_2 = (bias_index_2 / (mcb0 * mcb1) % mcb2) - (mcb2 / 2); // z bias
 
-                    accumulator_t<3> force_neighbor2;
-                    force_neighbor2.init();
+            atom_t atom_2 = atom_2_original; // the actual atom2 participated in the calculation
+            // translate atom_2 due to periodic boundaries
+            atom_2.x +=
+                x_bias_2 * cell[0][0] + y_bias_2 * cell[1][0] + z_bias_2 * cell[2][0]; // translate in x direction
+            atom_2.y +=
+                x_bias_2 * cell[0][1] + y_bias_2 * cell[1][1] + z_bias_2 * cell[2][1]; // translate in y direction
+            atom_2.z +=
+                x_bias_2 * cell[0][2] + y_bias_2 * cell[1][2] + z_bias_2 * cell[2][2]; // translate in z direction
 
-                    real_t c6_ac, dC6ac_dCNa;
-                    calculate_c6ab(data, atom_1_type, atom_3_type, coordination_number_1, coordination_number_3, c6_ac,
-                                   dC6ac_dCNa);
-                    real_t c6_bc, dC6bc_dCNb;
-                    calculate_c6ab(data, atom_2_type, atom_3_type, coordination_number_2, coordination_number_3, c6_bc,
-                                   dC6bc_dCNb);
-                    // loop over supercells for atom 3
-                    for (uint64_t bias_index_atm3 = 0; bias_index_atm3 < total_cell_bias; ++bias_index_atm3) {
-                        const int64_t x_bias_3 = (bias_index_atm3 % mcb0) - (mcb0 / 2); // x bias
-                        const int64_t y_bias_3 = ((bias_index_atm3 / mcb0) % mcb1) - (mcb1 / 2); // y bias
-                        const int64_t z_bias_3 = (bias_index_atm3 / (mcb0 * mcb1) % mcb2) - (mcb2 / 2); // z bias
+            real_t rab[3] = {atom_1.x - atom_2.x, atom_1.y - atom_2.y, atom_1.z - atom_2.z};
+            real_t dist_ab_2 = rab[0] * rab[0] + rab[1] * rab[1] + rab[2] * rab[2];
+            if (dist_ab_2 > cutoff * cutoff || dist_ab_2 < 1e-12) {
+                continue; // skip if beyond cutoff
+            }
 
-                        atom_t atom_3 = atom_3_original; // the actual atom3 participated in the calculation
-                        // translate atom_3 due to periodic boundaries
-                        atom_3.x += x_bias_3 * cell[0][0] + y_bias_3 * cell[1][0] +
-                                    z_bias_3 * cell[2][0]; // translate in x direction
-                        atom_3.y += x_bias_3 * cell[0][1] + y_bias_3 * cell[1][1] +
-                                    z_bias_3 * cell[2][1]; // translate in y direction
-                        atom_3.z += x_bias_3 * cell[0][2] + y_bias_3 * cell[1][2] +
-                                    z_bias_3 * cell[2][2]; // translate in z direction
+            // loop over atom 3
+            for (uint64_t atom_3_index = 0; atom_3_index <= atom_2_index; ++atom_3_index) {
+                const atom_t atom_3_original = data->atoms[atom_3_index]; // third atom
+                const uint64_t atom_3_type = data->atom_types[atom_3_index]; // type of the third atom
+                const real_t CN_3 = data->coordination_numbers[atom_3_index]; // coordination number of the third atom
+                real_t r0ac = data->r0ab[atom_1_type * data->num_elements + atom_3_type]; // R0 cutoff between atom 1 and 3
+                real_t r0bc = data->r0ab[atom_2_type * data->num_elements + atom_3_type]; // R0 cutoff between atom 2 and 3
 
-                        real_t rac[3] = {atom_3.x - atom_1.x, atom_3.y - atom_1.y, atom_3.z - atom_1.z};
-                        real_t dist_ac_2 = rac[0] * rac[0] + rac[1] * rac[1] + rac[2] * rac[2];
-                        real_t rbc[3] = {atom_3.x - atom_2.x, atom_3.y - atom_2.y, atom_3.z - atom_2.z};
-                        real_t dist_bc_2 = rbc[0] * rbc[0] + rbc[1] * rbc[1] + rbc[2] * rbc[2];
-                        if (dist_ac_2 > cutoff * cutoff || dist_bc_2 > cutoff * cutoff || dist_ac_2 < 1e-12 ||
-                            dist_bc_2 < 1e-12) {
-                            continue; // skip if beyond cutoff
-                        }
+                accumulator_t<1> energy_accumulator_neighbor2; // energy accumulator for neighbor atom 2
+                accumulator_t<1> dE_dCN_accumulator_neighbor2; // dE/dCN accumulator for neighbor atom 2
+                accumulator_t<3> force_accumulator_neighbor2; // force accumulator for neighbor atom 2
+                energy_accumulator_neighbor2.init();
+                dE_dCN_accumulator_neighbor2.init();
+                force_accumulator_neighbor2.init();
 
-                        // calculate ATM interaction
-                        real_t distance_ab_2 = rab[0] * rab[0] + rab[1] * rab[1] + rab[2] * rab[2];
-                        real_t distance_ab = sqrtf(distance_ab_2);
-                        real_t distance_ab_3 = distance_ab_2 * distance_ab;
-                        real_t distance_ab_4 = distance_ab_2 * distance_ab_2;
-                        real_t distance_ac_2 = rac[0] * rac[0] + rac[1] * rac[1] + rac[2] * rac[2];
-                        real_t distance_ac = sqrtf(distance_ac_2);
-                        real_t distance_ac_3 = distance_ac_2 * distance_ac;
-                        real_t distance_ac_4 = distance_ac_2 * distance_ac_2;
-                        real_t distance_bc_2 = rbc[0] * rbc[0] + rbc[1] * rbc[1] + rbc[2] * rbc[2];
-                        real_t distance_bc = sqrtf(distance_bc_2);
-                        real_t distance_bc_3 = distance_bc_2 * distance_bc;
-                        real_t distance_bc_4 = distance_bc_2 * distance_bc_2;
-                        real_t r_square = distance_ab_2 * distance_ac_2 * distance_bc_2;
-                        real_t r = sqrtf(r_square);
-                        // calculate $\cos\theta_{abc}\cos\theta_{acb}\cos\theta_{bca}$
-                        real_t tmp_bac = (distance_ab_2 + distance_ac_2 - distance_bc_2); // part of cosine for angle BAC
-                        real_t tmp_cab = (distance_ab_2 - distance_ac_2 + distance_bc_2); // part of cosine for angle CAB
-                        real_t tmp_abc = (-distance_ab_2 + distance_ac_2 + distance_bc_2); // part of cosine for angle ABC
-                        real_t cosine = tmp_bac * tmp_cab * tmp_abc / (8.0 * r_square);
-                        real_t angle_term = (1.0 + 3.0 * cosine) / (r_square * r);
+                // calculate c6_ac and c6_bc and derivatives
+                real_t c6_ac, dC6ac_dCNa;
+                calculate_c6ab(data, atom_1_type, atom_3_type, CN_1, CN_3, c6_ac, dC6ac_dCNa);
+                real_t c6_bc, dC6bc_dCNb;
+                calculate_c6ab(data, atom_2_type, atom_3_type, CN_2, CN_3, c6_bc, dC6bc_dCNb);
+                // loop over supercells for atom 3
+                for (uint64_t bias_index_3 = 0; bias_index_3 < total_cell_bias; ++bias_index_3) {
+                    const int64_t x_bias_3 = (bias_index_3 % mcb0) - (mcb0 / 2); // x bias
+                    const int64_t y_bias_3 = ((bias_index_3 / mcb0) % mcb1) - (mcb1 / 2); // y bias
+                    const int64_t z_bias_3 = (bias_index_3 / (mcb0 * mcb1) % mcb2) - (mcb2 / 2); // z bias
 
-                        real_t dangle_ab =
-                            3.0 / 8.0 *
-                            (distance_ab_3 * distance_ab_3 + distance_ab_4 * (distance_ac_2 + distance_bc_2) +
-                            distance_ab_2 * (3.0 * distance_bc_2 * distance_bc_2 + 2.0 * distance_bc_2 * distance_ac_2 +
-                                            3.0 * distance_ac_2 * distance_ac_2) -
-                            5.0 * (distance_bc_2 - distance_ac_2) * (distance_bc_2 - distance_ac_2) * (distance_bc_2 + distance_ac_2)) /
-                            (r_square * r_square * r); // d(angle_term)/d(distance_ab)
+                    atom_t atom_3 = atom_3_original; // the actual atom3 participated in the calculation
+                    // translate atom_3 due to periodic boundaries
+                    atom_3.x +=
+                        x_bias_3 * cell[0][0] + y_bias_3 * cell[1][0] + z_bias_3 * cell[2][0]; // translate in x direction
+                    atom_3.y +=
+                        x_bias_3 * cell[0][1] + y_bias_3 * cell[1][1] + z_bias_3 * cell[2][1]; // translate in y direction
+                    atom_3.z +=
+                        x_bias_3 * cell[0][2] + y_bias_3 * cell[1][2] + z_bias_3 * cell[2][2]; // translate in z direction
 
-                        real_t dangle_ac =
-                            3.0 / 8.0 *
-                            (distance_ac_3 * distance_ac_3 + distance_ac_4 * (distance_bc_2 + distance_ab_2) +
-                            distance_ac_2 * (3.0 * distance_bc_2 * distance_bc_2 + 2.0 * distance_bc_2 * distance_ab_2 +
-                                            3.0 * distance_ab_2 * distance_ab_2) -
-                            5.0 * (distance_bc_2 - distance_ab_2) * (distance_bc_2 - distance_ab_2) * (distance_bc_2 + distance_ab_2)) /
-                            (r_square * r_square * r); // d(angle_term)/d(distance_ac)
-
-                        real_t dangle_bc =
-                            3.0 / 8.0 *
-                            (distance_bc_3 * distance_bc_3 + distance_bc_4 * (distance_ac_2 + distance_ab_2) +
-                            distance_bc_2 * (3.0 * distance_ac_2 * distance_ac_2 + 2.0 * distance_ac_2 * distance_ab_2 +
-                                            3.0 * distance_ab_2 * distance_ab_2) -
-                            5.0 * (distance_ac_2 - distance_ab_2) * (distance_ac_2 - distance_ab_2) * (distance_ac_2 + distance_ab_2)) /
-                            (r_square * r_square * r); // d(angle_term)/d(distance_bc)
-
-                        real_t C9 = -sqrtf(c6_ab * c6_ac * c6_bc); // C9 value
-
-                        real_t distance_avg = powf(distance_ab_2 * distance_ac_2 * distance_bc_2, 1.0f / 6.0f);
-                        real_t r0_cutoff = powf(r0ab * r0ac * r0bc, 1.0f / 3.0f);
-
-                        real_t damping_8 = 1.0 / (1.0 + 6.0 * powf(4.0 / 3.0 * r0_cutoff / distance_avg, 16.0));
-                        real_t d_damping_8 = 2.0 * 16.0 * powf(4.0 / 3.0 * r0_cutoff / distance_avg, 16.0) * damping_8 * damping_8;
-
-
-                        real_t force_a[3] = {0.0f, 0.0f, 0.0f}; // force on atom a
-                        real_t force_b[3] = {0.0f, 0.0f, 0.0f}; // force on atom b
-                        real_t force_c[3] = {0.0f, 0.0f, 0.0f}; // force on atom c
-                        for (uint8_t i = 0; i < 3; ++i) {
-                            real_t force_ab = C9 * (dangle_ab * damping_8 - angle_term * d_damping_8) * rab[i] / distance_ab_2;
-                            real_t force_ac = C9 * (dangle_ac * damping_8 - angle_term * d_damping_8) * rac[i] / distance_ac_2;
-                            real_t force_bc = C9 * (dangle_bc * damping_8 - angle_term * d_damping_8) * rbc[i] / distance_bc_2;
-                            force_a[i] = (force_ab + force_ac);
-                            force_b[i] = (-force_ab + force_bc);
-                            force_c[i] = (-force_ac - force_bc);
-                        }
-                        // accumulate forces
-                        force_accumulator_central.add(force_a);
-                        force_neighbor1.add(force_b);
-                        force_neighbor2.add(force_c);
+                    real_t rac[3] = {atom_1.x - atom_3.x, atom_1.y - atom_3.y, atom_1.z - atom_3.z};
+                    real_t dist_ac_2 = rac[0] * rac[0] + rac[1] * rac[1] + rac[2] * rac[2];
+                    real_t rbc[3] = {atom_2.x - atom_3.x, atom_2.y - atom_3.y, atom_2.z - atom_3.z};
+                    real_t dist_bc_2 = rbc[0] * rbc[0] + rbc[1] * rbc[1] + rbc[2] * rbc[2];
+            
+                    if (dist_ac_2 > cutoff * cutoff || dist_bc_2 > cutoff * cutoff || dist_ac_2 < 1e-12 ||
+                        dist_bc_2 < 1e-12) {
+                        continue; // skip if beyond cutoff
                     }
-                    real_t neighbor2_forces[3];
-                    force_neighbor2.get_sum(neighbor2_forces);
-                    printf("Atom 1 index: %llu, Atom 2 index: %llu, Atom 3 index: %llu, Force on Atom 3: (%.8e, %.8e, %.8e)\n",
-                           atom_1_index, atom_2_index, atom_3_index, neighbor2_forces[0], neighbor2_forces[1],
-                           neighbor2_forces[2]);
-                    uint64_t original_atom_3_index = data->atoms[atom_3_index].original_index;
+
+                    // calculate ATM interaction
+                    real_t distance_ab_2 = rab[0] * rab[0] + rab[1] * rab[1] + rab[2] * rab[2];
+                    real_t distance_ab = sqrtf(distance_ab_2);
+                    real_t distance_ab_3 = distance_ab_2 * distance_ab;
+                    real_t distance_ab_4 = distance_ab_2 * distance_ab_2;
+                    real_t distance_ac_2 = rac[0] * rac[0] + rac[1] * rac[1] + rac[2] * rac[2];
+                    real_t distance_ac = sqrtf(distance_ac_2);
+                    real_t distance_ac_3 = distance_ac_2 * distance_ac;
+                    real_t distance_ac_4 = distance_ac_2 * distance_ac_2;
+                    real_t distance_bc_2 = rbc[0] * rbc[0] + rbc[1] * rbc[1] + rbc[2] * rbc[2];
+                    real_t distance_bc = sqrtf(distance_bc_2);
+                    real_t distance_bc_3 = distance_bc_2 * distance_bc;
+                    real_t distance_bc_4 = distance_bc_2 * distance_bc_2;
+                    real_t r_square = distance_ab_2 * distance_ac_2 * distance_bc_2;
+                    real_t r = sqrtf(r_square);
+                    // calculate $\cos\theta_{abc}\cos\theta_{acb}\cos\theta_{bca}$
+                    real_t tmp_bac = (distance_ab_2 + distance_ac_2 - distance_bc_2); // part of cosine for angle BAC
+                    real_t tmp_cab = (distance_ab_2 - distance_ac_2 + distance_bc_2); // part of cosine for angle CAB
+                    real_t tmp_abc = (-distance_ab_2 + distance_ac_2 + distance_bc_2); // part of cosine for angle ABC
+                    real_t cosine = tmp_bac * tmp_cab * tmp_abc / (8.0 * r_square);
+                    real_t angle_term = (1.0 + 3.0 * cosine) / (r_square * r);
+
+                    real_t dangle_ab =
+                        3.0 / 8.0 *
+                        (distance_ab_3 * distance_ab_3 + distance_ab_4 * (distance_ac_2 + distance_bc_2) +
+                        distance_ab_2 * (3.0 * distance_bc_2 * distance_bc_2 + 2.0 * distance_bc_2 * distance_ac_2 +
+                                        3.0 * distance_ac_2 * distance_ac_2) -
+                        5.0 * (distance_bc_2 - distance_ac_2) * (distance_bc_2 - distance_ac_2) * (distance_bc_2 + distance_ac_2)) /
+                        (r_square * r_square * r); // d(angle_term)/d(distance_ab)
+
+                    real_t dangle_ac =
+                        3.0 / 8.0 *
+                        (distance_ac_3 * distance_ac_3 + distance_ac_4 * (distance_bc_2 + distance_ab_2) +
+                        distance_ac_2 * (3.0 * distance_bc_2 * distance_bc_2 + 2.0 * distance_bc_2 * distance_ab_2 +
+                                        3.0 * distance_ab_2 * distance_ab_2) -
+                        5.0 * (distance_bc_2 - distance_ab_2) * (distance_bc_2 - distance_ab_2) * (distance_bc_2 + distance_ab_2)) /
+                        (r_square * r_square * r); // d(angle_term)/d(distance_ac)
+
+                    real_t dangle_bc =
+                        3.0 / 8.0 *
+                        (distance_bc_3 * distance_bc_3 + distance_bc_4 * (distance_ac_2 + distance_ab_2) +
+                        distance_bc_2 * (3.0 * distance_ac_2 * distance_ac_2 + 2.0 * distance_ac_2 * distance_ab_2 +
+                                        3.0 * distance_ab_2 * distance_ab_2) -
+                        5.0 * (distance_ac_2 - distance_ab_2) * (distance_ac_2 - distance_ab_2) * (distance_ac_2 + distance_ab_2)) /
+                        (r_square * r_square * r); // d(angle_term)/d(distance_bc)
+
+                    real_t C9 = -sqrtf(c6_ab * c6_ac * c6_bc); // C9 value
+                    real_t dC9_dc6ab = -0.5 * C9 / c6_ab; // dC9/dC6ab
+                    real_t dC9_dc6ac = -0.5 * C9 / c6_ac; // dC9/dC6ac
+                    real_t dC9_dc6bc = -0.5 * C9 / c6_bc; // dC9/dC6bc
+                    real_t dC9_dCNa = dC9_dc6ab * dc6ab_dCNa + dC9_dc6ac * dC6ac_dCNa; // dC9/dCNa
+                    real_t dC9_dCNb = dC9_dc6ab * (-dc6ab_dCNa) + dC9_dc6bc * dC6bc_dCNb; // dC9/dCNb
+                    real_t dC9_dCNc = dC9_dc6ac * (-dC6ac_dCNa) + dC9_dc6bc * (-dC6bc_dCNb); // dC9/dCNc
+
+                    real_t distance_avg = powf(distance_ab_2 * distance_ac_2 * distance_bc_2, 1.0f / 6.0f);
+                    real_t r0_cutoff = powf(r0ab * r0ac * r0bc, 1.0f / 3.0f);
+
+                    real_t damping_8 = 1.0 / (1.0 + 6.0 * powf(4.0 / 3.0 * r0_cutoff / distance_avg, 16.0));
+                    real_t d_damping_8 = 2.0 * 16.0 * powf(4.0 / 3.0 * r0_cutoff / distance_avg, 16.0) * damping_8 * damping_8;
+
+                    // calculate energy
+                    real_t energy = C9 * angle_term * damping_8 / 3.0; // contribution to energy for each atom in the triplet
+                    // accumulate energy
+                    energy_accumulator.add(&energy);
+                    energy_accumulator_neighbor1.add(&energy);
+                    energy_accumulator_neighbor2.add(&energy);
+
+                    // calculate dE_dCN
+                    real_t dE_dCNa = dC9_dCNa * angle_term * damping_8;
+                    real_t dE_dCNb = dC9_dCNb * angle_term * damping_8;
+                    real_t dE_dCNc = dC9_dCNc * angle_term * damping_8;
+                    dE_dCN_accumulator_central.add(&dE_dCNa);
+                    dE_dCN_accumulator_neighbor1.add(&dE_dCNb);
+                    dE_dCN_accumulator_neighbor2.add(&dE_dCNc);
+
+                    real_t force_a[3] = {0.0f, 0.0f, 0.0f}; // force on atom a
+                    real_t force_b[3] = {0.0f, 0.0f, 0.0f}; // force on atom b
+                    real_t force_c[3] = {0.0f, 0.0f, 0.0f}; // force on atom c
+                    real_t stress[9] = {0.0}; // stress contribution
                     for (uint8_t i = 0; i < 3; ++i) {
-                        atomicAdd(&data->forces[original_atom_3_index * 3 + i], neighbor2_forces[i]);
+                        real_t force_ab_scalar = C9 * (dangle_ab * damping_8 - angle_term * d_damping_8) / distance_ab_2;
+                        real_t force_ac_scalar = C9 * (dangle_ac * damping_8 - angle_term * d_damping_8) / distance_ac_2;
+                        real_t force_bc_scalar = C9 * (dangle_bc * damping_8 - angle_term * d_damping_8) / distance_bc_2;
+                        for (uint8_t j = 0; j < 3; ++j) {
+                            stress[i * 3 + j] +=
+                                (-1.0f * force_ab_scalar * rab[i] * rab[j] +
+                                 -1.0f * force_ac_scalar * rac[i] * rac[j] +
+                                 -1.0f * force_bc_scalar * rbc[i] * rbc[j]) /
+                                cell_volume / 3.0;
+                        }
+                        real_t force_ab = force_ab_scalar * rab[i];
+                        real_t force_ac = force_ac_scalar * rac[i];
+                        real_t force_bc = force_bc_scalar * rbc[i];
+                        force_a[i] = (force_ab + force_ac);
+                        force_b[i] = (-force_ab + force_bc);
+                        force_c[i] = (-force_ac - force_bc);
                     }
+                    // accumulate forces and stress
+                    force_accumulator_central.add(force_a);
+                    force_accumulator_neighbor1.add(force_b);
+                    force_accumulator_neighbor2.add(force_c);
+                    stress_accumulator.add(stress);
+                }
+                // accumulate neighbor 2 results
+                real_t energy_neighbor2;
+                real_t dE_dCN_neighbor2;
+                real_t force_neighbor2[3];
+                energy_accumulator_neighbor2.get_sum(&energy_neighbor2);
+                dE_dCN_accumulator_neighbor2.get_sum(&dE_dCN_neighbor2);
+                force_accumulator_neighbor2.get_sum(force_neighbor2);
+                // atomic additions to global memory
+                uint64_t atom_3_original_index = atom_3_original.original_index;
+                atomicAdd(&data->energy[atom_3_original_index], energy_neighbor2);
+                atomicAdd(&data->dE_dCN[atom_3_index], dE_dCN_neighbor2);
+                for (uint8_t i = 0; i < 3; ++i) {
+                    atomicAdd(&data->forces[atom_3_original_index * 3 + i], force_neighbor2[i]);
                 }
             }
-            real_t neighbor1_forces[3];
-            force_neighbor1.get_sum(neighbor1_forces);
-            printf("Atom 1 index: %llu, Atom 2 index: %llu, Force on Atom 2: (%.8e, %.8e, %.8e)\n",
-                   atom_1_index, atom_2_index, neighbor1_forces[0], neighbor1_forces[1], neighbor1_forces[2]);
-            uint64_t original_atom_2_index = data->atoms[atom_2_index].original_index;
-            for (uint8_t i = 0; i < 3; ++i) {
-                atomicAdd(&data->forces[original_atom_2_index * 3 + i], neighbor1_forces[i]);
+        }
+        // accumulate neighbor 1 results
+        real_t energy_neighbor1;
+        real_t dE_dCN_neighbor1;
+        real_t force_neighbor1[3];
+        energy_accumulator_neighbor1.get_sum(&energy_neighbor1);
+        dE_dCN_accumulator_neighbor1.get_sum(&dE_dCN_neighbor1);
+        force_accumulator_neighbor1.get_sum(force_neighbor1);
+        // atomic additions to global memory
+        uint64_t atom_2_original_index = atom_2_original.original_index;
+        atomicAdd(&data->energy[atom_2_original_index], energy_neighbor1);
+        atomicAdd(&data->dE_dCN[atom_2_index], dE_dCN_neighbor1);
+        for (uint8_t i = 0; i < 3; ++i) {
+            atomicAdd(&data->forces[atom_2_original_index * 3 + i], force_neighbor1[i]);
+        }
+    }
+    // accumulate central atom results
+    real_t energy_central_local;
+    real_t dE_dCN_central_local;
+    real_t force_central_local[3];
+    real_t stress_local[9];
+    energy_accumulator.get_sum(&energy_central_local);
+    dE_dCN_accumulator_central.get_sum(&dE_dCN_central_local);
+    force_accumulator_central.get_sum(force_central_local);
+    stress_accumulator.get_sum(stress_local);
+    // blockwise reduction
+    real_t energy_central_sum;
+    real_t dE_dCN_central_sum;
+    real_t force_central_sum[3];
+    real_t stress_sum[9];
+    blockReduceTwoBodyKernel(dE_dCN_central_local, energy_central_local, force_central_local, stress_local, &dE_dCN_central_sum, &energy_central_sum, force_central_sum, stress_sum);
+    // atomic additions to global memory
+    if (threadIdx.x == 0) {    
+    uint64_t atom_1_original_index = atom_1.original_index;
+        atomicAdd(&data->energy[atom_1_original_index], energy_central_sum);
+        atomicAdd(&data->dE_dCN[atom_1_index], dE_dCN_central_sum);
+        for (uint8_t i = 0; i < 3; ++i) {
+            atomicAdd(&data->forces[atom_1_original_index * 3 + i], force_central_sum[i]);
+        }
+        // atomic addition to global stress
+        for (uint8_t i = 0; i < 9; ++i) {
+            atomicAdd(&data->stress[i], stress_sum[i]);
+        }
+    }
+    return;
+}
+
+__global__ void atm_kernel_single(device_data_t *data) {
+    uint64_t atom_1_index = blockIdx.x; // index of the central atom
+    uint64_t mcb0 = data->max_cell_bias[0]; // maximum cell bias in x direction
+    uint64_t mcb1 = data->max_cell_bias[1]; // maximum cell bias in y direction
+    uint64_t mcb2 = data->max_cell_bias[2]; // maximum cell bias in z direction
+    uint64_t total_cell_bias = mcb0 * mcb1 * mcb2; // total number of cell bias
+    real_t cutoff = data->coordination_number_cutoff;
+    real_t cell[3][3] = {{data->cell[0][0], data->cell[0][1], data->cell[0][2]},
+                         {data->cell[1][0], data->cell[1][1], data->cell[1][2]},
+                         {data->cell[2][0], data->cell[2][1], data->cell[2][2]}}; // cell matrix
+    
+    const atom_t atom_1 = data->atoms[atom_1_index]; // central atom
+    const uint16_t atom_1_type = data->atom_types[atom_1_index]; // type of the central atom
+    const real_t coordination_number_1 =
+        data->coordination_numbers[atom_1_index]; // coordination number of the central atom
+    accumulator_t<3> force_accumulator_central;
+    force_accumulator_central.init();
+    for (uint64_t atom_2_index = threadIdx.x; atom_2_index <= atom_1_index; atom_2_index += blockDim.x) {
+        const atom_t atom_2_original = data->atoms[atom_2_index]; // surrounding atom
+        const uint64_t atom_2_type = data->atom_types[atom_2_index]; // type of the surrounding atom
+        const real_t coordination_number_2 =
+            data->coordination_numbers[atom_2_index]; // coordination number of the surrounding atom
+        real_t r0ab = data->r0ab[atom_1_type * data->num_elements + atom_2_type]; // R0 cutoff between atom 1 and 2
+
+        accumulator_t<3> force_neighbor1;
+        force_neighbor1.init();
+
+        // loop over supercells for atom 2
+        for (uint64_t bias_index_atm2 = 0; bias_index_atm2 < total_cell_bias; ++bias_index_atm2) {
+            const int64_t x_bias_2 = (bias_index_atm2 % mcb0) - (mcb0 / 2); // x bias
+            const int64_t y_bias_2 = ((bias_index_atm2 / mcb0) % mcb1) - (mcb1 / 2); // y bias
+            const int64_t z_bias_2 = (bias_index_atm2 / (mcb0 * mcb1) % mcb2) - (mcb2 / 2); // z bias
+
+            atom_t atom_2 = atom_2_original; // the actual atom2 participated in the calculation
+            // translate atom_2 due to periodic boundaries
+            atom_2.x +=
+                x_bias_2 * cell[0][0] + y_bias_2 * cell[1][0] + z_bias_2 * cell[2][0]; // translate in x direction
+            atom_2.y +=
+                x_bias_2 * cell[0][1] + y_bias_2 * cell[1][1] + z_bias_2 * cell[2][1]; // translate in y direction
+            atom_2.z +=
+                x_bias_2 * cell[0][2] + y_bias_2 * cell[1][2] + z_bias_2 * cell[2][2]; // translate in z direction
+
+            real_t rab[3] = {atom_2.x - atom_1.x, atom_2.y - atom_1.y, atom_2.z - atom_1.z};
+            real_t dist_ab_2 = rab[0] * rab[0] + rab[1] * rab[1] + rab[2] * rab[2];
+            if (dist_ab_2 > cutoff * cutoff || dist_ab_2 < 1e-12) {
+                continue; // skip if beyond cutoff
+            }
+            real_t c6_ab, dC6ab_dCNa;
+            calculate_c6ab(data, atom_1_type, atom_2_type, coordination_number_1, coordination_number_2, c6_ab,
+                            dC6ab_dCNa);
+
+            // loop over atom 3
+            for (uint64_t atom_3_index = 0; atom_3_index <= atom_2_index; ++atom_3_index) {
+                const atom_t atom_3_original = data->atoms[atom_3_index]; // third atom
+                const uint64_t atom_3_type = data->atom_types[atom_3_index]; // type of the third atom
+                const real_t coordination_number_3 =
+                    data->coordination_numbers[atom_3_index]; // coordination number of the third atom
+                real_t r0ac =
+                    data->r0ab[atom_1_type * data->num_elements + atom_3_type]; // R0 cutoff between atom 1 and 3
+                real_t r0bc =
+                    data->r0ab[atom_2_type * data->num_elements + atom_3_type]; // R0 cutoff between atom 2 and 3
+
+                accumulator_t<3> force_neighbor2;
+                force_neighbor2.init();
+
+                real_t c6_ac, dC6ac_dCNa;
+                calculate_c6ab(data, atom_1_type, atom_3_type, coordination_number_1, coordination_number_3, c6_ac,
+                                dC6ac_dCNa);
+                real_t c6_bc, dC6bc_dCNb;
+                calculate_c6ab(data, atom_2_type, atom_3_type, coordination_number_2, coordination_number_3, c6_bc,
+                                dC6bc_dCNb);
+                // loop over supercells for atom 3
+                for (uint64_t bias_index_atm3 = 0; bias_index_atm3 < total_cell_bias; ++bias_index_atm3) {
+                    const int64_t x_bias_3 = (bias_index_atm3 % mcb0) - (mcb0 / 2); // x bias
+                    const int64_t y_bias_3 = ((bias_index_atm3 / mcb0) % mcb1) - (mcb1 / 2); // y bias
+                    const int64_t z_bias_3 = (bias_index_atm3 / (mcb0 * mcb1) % mcb2) - (mcb2 / 2); // z bias
+
+                    atom_t atom_3 = atom_3_original; // the actual atom3 participated in the calculation
+                    // translate atom_3 due to periodic boundaries
+                    atom_3.x += x_bias_3 * cell[0][0] + y_bias_3 * cell[1][0] +
+                                z_bias_3 * cell[2][0]; // translate in x direction
+                    atom_3.y += x_bias_3 * cell[0][1] + y_bias_3 * cell[1][1] +
+                                z_bias_3 * cell[2][1]; // translate in y direction
+                    atom_3.z += x_bias_3 * cell[0][2] + y_bias_3 * cell[1][2] +
+                                z_bias_3 * cell[2][2]; // translate in z direction
+
+                    real_t rac[3] = {atom_3.x - atom_1.x, atom_3.y - atom_1.y, atom_3.z - atom_1.z};
+                    real_t dist_ac_2 = rac[0] * rac[0] + rac[1] * rac[1] + rac[2] * rac[2];
+                    real_t rbc[3] = {atom_3.x - atom_2.x, atom_3.y - atom_2.y, atom_3.z - atom_2.z};
+                    real_t dist_bc_2 = rbc[0] * rbc[0] + rbc[1] * rbc[1] + rbc[2] * rbc[2];
+                    if (dist_ac_2 > cutoff * cutoff || dist_bc_2 > cutoff * cutoff || dist_ac_2 < 1e-12 ||
+                        dist_bc_2 < 1e-12) {
+                        continue; // skip if beyond cutoff
+                    }
+
+                    // calculate ATM interaction
+                    real_t distance_ab_2 = rab[0] * rab[0] + rab[1] * rab[1] + rab[2] * rab[2];
+                    real_t distance_ab = sqrtf(distance_ab_2);
+                    real_t distance_ab_3 = distance_ab_2 * distance_ab;
+                    real_t distance_ab_4 = distance_ab_2 * distance_ab_2;
+                    real_t distance_ac_2 = rac[0] * rac[0] + rac[1] * rac[1] + rac[2] * rac[2];
+                    real_t distance_ac = sqrtf(distance_ac_2);
+                    real_t distance_ac_3 = distance_ac_2 * distance_ac;
+                    real_t distance_ac_4 = distance_ac_2 * distance_ac_2;
+                    real_t distance_bc_2 = rbc[0] * rbc[0] + rbc[1] * rbc[1] + rbc[2] * rbc[2];
+                    real_t distance_bc = sqrtf(distance_bc_2);
+                    real_t distance_bc_3 = distance_bc_2 * distance_bc;
+                    real_t distance_bc_4 = distance_bc_2 * distance_bc_2;
+                    real_t r_square = distance_ab_2 * distance_ac_2 * distance_bc_2;
+                    real_t r = sqrtf(r_square);
+                    // calculate $\cos\theta_{abc}\cos\theta_{acb}\cos\theta_{bca}$
+                    real_t tmp_bac = (distance_ab_2 + distance_ac_2 - distance_bc_2); // part of cosine for angle BAC
+                    real_t tmp_cab = (distance_ab_2 - distance_ac_2 + distance_bc_2); // part of cosine for angle CAB
+                    real_t tmp_abc = (-distance_ab_2 + distance_ac_2 + distance_bc_2); // part of cosine for angle ABC
+                    real_t cosine = tmp_bac * tmp_cab * tmp_abc / (8.0 * r_square);
+                    real_t angle_term = (1.0 + 3.0 * cosine) / (r_square * r);
+
+                    real_t dangle_ab =
+                        3.0 / 8.0 *
+                        (distance_ab_3 * distance_ab_3 + distance_ab_4 * (distance_ac_2 + distance_bc_2) +
+                        distance_ab_2 * (3.0 * distance_bc_2 * distance_bc_2 + 2.0 * distance_bc_2 * distance_ac_2 +
+                                        3.0 * distance_ac_2 * distance_ac_2) -
+                        5.0 * (distance_bc_2 - distance_ac_2) * (distance_bc_2 - distance_ac_2) * (distance_bc_2 + distance_ac_2)) /
+                        (r_square * r_square * r); // d(angle_term)/d(distance_ab)
+
+                    real_t dangle_ac =
+                        3.0 / 8.0 *
+                        (distance_ac_3 * distance_ac_3 + distance_ac_4 * (distance_bc_2 + distance_ab_2) +
+                        distance_ac_2 * (3.0 * distance_bc_2 * distance_bc_2 + 2.0 * distance_bc_2 * distance_ab_2 +
+                                        3.0 * distance_ab_2 * distance_ab_2) -
+                        5.0 * (distance_bc_2 - distance_ab_2) * (distance_bc_2 - distance_ab_2) * (distance_bc_2 + distance_ab_2)) /
+                        (r_square * r_square * r); // d(angle_term)/d(distance_ac)
+
+                    real_t dangle_bc =
+                        3.0 / 8.0 *
+                        (distance_bc_3 * distance_bc_3 + distance_bc_4 * (distance_ac_2 + distance_ab_2) +
+                        distance_bc_2 * (3.0 * distance_ac_2 * distance_ac_2 + 2.0 * distance_ac_2 * distance_ab_2 +
+                                        3.0 * distance_ab_2 * distance_ab_2) -
+                        5.0 * (distance_ac_2 - distance_ab_2) * (distance_ac_2 - distance_ab_2) * (distance_ac_2 + distance_ab_2)) /
+                        (r_square * r_square * r); // d(angle_term)/d(distance_bc)
+
+                    real_t C9 = -sqrtf(c6_ab * c6_ac * c6_bc); // C9 value
+
+                    real_t distance_avg = powf(distance_ab_2 * distance_ac_2 * distance_bc_2, 1.0f / 6.0f);
+                    real_t r0_cutoff = powf(r0ab * r0ac * r0bc, 1.0f / 3.0f);
+
+                    real_t damping_8 = 1.0 / (1.0 + 6.0 * powf(4.0 / 3.0 * r0_cutoff / distance_avg, 16.0));
+                    real_t d_damping_8 = 2.0 * 16.0 * powf(4.0 / 3.0 * r0_cutoff / distance_avg, 16.0) * damping_8 * damping_8;
+
+
+                    real_t force_a[3] = {0.0f, 0.0f, 0.0f}; // force on atom a
+                    real_t force_b[3] = {0.0f, 0.0f, 0.0f}; // force on atom b
+                    real_t force_c[3] = {0.0f, 0.0f, 0.0f}; // force on atom c
+                    for (uint8_t i = 0; i < 3; ++i) {
+                        real_t force_ab = C9 * (dangle_ab * damping_8 - angle_term * d_damping_8) * rab[i] / distance_ab_2;
+                        real_t force_ac = C9 * (dangle_ac * damping_8 - angle_term * d_damping_8) * rac[i] / distance_ac_2;
+                        real_t force_bc = C9 * (dangle_bc * damping_8 - angle_term * d_damping_8) * rbc[i] / distance_bc_2;
+                        force_a[i] = (force_ab + force_ac);
+                        force_b[i] = (-force_ab + force_bc);
+                        force_c[i] = (-force_ac - force_bc);
+                    }
+                    // accumulate forces
+                    force_accumulator_central.add(force_a);
+                    force_neighbor1.add(force_b);
+                    force_neighbor2.add(force_c);
+                }
+                real_t neighbor2_forces[3];
+                force_neighbor2.get_sum(neighbor2_forces);
+                printf("Atom 1 index: %llu, Atom 2 index: %llu, Atom 3 index: %llu, Force on Atom 3: (%.8e, %.8e, %.8e)\n",
+                        atom_1_index, atom_2_index, atom_3_index, neighbor2_forces[0], neighbor2_forces[1],
+                        neighbor2_forces[2]);
+                uint64_t original_atom_3_index = data->atoms[atom_3_index].original_index;
+                for (uint8_t i = 0; i < 3; ++i) {
+                    atomicAdd(&data->forces[original_atom_3_index * 3 + i], neighbor2_forces[i]);
+                }
             }
         }
-        real_t central_forces[3];
-        force_accumulator_central.get_sum(central_forces);
-        printf("Atom 1 index: %llu, Force on Atom 1: (%.8e, %.8e, %.8e)\n",
-               atom_1_index, central_forces[0], central_forces[1], central_forces[2]);
-        uint64_t original_atom_1_index = data->atoms[atom_1_index].original_index;
+        real_t neighbor1_forces[3];
+        force_neighbor1.get_sum(neighbor1_forces);
+        printf("Atom 1 index: %llu, Atom 2 index: %llu, Force on Atom 2: (%.8e, %.8e, %.8e)\n",
+                atom_1_index, atom_2_index, neighbor1_forces[0], neighbor1_forces[1], neighbor1_forces[2]);
+        uint64_t original_atom_2_index = data->atoms[atom_2_index].original_index;
         for (uint8_t i = 0; i < 3; ++i) {
-            atomicAdd(&data->forces[original_atom_1_index * 3 + i], central_forces[i]);
+            atomicAdd(&data->forces[original_atom_2_index * 3 + i], neighbor1_forces[i]);
         }
+    }
+    real_t central_forces[3];
+    force_accumulator_central.get_sum(central_forces);
+    uint64_t original_atom_1_index = data->atoms[atom_1_index].original_index;
+    for (uint8_t i = 0; i < 3; ++i) {
+        atomicAdd(&data->forces[original_atom_1_index * 3 + i], central_forces[i]);
     }
 }
 
@@ -1503,7 +1782,6 @@ __global__ void atm_kernel(device_data_t *data) {
     dE_dCN_accumulator_central.init();
     force_accumulators_central.init();
     stress_accumulators.init();
-
     switch (data->workload_distribution_type) {
 
     default:
