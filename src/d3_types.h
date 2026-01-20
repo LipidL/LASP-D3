@@ -2,6 +2,7 @@
 #define D3_TYPES_H
 
 #include <stdint.h>
+#include <optional>
 
 typedef float real_t;
 
@@ -70,6 +71,8 @@ typedef struct device_data {
                                   // num_grid_cells[0]*num_grid_cells[1]*num_grid_cells[2]
     real_t coordination_number_cutoff; // the cutof radius for CN computation
     real_t cutoff; // the cutoff radius for the dispersion energy calculation
+    bool use_atm; // whether to use the ATM term in the calculation
+    real_t atm_cutoff; // optional cutoff radius for the ATM term, only used if use_atm is true
     damping_type_t damping_type; // the damping type used for the calculation
     functional_t functional_type; // the functional type used for the
                                   // calculation

@@ -5,6 +5,7 @@
 #include <chrono>
 #include <ctime>
 #include <exception>
+#include <optional>
 
 #include "d3.h"
 #include "d3_buffer.cuh"
@@ -15,7 +16,21 @@ d3_handle_t *init_d3_handle(uint16_t *elements, uint64_t length_elements, uint64
                             functional_t functional_type) {
     try {
         Device_Buffer *buffer = new Device_Buffer(elements, length_elements, max_length, cutoff_radius,
-                                                  coordination_number_cutoff, damping_type,
+                                                  coordination_number_cutoff, std::nullopt, damping_type,
+                                                  functional_type); // create a buffer to hold the data
+        return (d3_handle_t *)buffer; // return the pointer to the handle
+    } catch (const std::exception &e) {
+        fprintf(stderr, "Error: %s\n", e.what());
+        return NULL;
+    }
+}
+
+d3_handle_t *init_d3_handle_with_atm(uint16_t *elements, uint64_t length_elements, uint64_t max_length,
+                                     real_t cutoff_radius, real_t coordination_number_cutoff, real_t atm_cutoff,
+                                     damping_type_t damping_type, functional_t functional_type) {
+    try {
+        Device_Buffer *buffer = new Device_Buffer(elements, length_elements, max_length, cutoff_radius,
+                                                  coordination_number_cutoff, atm_cutoff, damping_type,
                                                   functional_type); // create a buffer to hold the data
         return (d3_handle_t *)buffer; // return the pointer to the handle
     } catch (const std::exception &e) {
@@ -144,13 +159,13 @@ uint16_t compute_dispersion_energy_from_handle_status(d3_handle_t *handle, real_
         print_coordination_number_kernel<<<1, 1, 0, stream>>>(buffer->get_device_data());
         CHECK_CUDA(cudaGetLastError()); // Check for kernel launch errors
 #endif
-        // calculate ATM interaction
-        debug("launching atm_kernel, size: %zu, %d\n", length, MAX_BLOCK_SIZE);
-        atm_kernel<<<length, MAX_BLOCK_SIZE, 0, stream>>>(buffer->get_device_data());
-        CHECK_CUDA(cudaGetLastError()); // Check for kernel launch errors
-        debug("launching two_body_kernel, size: %zu, %d\n", length, MAX_BLOCK_SIZE);
-
+        if (buffer->get_host_data().use_atm) {
+            debug("launching atm_kernel, size: %zu, %d\n", length, MAX_BLOCK_SIZE);
+            atm_kernel<<<length, MAX_BLOCK_SIZE, 0, stream>>>(buffer->get_device_data());
+            CHECK_CUDA(cudaGetLastError()); // Check for kernel launch errors
+        }
         // calculate energy and two-body part of force
+        debug("launching two_body_kernel, size: %zu, %d\n", length, MAX_BLOCK_SIZE);
         two_body_kernel<<<length, MAX_BLOCK_SIZE, 0, stream>>>(buffer->get_device_data());
         CHECK_CUDA(cudaGetLastError()); // Check for kernel launch errors
 

@@ -59,6 +59,11 @@ void compute_dispersion_energy(real_t atoms[][3], uint16_t *elements, uint64_t n
 d3_handle_t *init_d3_handle(uint16_t *elements, uint64_t num_elements, uint64_t max_length, real_t cutoff_radius,
                             real_t coordination_number_cutoff, damping_type_t damping_type,
                             functional_t functional_type);
+
+d3_handle_t *init_d3_handle_with_atm(uint16_t *elements, uint64_t length_elements, uint64_t max_length,
+                                     real_t cutoff_radius, real_t coordination_number_cutoff, real_t atm_cutoff,
+                                     damping_type_t damping_type, functional_t functional_type);
+
 /**
  * @brief this function is used to set the coordinates and elements of the atoms
  * in the system.

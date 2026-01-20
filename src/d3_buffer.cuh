@@ -1,6 +1,7 @@
 #ifndef D3_BUFFER_CUH
 #define D3_BUFFER_CUH
 
+#include <optional>
 #include <stdio.h>
 
 #include "d3_internal.h"
@@ -54,7 +55,7 @@ class Device_Buffer {
      * @brief constructor of `Device_Buffer` class
      */
     __host__ Device_Buffer(uint16_t *elements, uint64_t length_elements, uint64_t length, real_t cutoff,
-                           real_t CN_cutoff, damping_type_t damping_type, functional_t functional_type);
+                           real_t CN_cutoff, std::optional<real_t> atm_cutoff, damping_type_t damping_type, functional_t functional_type);
 
     /**
      * @brief destructor of `Device_Buffer` class

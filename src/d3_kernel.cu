@@ -1269,7 +1269,7 @@ __global__ void atm_kernel(device_data_t *data) {
                                {data->cell[1][0], data->cell[1][1], data->cell[1][2]},
                                {data->cell[2][0], data->cell[2][1], data->cell[2][2]}}; // cell matrix
     const real_t cell_volume = calculate_cell_volume(cell); // volume of the cell
-    const real_t cutoff = data->coordination_number_cutoff;
+    const real_t cutoff = data->atm_cutoff;
 
     accumulator_t<1> energy_accumulator; // energy accumulator for central atom
     accumulator_t<1> dE_dCN_accumulator_central; // dE/dCN accumulator for central atom
