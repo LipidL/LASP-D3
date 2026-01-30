@@ -71,9 +71,9 @@ int main(int argc, char *argv[]) {
             d3_handle_t *handle;
             if (use_atm) {
                 handle = init_d3_handle_with_atm(elements, num_atoms, num_atoms, cutoff_radius, CN_cutoff_radius,
-                                              atm_cutoff_radius, BJ_DAMPING, PBE);
+                                              atm_cutoff_radius, ZERO_DAMPING, PBE);
             } else {
-                handle = init_d3_handle(elements, num_atoms, num_atoms, cutoff_radius, CN_cutoff_radius, BJ_DAMPING, PBE);
+                handle = init_d3_handle(elements, num_atoms, num_atoms, cutoff_radius, CN_cutoff_radius, ZERO_DAMPING, PBE);
             }
             if (handle == nullptr) {
                 std::cerr << "Failed to initialize D3 handle." << std::endl;
