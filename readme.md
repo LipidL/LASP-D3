@@ -2,6 +2,14 @@
 
 This project implements a calculator for computing DFT-D3 dispersion corrections in periodic systems with CUDA acceleration.
 
+## Authors
+
+Han-Zhi Luo, Cheng Shang, Zhi-Pan Liu
+
+## Publication
+
+An essay named "Linear-Scaling and Memory-Efficient Implementation of van-der-Waals Interaction (DFT-D3) for Large Systems" describing this project is under submission.
+
 ## Overview
 
 DFT-D3 is a semi-empirical dispersion correction method developed by Grimme et al. that accounts for van der Waals interactions in DFT calculations.
@@ -69,3 +77,5 @@ Example code for Fortran is provided at `src/fortran_d3.f90`
 and for Python is provided at `src/d3_cffi.py` for an object-oriented encapsulation and `src/test_d3_cffi.py` for usage.
 
 This project also provides a C++ erxecutable (`d3_cpp`) to calculate dispersion energy, force and stress from a given `.arc` file.
+
+This project has been integrated as a part of the [LASPAI platform](https://www.laspai.com).

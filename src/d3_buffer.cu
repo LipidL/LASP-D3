@@ -149,7 +149,8 @@ uint16_t Unique_Elements::operator[](uint16_t index) {
 
 // implementation for Device_Buffer class
 __host__ Device_Buffer::Device_Buffer(uint16_t *elements, uint64_t length_elements, uint64_t length, real_t cutoff,
-                                      real_t CN_cutoff, std::optional<real_t> atm_cutoff, damping_type_t damping_type, functional_t functional_type) {
+                                      real_t CN_cutoff, std::optional<real_t> atm_cutoff, damping_type_t damping_type,
+                                      functional_t functional_type) {
     memset(&this->host_data_, 0, sizeof(device_data_t)); // initialize the host data to 0
     this->device_data_ = nullptr; // initialize the device data pointer to null
     Unique_Elements unique_elements(elements,
