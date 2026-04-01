@@ -997,7 +997,8 @@ __device__ inline void calculate_twobody(real_t delta_r[3], real_t dist_2, real_
 __global__ void two_body_kernel(device_data_t *data) {
     // load parameters from device data
     const real_t s6 = data->functional_params.s6;
-    const real_t s8 = data->functional_params.s8;
+    const real_t s8_zero = data->functional_params.s8_zero;
+    const real_t s8_bj = data->functional_params.s8_bj;
     const real_t sr_6 = data->functional_params.sr6;
     const real_t sr_8 = data->functional_params.sr8;
     const real_t a1 = data->functional_params.a1;
@@ -1074,13 +1075,14 @@ __global__ void two_body_kernel(device_data_t *data) {
                     switch (data->damping_type) {
                     case ZERO_DAMPING:
                         calculate_twobody(delta_r, distance_square, cell_volume, C6, c8_ab, dC6_dCN1, dC8_dCN1,
-                                          r0_cutoff, ZERO_DAMPING, sr_6, sr_8, s6, s8, energy_accumulator,
+                                          r0_cutoff, ZERO_DAMPING, sr_6, sr_8, s6, s8_zero, energy_accumulator,
                                           dE_dCN_accumulator, force_accumulator, stress_accumulator);
                         break;
                     case BJ_DAMPING:
                         calculate_twobody(delta_r, distance_square, cell_volume, C6, c8_ab, dC6_dCN1, dC8_dCN1,
-                                          r0_cutoff, BJ_DAMPING, a1, a2, s6, s8, energy_accumulator, dE_dCN_accumulator,
-                                          force_accumulator, stress_accumulator);
+                                          sqrtf(3.0 * r2r4_1 * r2r4_2), BJ_DAMPING, a1, a2, s6, s8_bj,
+                                          energy_accumulator, dE_dCN_accumulator, force_accumulator,
+                                          stress_accumulator);
                         break;
                     }
                 }
@@ -1138,13 +1140,13 @@ __global__ void two_body_kernel(device_data_t *data) {
                     switch (data->damping_type) {
                     case ZERO_DAMPING:
                         calculate_twobody(delta_r, distance_square, cell_volume, C6, C8, dC6_dCN1, dC8_dCN1, r0_cutoff,
-                                          ZERO_DAMPING, sr_6, sr_8, s6, s8, energy_accumulator, dE_dCN_accumulator,
+                                          ZERO_DAMPING, sr_6, sr_8, s6, s8_zero, energy_accumulator, dE_dCN_accumulator,
                                           force_accumulator, stress_accumulator);
                         break;
                     case BJ_DAMPING:
-                        calculate_twobody(delta_r, distance_square, cell_volume, C6, C8, dC6_dCN1, dC8_dCN1, r0_cutoff,
-                                          BJ_DAMPING, a1, a2, s6, s8, energy_accumulator, dE_dCN_accumulator,
-                                          force_accumulator, stress_accumulator);
+                        calculate_twobody(delta_r, distance_square, cell_volume, C6, C8, dC6_dCN1, dC8_dCN1,
+                                          sqrtf(3.0 * r2r4_1 * r2r4_2), BJ_DAMPING, a1, a2, s6, s8_bj, energy_accumulator,
+                                          dE_dCN_accumulator, force_accumulator, stress_accumulator);
                         break;
                     }
                 }
@@ -1525,9 +1527,8 @@ __device__ inline void calculate_three_body_interaction(real_t delta_r[3], real_
         powf(tanh_value, 3); // $\tanh^3(CN_cutoff- r_{ab}))$, this is a smooth cutoff function added in LASP code.
     real_t d_smooth_cutoff_dr = 3.0 * powf(tanh_value, 2) * (1.0 - powf(tanh_value, 2)) * (-1.0); // d(smooth_cutoff)/dr
     // the covalent radii table have already taken K2 coefficient into consideration
-    real_t dCN_datom =
-        powf(1.0 + exp, -2.0) * (-K1) * exp * (covalent_radii_1 + covalent_radii_2) / dist_3 * smooth_cutoff +
-        d_smooth_cutoff_dr * 1.0 / (1.0 + exp) / dist; // dCN_ij/dr_ij * 1/r_ij
+    real_t dCN_datom = powf(1.0 + exp, -2.0) * (-K1) * exp * (rcov1 + rcov2) / dist_3 * smooth_cutoff +
+                       d_smooth_cutoff_dr * 1.0 / (1.0 + exp) / dist; // dCN_ij/dr_ij * 1/r_ij
 #else
     // the covalent radii table have already taken K2 coefficient into consideration
     real_t dCN_datom = powf(1.0 + exp, -2.0) * (-K1) * exp * (rcov1 + rcov2) / dist_3; // dCN_ij/dr_ij * 1/r_ij

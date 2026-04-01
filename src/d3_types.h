@@ -1,8 +1,8 @@
 #ifndef D3_TYPES_H
 #define D3_TYPES_H
 
-#include <stdint.h>
 #include <optional>
+#include <stdint.h>
 
 typedef float real_t;
 
@@ -35,7 +35,8 @@ typedef enum {
 
 typedef struct {
     real_t s6;
-    real_t s8;
+    real_t s8_zero; // s8 parameter for zero damping
+    real_t s8_bj; // s8 parameter for BJ damping
     real_t sr6; // SR_6 parameter for zero damping
     real_t sr8; // SR_8 parameter for zero damping
     real_t a1; // a1 parameter for BJ damping
@@ -43,13 +44,13 @@ typedef struct {
 } functional_params_t;
 
 static const functional_params_t FUNCTIONAL_PARAMS[] = {
-    {1.0f, 0.722f, 1.217f, 1.0f, 0.4289f, 4.4407f}, // PBE
-    {1.0f, 0.926f, 1.328f, 1.0f, 0.4145f, 4.8593f}, // PBE0
-    {1.0f, 1.706f, 1.314f, 1.0f, 0.3981f, 4.4211f}, // B3LYP
-    {1.0f, 2.022f, 1.243f, 1.0f, 0.4298f, 4.2359f}, // BLYP
-    {1.0f, 1.838f, 1.221f, 1.0f, 0.3946f, 4.8516f}, // BP86
-    {1.0f, 0.989f, 0.953f, 1.0f, 0.5238f, 3.5016f}, // REVPBE
-    {1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f} // CUSTOM (default)
+    {1.0f, 0.722f, 0.7875f, 1.217f, 1.0f, 0.4289f, 4.4407f}, // PBE
+    {1.0f, 0.928f, 1.2177f, 1.287f, 1.0f, 0.4145f, 4.8593f}, // PBE0
+    {1.0f, 1.703f, 1.9889f, 1.261f, 1.0f, 0.3981f, 4.4211f}, // B3LYP
+    {1.0f, 1.682f, 2.6996f, 1.094f, 1.0f, 0.4298f, 4.2359f}, // BLYP
+    {1.0f, 1.683f, 3.2822f, 1.139f, 1.0f, 0.3946f, 4.8516f}, // BP86
+    {1.0f, 1.010f, 2.3550f, 0.923f, 1.0f, 0.5238f, 3.5016f}, // REVPBE
+    {1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f} // CUSTOM (default)
 };
 typedef struct device_data {
     uint64_t num_atoms; // number of atoms in the system
